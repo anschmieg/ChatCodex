@@ -1,0 +1,183 @@
+name: milestone-deterministic
+
+on:
+  pull_request:
+    paths:
+      - 'codex-rs/deterministic-*/**'
+      - 'apps/chatgpt-mcp/**'
+      - '.github/workflows/milestone-deterministic.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'codex-rs/deterministic-*/**'
+      - 'apps/chatgpt-mcp/**'
+      - '.github/workflows/milestone-deterministic.yml'
+
+jobs:
+  rust-deterministic:
+    name: Rust Deterministic Crates
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Build deterministic crates
+        run: cargo build -p deterministic-protocol -p deterministic-core -p deterministic-daemon
+
+      - name: Test deterministic crates
+        run: cargo test -p deterministic-protocol -p deterministic-core -p deterministic-daemon -- --nocapture
+
+      - name: Clippy deterministic crates
+        run: cargo clippy -p deterministic-protocol -p deterministic-core -p deterministic-daemon --all-targets -- -D warnings
+
+  typescript-mcp-gateway:
+    name: TypeScript MCP Gateway
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/chatgpt-mcp
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: apps/chatgpt-mcp/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+  invariant-checks:
+    name: Invariant Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check for forbidden method names in Rust
+        run: |
+          set -euo pipefail
+
+          # Forbidden method names (wire format) that must not be registered
+          FORBIDDEN_METHODS=(
+            "turn.start"
+            "turn.steer"
+            "review.start"
+            "run.continue"
+          )
+
+          echo "Checking Rust method registry..."
+          for method in "${FORBIDDEN_METHODS[@]}"; do
+            # Check if method appears in the methods.rs match arms (not just comments)
+            if grep -r "\"$method\"" codex-rs/deterministic-protocol/src/methods.rs codex-rs/deterministic-daemon/src/router.rs 2>/dev/null; then
+              echo "ERROR: Forbidden method '$method' appears to be registered"
+              exit 1
+            fi
+          done
+
+          echo "No forbidden methods registered!"
+
+      - name: Check for forbidden tool registrations in TypeScript
+        run: |
+          set -euo pipefail
+
+          # These patterns should only appear in FORBIDDEN_TOOL_NAMES, not as actual registrations
+          FORBIDDEN_TOOLS=(
+            "continue_run"
+            "resume_codex_thread"
+            "fix_end_to_end"
+            "agent_step"
+            "turn_start"
+            "codex_reply"
+            "resume_thread"
+          )
+
+          echo "Checking TypeScript tool registrations..."
+
+          # Check tools.ts for actual registrations (server.tool calls)
+          for tool in "${FORBIDDEN_TOOLS[@]}"; do
+            # Look for server.tool("$tool" ... ) pattern - actual registration
+            if grep -E "server\.tool\s*\(\s*[\"']$tool[\"']" apps/chatgpt-mcp/src/tools.ts 2>/dev/null; then
+              echo "ERROR: Forbidden tool '$tool' is registered in tools.ts"
+              exit 1
+            fi
+          done
+
+          # Verify REGISTERED_TOOL_NAMES doesn't contain forbidden tools
+          echo "Verifying REGISTERED_TOOL_NAMES..."
+          for tool in "${FORBIDDEN_TOOLS[@]}"; do
+            if grep -E "REGISTERED_TOOL_NAMES.*=.*\[.*[\"']$tool[\"']" apps/chatgpt-mcp/src/tools.ts 2>/dev/null; then
+              echo "ERROR: Forbidden tool '$tool' found in REGISTERED_TOOL_NAMES"
+              exit 1
+            fi
+          done
+
+          echo "No forbidden tools registered!"
+
+      - name: Check for model SDK dependencies in deterministic crates
+        run: |
+          set -euo pipefail
+
+          echo "Checking for model/provider SDK dependencies..."
+
+          # Check Cargo.toml files for AI/LLM provider dependencies
+          AI_PROVIDERS=(
+            "openai"
+            "anthropic"
+            "google"
+            "xai"
+            "ollama"
+            "async-openai"
+            "tiktoken"
+          )
+
+          for crate in deterministic-protocol deterministic-core deterministic-daemon; do
+            for provider in "${AI_PROVIDERS[@]}"; do
+              # Check in [dependencies] section only (not dev-dependencies or comments)
+              if awk '/^\[dependencies\]/,/^\[/' "codex-rs/$crate/Cargo.toml" | grep -qi "^$provider" 2>/dev/null; then
+                echo "ERROR: Potential AI provider dependency '$provider' found in $crate/Cargo.toml"
+                exit 1
+              fi
+            done
+          done
+
+          echo "No model SDK dependencies found in deterministic crates!"
+
+      - name: Check TypeScript MCP gateway for model SDKs
+        run: |
+          set -euo pipefail
+
+          echo "Checking TypeScript MCP gateway for model SDKs..."
+
+          # Check package.json for AI provider packages
+          AI_PACKAGES=(
+            "openai"
+            "@anthropic-ai"
+            "@google"
+            "@xai"
+            "ollama"
+          )
+
+          for pkg in "${AI_PACKAGES[@]}"; do
+            if grep -q "$pkg" apps/chatgpt-mcp/package.json 2>/dev/null; then
+              echo "ERROR: Potential AI provider package '$pkg' found in package.json"
+              exit 1
+            fi
+          done
+
+          echo "No model SDK dependencies found in TypeScript MCP gateway!"

@@ -96,10 +96,13 @@ Returns:
 ## run_tests
 
 Input:
-- `runId`
-- `scope`
-- `target?`
-- `reason`
+- `runId`: string
+- `scope`: string — semantic test scope. Well-known values:
+  - Framework names: `"cargo"`, `"npm"`, `"pytest"`, `"make"`
+  - Semantic labels: `"unit"`, `"integration"`, `"all"`
+  - The daemon resolves semantic labels to framework commands based on workspace detection
+- `target?`: string — specific test target (e.g., test name, file path)
+- `reason`: string — why tests are being run
 
 Returns:
 - resolved command
