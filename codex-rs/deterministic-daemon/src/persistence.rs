@@ -95,10 +95,17 @@ impl Store {
         let mut rows = stmt
             .query_map(rusqlite::params![run_id], |row| {
                 let plan_json: String = row.get(4)?;
+                let run_id_val: String = row.get(0)?;
                 let plan: Vec<String> =
-                    serde_json::from_str(&plan_json).unwrap_or_default();
+                    serde_json::from_str(&plan_json).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            4,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
                 Ok(RunState {
-                    run_id: row.get(0)?,
+                    run_id: run_id_val,
                     workspace_id: row.get(1)?,
                     user_goal: row.get(2)?,
                     status: row.get(3)?,

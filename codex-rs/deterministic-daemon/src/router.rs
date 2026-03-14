@@ -72,13 +72,23 @@ async fn rpc_handler(
                 warnings: vec![],
                 audit_id,
             };
-            Json(JsonRpcResponse {
-                jsonrpc: "2.0".into(),
-                id: req.id,
-                result: Some(
-                    serde_json::to_value(envelope).unwrap_or(serde_json::Value::Null),
-                ),
-                error: None,
+            Json(match serde_json::to_value(envelope) {
+                Ok(v) => JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: req.id,
+                    result: Some(v),
+                    error: None,
+                },
+                Err(e) => JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: req.id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32603,
+                        message: format!("internal error: failed to serialize response: {e}"),
+                        data: None,
+                    }),
+                },
             })
         }
         Err(e) => Json(JsonRpcResponse {

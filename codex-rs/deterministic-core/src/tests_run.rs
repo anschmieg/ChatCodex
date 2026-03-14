@@ -49,7 +49,7 @@ fn resolve_command(scope: &str, target: Option<&str>, workspace_root: &Path) -> 
         "unit" | "integration" | "all" => {
             // Detect the workspace tooling and delegate to the
             // appropriate framework.
-            let detected = detect_framework(workspace_root);
+            let detected = detect_framework(workspace_root)?;
             resolve_command(&detected, target, workspace_root)
         }
 
@@ -61,20 +61,23 @@ fn resolve_command(scope: &str, target: Option<&str>, workspace_root: &Path) -> 
 }
 
 /// Heuristic workspace framework detection.
-fn detect_framework(workspace_root: &Path) -> String {
+fn detect_framework(workspace_root: &Path) -> Result<String> {
     if workspace_root.join("Cargo.toml").exists() {
-        "cargo".to_string()
+        Ok("cargo".to_string())
     } else if workspace_root.join("package.json").exists() {
-        "npm".to_string()
+        Ok("npm".to_string())
     } else if workspace_root.join("setup.py").exists()
         || workspace_root.join("pyproject.toml").exists()
     {
-        "pytest".to_string()
+        Ok("pytest".to_string())
     } else if workspace_root.join("Makefile").exists() {
-        "make".to_string()
+        Ok("make".to_string())
     } else {
-        // Default to make as a safe fallback.
-        "make".to_string()
+        anyhow::bail!(
+            "cannot auto-detect test framework in {}. \
+             Use an explicit framework scope (cargo, npm, pytest, make) instead.",
+            workspace_root.display()
+        )
     }
 }
 
