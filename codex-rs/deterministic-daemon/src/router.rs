@@ -46,7 +46,7 @@ async fn rpc_handler(
         });
     }
 
-    let method = match Method::from_str(&req.method) {
+    let method = match Method::parse_method(&req.method) {
         Some(m) => m,
         None => {
             return Json(JsonRpcResponse {

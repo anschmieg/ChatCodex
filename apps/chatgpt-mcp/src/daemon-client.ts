@@ -24,10 +24,10 @@ export interface JsonRpcResponse {
   error?: JsonRpcError;
 }
 
-let _counter = 0;
+let requestIdCounter = 0;
 function nextId(): string {
-  _counter += 1;
-  return `req_${_counter}`;
+  requestIdCounter += 1;
+  return `req_${requestIdCounter}`;
 }
 
 export class DaemonClient {

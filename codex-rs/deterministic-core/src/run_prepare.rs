@@ -21,25 +21,25 @@ pub fn prepare(params: &RunPrepareParams) -> Result<(RunPrepareResult, RunState)
         "show diff".to_string(),
     ];
 
-    let state = RunState {
+    let result = RunPrepareResult {
         run_id: run_id.clone(),
-        workspace_id: params.workspace_id.clone(),
-        user_goal: params.user_goal.clone(),
+        objective: params.user_goal.clone(),
         status: "prepared".to_string(),
         plan: plan.clone(),
         current_step: 0,
-        created_at: now.clone(),
-        updated_at: now,
-    };
-
-    let result = RunPrepareResult {
-        run_id: state.run_id.clone(),
-        objective: params.user_goal.clone(),
-        status: state.status.clone(),
-        plan,
-        current_step: 0,
         recommended_next_action: "Inspect the workspace to understand the codebase.".to_string(),
         recommended_tool: "get_workspace_summary".to_string(),
+    };
+
+    let state = RunState {
+        run_id,
+        workspace_id: params.workspace_id.clone(),
+        user_goal: params.user_goal.clone(),
+        status: "prepared".to_string(),
+        plan,
+        current_step: 0,
+        created_at: now.clone(),
+        updated_at: now,
     };
 
     Ok((result, state))

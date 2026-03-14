@@ -66,10 +66,10 @@ fn list_top_level(root: &Path) -> Vec<String> {
     let mut paths = Vec::new();
     if let Ok(entries) = std::fs::read_dir(root) {
         for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                if !name.starts_with('.') {
-                    paths.push(name.to_string());
-                }
+            if let Some(name) = entry.file_name().to_str()
+                && !name.starts_with('.')
+            {
+                paths.push(name.to_string());
             }
         }
     }

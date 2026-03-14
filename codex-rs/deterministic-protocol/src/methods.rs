@@ -35,7 +35,7 @@ impl Method {
     }
 
     /// Parse a wire name into a [`Method`].
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_method(s: &str) -> Option<Self> {
         match s {
             "run.prepare" => Some(Self::RunPrepare),
             "workspace.summary" => Some(Self::WorkspaceSummary),
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn roundtrip() {
         for m in Method::all() {
-            assert_eq!(Method::from_str(m.as_str()), Some(*m));
+            assert_eq!(Method::parse_method(m.as_str()), Some(*m));
         }
     }
 }

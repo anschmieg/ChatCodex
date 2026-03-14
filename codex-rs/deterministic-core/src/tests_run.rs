@@ -67,12 +67,12 @@ pub fn run(params: &TestsRunParams, workspace_root: &str) -> Result<TestsRunResu
     let stdout_truncated = if stdout.len() > max_len {
         format!("{}... (truncated)", &stdout[..max_len])
     } else {
-        stdout.clone()
+        stdout
     };
     let stderr_truncated = if stderr.len() > max_len {
         format!("{}... (truncated)", &stderr[..max_len])
     } else {
-        stderr.clone()
+        stderr
     };
 
     let summary = if exit_code == 0 {

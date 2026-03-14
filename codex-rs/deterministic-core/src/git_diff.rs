@@ -21,7 +21,7 @@ pub fn diff(_params: &GitDiffParams, workspace_root: &str) -> Result<GitDiffResu
     let mut changed_files: Vec<String> = names
         .lines()
         .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
 
     // If specific paths were requested, filter to those
