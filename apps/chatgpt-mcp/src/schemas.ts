@@ -1,0 +1,114 @@
+/**
+ * Zod schemas for MCP tool inputs.
+ *
+ * These schemas are the **only** input validation layer in the MCP
+ * gateway.  They must mirror the daemon's expected parameters.
+ */
+
+import { z } from "zod";
+
+// ---------------------------------------------------------------
+// codex_prepare_run
+// ---------------------------------------------------------------
+export const CodexPrepareRunInput = {
+  workspaceId: z.string().describe("Absolute path to the workspace root"),
+  userGoal: z.string().describe("User's coding goal"),
+  focusPaths: z
+    .array(z.string())
+    .optional()
+    .describe("Optional paths to focus on"),
+  mode: z
+    .enum(["plan", "refresh", "repair", "review"])
+    .optional()
+    .describe("Run mode"),
+};
+
+// ---------------------------------------------------------------
+// get_workspace_summary
+// ---------------------------------------------------------------
+export const GetWorkspaceSummaryInput = {
+  workspaceId: z.string().describe("Absolute path to the workspace root"),
+  focusPaths: z
+    .array(z.string())
+    .optional()
+    .describe("Optional paths to focus on"),
+};
+
+// ---------------------------------------------------------------
+// read_file
+// ---------------------------------------------------------------
+export const ReadFileInput = {
+  runId: z.string().describe("Run ID from codex_prepare_run"),
+  path: z.string().describe("Relative path within workspace"),
+  startLine: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Start line (1-indexed)"),
+  endLine: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("End line (1-indexed, inclusive)"),
+};
+
+// ---------------------------------------------------------------
+// git_status
+// ---------------------------------------------------------------
+export const GitStatusInput = {
+  runId: z.string().describe("Run ID from codex_prepare_run"),
+};
+
+// ---------------------------------------------------------------
+// search_code
+// ---------------------------------------------------------------
+export const SearchCodeInput = {
+  runId: z.string().describe("Run ID from codex_prepare_run"),
+  query: z.string().describe("Text or regex to search for"),
+  pathGlob: z.string().optional().describe("File glob pattern"),
+  maxResults: z.number().int().positive().optional().describe("Max results"),
+};
+
+// ---------------------------------------------------------------
+// apply_patch
+// ---------------------------------------------------------------
+const PatchEditSchema = z.object({
+  path: z.string(),
+  operation: z.enum(["create", "replace", "delete"]),
+  startLine: z.number().int().optional(),
+  endLine: z.number().int().optional(),
+  oldText: z.string().optional(),
+  newText: z.string(),
+  reason: z.string().optional(),
+});
+
+export const ApplyPatchInput = {
+  runId: z.string().describe("Run ID from codex_prepare_run"),
+  edits: z.array(PatchEditSchema).describe("Edits to apply"),
+};
+
+// ---------------------------------------------------------------
+// run_tests
+// ---------------------------------------------------------------
+export const RunTestsInput = {
+  runId: z.string().describe("Run ID from codex_prepare_run"),
+  scope: z
+    .enum(["cargo", "npm", "pytest", "make"])
+    .describe("Test framework scope"),
+  target: z.string().optional().describe("Specific test target"),
+  reason: z.string().describe("Reason for running tests"),
+};
+
+// ---------------------------------------------------------------
+// show_diff
+// ---------------------------------------------------------------
+export const ShowDiffInput = {
+  runId: z.string().describe("Run ID from codex_prepare_run"),
+  paths: z.array(z.string()).optional().describe("Paths to diff"),
+  format: z
+    .enum(["summary", "patch"])
+    .optional()
+    .describe("Output format"),
+};
