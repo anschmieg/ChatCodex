@@ -98,6 +98,7 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
         path: params.path,
         startLine: params.startLine,
         endLine: params.endLine,
+        purpose: params.purpose,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

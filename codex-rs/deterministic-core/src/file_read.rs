@@ -65,6 +65,7 @@ mod tests {
             path: "hello.txt".into(),
             start_line: None,
             end_line: None,
+            purpose: None,
         };
         let result = read(&params, dir.path().to_str().unwrap()).unwrap();
         assert_eq!(result.total_lines, 3);
@@ -83,6 +84,7 @@ mod tests {
             path: "hello.txt".into(),
             start_line: Some(2),
             end_line: Some(4),
+            purpose: None,
         };
         let result = read(&params, dir.path().to_str().unwrap()).unwrap();
         assert_eq!(result.start_line, 2);
@@ -101,6 +103,7 @@ mod tests {
             path: "../../etc/passwd".into(),
             start_line: None,
             end_line: None,
+            purpose: None,
         };
         let result = read(&params, dir.path().to_str().unwrap());
         assert!(result.is_err());

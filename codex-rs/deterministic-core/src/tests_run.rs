@@ -4,12 +4,19 @@ use anyhow::{Context, Result};
 use deterministic_protocol::{TestsRunParams, TestsRunResult};
 use std::path::Path;
 
-/// Whitelisted test commands by scope.
+/// Resolve a semantic scope to a concrete test command.
 ///
-/// Only these well-known commands are allowed.  This prevents the
-/// daemon from executing arbitrary shell commands.
-fn resolve_command(scope: &str, target: Option<&str>) -> Result<Vec<String>> {
+/// The scope can be either a well-known framework name (e.g. "cargo",
+/// "npm", "pytest", "make") **or** a semantic label (e.g. "unit",
+/// "integration", "all").  When a semantic label is used the daemon
+/// inspects the workspace to determine the correct framework command
+/// deterministically.
+///
+/// Only whitelisted commands are allowed — this prevents the daemon
+/// from executing arbitrary shell commands.
+fn resolve_command(scope: &str, target: Option<&str>, workspace_root: &Path) -> Result<Vec<String>> {
     match scope {
+        // --- well-known framework scopes ---
         "cargo" => {
             let mut cmd = vec!["cargo".to_string(), "test".to_string()];
             if let Some(t) = target {
@@ -37,7 +44,37 @@ fn resolve_command(scope: &str, target: Option<&str>) -> Result<Vec<String>> {
             cmd.push(target.unwrap_or("test").to_string());
             Ok(cmd)
         }
-        other => anyhow::bail!("unsupported test scope: {other}"),
+
+        // --- semantic scopes resolved via workspace detection ---
+        "unit" | "integration" | "all" => {
+            // Detect the workspace tooling and delegate to the
+            // appropriate framework.
+            let detected = detect_framework(workspace_root);
+            resolve_command(&detected, target, workspace_root)
+        }
+
+        other => anyhow::bail!(
+            "unsupported test scope: {other}. \
+             Use a framework name (cargo, npm, pytest, make) or a semantic scope (unit, integration, all)."
+        ),
+    }
+}
+
+/// Heuristic workspace framework detection.
+fn detect_framework(workspace_root: &Path) -> String {
+    if workspace_root.join("Cargo.toml").exists() {
+        "cargo".to_string()
+    } else if workspace_root.join("package.json").exists() {
+        "npm".to_string()
+    } else if workspace_root.join("setup.py").exists()
+        || workspace_root.join("pyproject.toml").exists()
+    {
+        "pytest".to_string()
+    } else if workspace_root.join("Makefile").exists() {
+        "make".to_string()
+    } else {
+        // Default to make as a safe fallback.
+        "make".to_string()
     }
 }
 
@@ -46,7 +83,7 @@ pub fn run(params: &TestsRunParams, workspace_root: &str) -> Result<TestsRunResu
     let root = Path::new(workspace_root);
     anyhow::ensure!(root.is_dir(), "workspace root is not a directory: {workspace_root}");
 
-    let cmd_parts = resolve_command(&params.scope, params.target.as_deref())?;
+    let cmd_parts = resolve_command(&params.scope, params.target.as_deref(), root)?;
     let resolved_command = cmd_parts.join(" ");
 
     let program = &cmd_parts[0];
@@ -96,14 +133,32 @@ mod tests {
 
     #[test]
     fn resolve_cargo_test() {
-        let cmd = resolve_command("cargo", Some("my_test")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let cmd = resolve_command("cargo", Some("my_test"), dir.path()).unwrap();
         assert_eq!(cmd, vec!["cargo", "test", "my_test"]);
     }
 
     #[test]
     fn reject_unknown_scope() {
-        let result = resolve_command("bash", None);
+        let dir = tempfile::tempdir().unwrap();
+        let result = resolve_command("bash", None, dir.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn semantic_scope_detects_cargo() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
+        let cmd = resolve_command("unit", None, dir.path()).unwrap();
+        assert_eq!(cmd[0], "cargo");
+    }
+
+    #[test]
+    fn semantic_scope_detects_npm() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let cmd = resolve_command("all", None, dir.path()).unwrap();
+        assert_eq!(cmd[0], "npm");
     }
 
     #[test]

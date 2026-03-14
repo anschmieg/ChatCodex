@@ -21,9 +21,25 @@ pub fn prepare(params: &RunPrepareParams) -> Result<(RunPrepareResult, RunState)
         "show diff".to_string(),
     ];
 
+    // Deterministic constraints — enforced server-side, not by an LLM.
+    let constraints = vec![
+        "All file writes must go through apply_patch".to_string(),
+        "All test execution must go through run_tests".to_string(),
+        "No autonomous continuation — each step requires explicit invocation".to_string(),
+    ];
+
+    let assistant_brief = format!(
+        "Goal: {}. Workspace: {}. Plan has {} steps. Start by inspecting the workspace.",
+        params.user_goal,
+        params.workspace_id,
+        plan.len()
+    );
+
     let result = RunPrepareResult {
         run_id: run_id.clone(),
         objective: params.user_goal.clone(),
+        assistant_brief,
+        constraints,
         status: "prepared".to_string(),
         plan: plan.clone(),
         current_step: 0,
@@ -60,6 +76,8 @@ mod tests {
         let (result, state) = prepare(&params).unwrap();
         assert_eq!(result.status, "prepared");
         assert!(!result.run_id.is_empty());
+        assert!(!result.assistant_brief.is_empty());
+        assert!(!result.constraints.is_empty());
         assert_eq!(state.workspace_id, "/tmp/ws");
         assert_eq!(state.user_goal, "fix the bug");
     }

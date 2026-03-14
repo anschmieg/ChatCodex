@@ -52,6 +52,10 @@ export const ReadFileInput = {
     .positive()
     .optional()
     .describe("End line (1-indexed, inclusive)"),
+  purpose: z
+    .string()
+    .optional()
+    .describe("Why this file is being read (for audit trail)"),
 };
 
 // ---------------------------------------------------------------
@@ -81,7 +85,11 @@ const PatchEditSchema = z.object({
   endLine: z.number().int().optional(),
   oldText: z.string().optional(),
   newText: z.string(),
-  reason: z.string().optional(),
+  anchorText: z
+    .string()
+    .optional()
+    .describe("Context text to anchor the edit location"),
+  reason: z.string().optional().describe("Why this edit is being made"),
 });
 
 export const ApplyPatchInput = {
@@ -91,13 +99,20 @@ export const ApplyPatchInput = {
 
 // ---------------------------------------------------------------
 // run_tests
+//
+// `scope` is a semantic string.  The daemon resolves it to a
+// concrete command deterministically.  Well-known values include
+// framework names ("cargo", "npm", "pytest", "make") and semantic
+// labels ("unit", "integration", "all").
 // ---------------------------------------------------------------
 export const RunTestsInput = {
   runId: z.string().describe("Run ID from codex_prepare_run"),
   scope: z
-    .enum(["cargo", "npm", "pytest", "make"])
-    .describe("Test framework scope"),
-  target: z.string().optional().describe("Specific test target"),
+    .string()
+    .describe(
+      "Test scope — a framework name (cargo, npm, pytest, make) or a semantic label (unit, integration, all)",
+    ),
+  target: z.string().optional().describe("Specific test target within scope"),
   reason: z.string().describe("Reason for running tests"),
 };
 

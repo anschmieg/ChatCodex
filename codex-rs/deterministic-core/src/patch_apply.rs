@@ -128,6 +128,7 @@ mod tests {
                 end_line: None,
                 old_text: None,
                 new_text: "hello world\n".into(),
+                anchor_text: None,
                 reason: Some("create test file".into()),
             }],
         };
@@ -144,6 +145,7 @@ mod tests {
                 end_line: None,
                 old_text: Some("hello world".into()),
                 new_text: "hello rust".into(),
+                anchor_text: None,
                 reason: Some("update greeting".into()),
             }],
         };
@@ -168,6 +170,7 @@ mod tests {
                 end_line: None,
                 old_text: None,
                 new_text: String::new(),
+                anchor_text: None,
                 reason: Some("remove file".into()),
             }],
         };

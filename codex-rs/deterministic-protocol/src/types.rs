@@ -34,6 +34,26 @@ pub struct JsonRpcError {
 }
 
 // ---------------------------------------------------------------------------
+// Response envelope (inside the JSON-RPC result field)
+//
+// Every successful daemon response wraps the handler result in this
+// envelope so the MCP gateway has a consistent shape to rely on.
+// See docs/INTERNAL_RPC.md for the canonical specification.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseEnvelope {
+    pub ok: bool,
+    pub result: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_state: Option<RunState>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    pub audit_id: String,
+}
+
+// ---------------------------------------------------------------------------
 // run.prepare
 // ---------------------------------------------------------------------------
 
@@ -53,6 +73,8 @@ pub struct RunPrepareParams {
 pub struct RunPrepareResult {
     pub run_id: String,
     pub objective: String,
+    pub assistant_brief: String,
+    pub constraints: Vec<String>,
     pub status: String,
     pub plan: Vec<String>,
     pub current_step: usize,
@@ -94,6 +116,8 @@ pub struct FileReadParams {
     pub start_line: Option<u64>,
     #[serde(default)]
     pub end_line: Option<u64>,
+    #[serde(default)]
+    pub purpose: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,6 +194,8 @@ pub struct PatchEdit {
     pub old_text: Option<String>,
     pub new_text: String,
     #[serde(default)]
+    pub anchor_text: Option<String>,
+    #[serde(default)]
     pub reason: Option<String>,
 }
 
@@ -189,6 +215,11 @@ pub struct PatchApplyResult {
 
 // ---------------------------------------------------------------------------
 // tests.run
+//
+// `scope` is a semantic string — not limited to specific framework
+// names.  The daemon resolves the scope to a concrete command
+// deterministically (e.g. by inspecting workspace tooling).  Well-known
+// values include "unit", "integration", "all", "cargo", "npm", etc.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,7 +266,7 @@ pub struct GitDiffResult {
 }
 
 // ---------------------------------------------------------------------------
-// Run state (persisted)
+// Run state (persisted in SQLite)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
