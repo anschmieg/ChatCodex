@@ -1,0 +1,35 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "deterministic-daemon"
+version.workspace = true
+
+[[bin]]
+name = "deterministic-daemon"
+path = "src/main.rs"
+
+[lib]
+name = "deterministic_daemon"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+deterministic-protocol = { path = "../deterministic-protocol" }
+deterministic-core = { path = "../deterministic-core" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+axum = { workspace = true, features = ["json", "tokio", "http1"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid = { workspace = true, features = ["v4"] }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+tower = "0.5"
+http = { workspace = true }

@@ -68,6 +68,9 @@ members = [
     "test-macros",
     "package-manager",
     "artifacts",
+    "deterministic-protocol",
+    "deterministic-core",
+    "deterministic-daemon",
 ]
 resolver = "2"
 

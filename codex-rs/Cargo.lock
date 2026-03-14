@@ -3504,6 +3504,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "deterministic-core"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "deterministic-protocol",
+ "globset",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
+name = "deterministic-daemon"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "deterministic-core",
+ "deterministic-protocol",
+ "http 1.4.0",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "deterministic-protocol"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "deunicode"
 version = "1.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

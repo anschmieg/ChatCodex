@@ -1,0 +1,18 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "deterministic-protocol"
+version.workspace = true
+
+[lib]
+name = "deterministic_protocol"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+uuid = { workspace = true, features = ["serde", "v4"] }
+chrono = { workspace = true, features = ["serde"] }

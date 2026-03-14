@@ -1,0 +1,103 @@
+//! Canonical method names for the internal JSON-RPC surface.
+//!
+//! Only deterministic methods may appear here.  If a method would imply
+//! backend-owned reasoning or autonomous agent iteration it **must not**
+//! be added.
+
+use std::fmt;
+
+/// Allowed internal JSON-RPC methods.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Method {
+    RunPrepare,
+    WorkspaceSummary,
+    FileRead,
+    GitStatus,
+    CodeSearch,
+    PatchApply,
+    TestsRun,
+    GitDiff,
+}
+
+impl Method {
+    /// The canonical wire name used in JSON-RPC `"method"` fields.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RunPrepare => "run.prepare",
+            Self::WorkspaceSummary => "workspace.summary",
+            Self::FileRead => "file.read",
+            Self::GitStatus => "git.status",
+            Self::CodeSearch => "code.search",
+            Self::PatchApply => "patch.apply",
+            Self::TestsRun => "tests.run",
+            Self::GitDiff => "git.diff",
+        }
+    }
+
+    /// Parse a wire name into a [`Method`].
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "run.prepare" => Some(Self::RunPrepare),
+            "workspace.summary" => Some(Self::WorkspaceSummary),
+            "file.read" => Some(Self::FileRead),
+            "git.status" => Some(Self::GitStatus),
+            "code.search" => Some(Self::CodeSearch),
+            "patch.apply" => Some(Self::PatchApply),
+            "tests.run" => Some(Self::TestsRun),
+            "git.diff" => Some(Self::GitDiff),
+            _ => None,
+        }
+    }
+
+    /// All registered methods.
+    pub fn all() -> &'static [Method] {
+        &[
+            Self::RunPrepare,
+            Self::WorkspaceSummary,
+            Self::FileRead,
+            Self::GitStatus,
+            Self::CodeSearch,
+            Self::PatchApply,
+            Self::TestsRun,
+            Self::GitDiff,
+        ]
+    }
+}
+
+impl fmt::Display for Method {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Strings that **must never** appear as daemon method names.
+pub const FORBIDDEN_METHODS: &[&str] = &[
+    "turn.start",
+    "turn.steer",
+    "review.start",
+    "agent.step",
+    "run.continue",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_forbidden_methods_registered() {
+        for m in Method::all() {
+            let name = m.as_str();
+            assert!(
+                !FORBIDDEN_METHODS.contains(&name),
+                "forbidden method registered: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn roundtrip() {
+        for m in Method::all() {
+            assert_eq!(Method::from_str(m.as_str()), Some(*m));
+        }
+    }
+}
