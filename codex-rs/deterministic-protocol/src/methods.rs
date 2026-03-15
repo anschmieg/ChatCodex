@@ -10,6 +10,8 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Method {
     RunPrepare,
+    RunRefresh,
+    RunReplan,
     WorkspaceSummary,
     FileRead,
     GitStatus,
@@ -17,6 +19,7 @@ pub enum Method {
     PatchApply,
     TestsRun,
     GitDiff,
+    ApprovalResolve,
 }
 
 impl Method {
@@ -24,6 +27,8 @@ impl Method {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::RunPrepare => "run.prepare",
+            Self::RunRefresh => "run.refresh",
+            Self::RunReplan => "run.replan",
             Self::WorkspaceSummary => "workspace.summary",
             Self::FileRead => "file.read",
             Self::GitStatus => "git.status",
@@ -31,6 +36,7 @@ impl Method {
             Self::PatchApply => "patch.apply",
             Self::TestsRun => "tests.run",
             Self::GitDiff => "git.diff",
+            Self::ApprovalResolve => "approval.resolve",
         }
     }
 
@@ -38,6 +44,8 @@ impl Method {
     pub fn parse_method(s: &str) -> Option<Self> {
         match s {
             "run.prepare" => Some(Self::RunPrepare),
+            "run.refresh" => Some(Self::RunRefresh),
+            "run.replan" => Some(Self::RunReplan),
             "workspace.summary" => Some(Self::WorkspaceSummary),
             "file.read" => Some(Self::FileRead),
             "git.status" => Some(Self::GitStatus),
@@ -45,6 +53,7 @@ impl Method {
             "patch.apply" => Some(Self::PatchApply),
             "tests.run" => Some(Self::TestsRun),
             "git.diff" => Some(Self::GitDiff),
+            "approval.resolve" => Some(Self::ApprovalResolve),
             _ => None,
         }
     }
@@ -53,6 +62,8 @@ impl Method {
     pub fn all() -> &'static [Method] {
         &[
             Self::RunPrepare,
+            Self::RunRefresh,
+            Self::RunReplan,
             Self::WorkspaceSummary,
             Self::FileRead,
             Self::GitStatus,
@@ -60,6 +71,7 @@ impl Method {
             Self::PatchApply,
             Self::TestsRun,
             Self::GitDiff,
+            Self::ApprovalResolve,
         ]
     }
 }

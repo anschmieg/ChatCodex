@@ -17,6 +17,8 @@ pub fn dispatch(
 ) -> Result<(serde_json::Value, Option<RunState>)> {
     match method {
         Method::RunPrepare => handle_run_prepare(params, store),
+        Method::RunRefresh => handle_run_refresh(params, store),
+        Method::RunReplan => handle_run_replan(params, store),
         Method::WorkspaceSummary => handle_workspace_summary(params),
         Method::FileRead => handle_file_read(params, store),
         Method::GitStatus => handle_git_status(params, store),
@@ -24,6 +26,7 @@ pub fn dispatch(
         Method::PatchApply => handle_patch_apply(params, store),
         Method::TestsRun => handle_tests_run(params, store),
         Method::GitDiff => handle_git_diff(params, store),
+        Method::ApprovalResolve => handle_approval_resolve(params, store),
     }
 }
 
@@ -33,6 +36,53 @@ fn handle_run_prepare(
 ) -> Result<(serde_json::Value, Option<RunState>)> {
     let p: RunPrepareParams = serde_json::from_value(params)?;
     let (result, state) = deterministic_core::run_prepare::prepare(&p)?;
+    store.save_run(&state)?;
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
+fn handle_run_refresh(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunRefreshParams = serde_json::from_value(params)?;
+    let state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let pending_approvals = store.get_pending_approvals(&p.run_id)?;
+
+    // Try to get a live diff summary from the workspace.
+    let live_diff = {
+        let ws = &state.workspace_id;
+        let diff_params = GitDiffParams {
+            run_id: p.run_id.clone(),
+            paths: vec![],
+            format: Some("summary".into()),
+        };
+        deterministic_core::git_diff::diff(&diff_params, ws)
+            .ok()
+            .map(|r| r.diff_summary)
+    };
+
+    let result = deterministic_core::run_refresh::refresh(
+        &p,
+        &state,
+        &pending_approvals,
+        live_diff.as_deref(),
+    )?;
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
+fn handle_run_replan(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunReplanParams = serde_json::from_value(params)?;
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let result = deterministic_core::run_replan::replan(&p, &mut state)?;
     store.save_run(&state)?;
     Ok((serde_json::to_value(result)?, Some(state)))
 }
@@ -121,4 +171,38 @@ fn handle_git_diff(
     let result = deterministic_core::git_diff::diff(&p, &ws)?;
     let run_state = store.get_run(&p.run_id)?;
     Ok((serde_json::to_value(result)?, run_state))
+}
+
+fn handle_approval_resolve(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: ApprovalResolveParams = serde_json::from_value(params)?;
+
+    // Verify the approval exists and belongs to the specified run.
+    let approval = store
+        .get_approval(&p.approval_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown approval: {}", p.approval_id))?;
+    if approval.run_id != p.run_id {
+        return Err(anyhow::anyhow!(
+            "approval {} does not belong to run {}",
+            p.approval_id,
+            p.run_id
+        ));
+    }
+
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    // Resolve in SQLite first.
+    store.resolve_approval(&p.approval_id, &p.decision, p.reason.as_deref())?;
+
+    // Count remaining pending approvals (after this resolution).
+    let remaining = store.get_pending_approvals(&p.run_id)?;
+
+    let result = deterministic_core::approval::resolve(&p, &mut state, remaining.len())?;
+    store.save_run(&state)?;
+
+    Ok((serde_json::to_value(result)?, Some(state)))
 }

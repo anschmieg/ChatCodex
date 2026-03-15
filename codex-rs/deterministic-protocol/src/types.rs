@@ -266,6 +266,101 @@ pub struct GitDiffResult {
 }
 
 // ---------------------------------------------------------------------------
+// run.refresh
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRefreshParams {
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRefreshResult {
+    pub run_id: String,
+    pub status: String,
+    pub current_step: usize,
+    pub completed_steps: Vec<String>,
+    pub pending_steps: Vec<String>,
+    pub last_action: Option<String>,
+    pub last_observation: Option<String>,
+    pub recommended_next_action: Option<String>,
+    pub recommended_tool: Option<String>,
+    pub pending_approvals: Vec<PendingApproval>,
+    pub latest_diff_summary: Option<String>,
+    pub latest_test_result: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// run.replan
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunReplanParams {
+    pub run_id: String,
+    pub reason: String,
+    #[serde(default)]
+    pub new_evidence: Vec<String>,
+    #[serde(default)]
+    pub failure_context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunReplanResult {
+    pub run_id: String,
+    pub status: String,
+    pub current_step: usize,
+    pub pending_steps: Vec<String>,
+    pub recommended_next_action: String,
+    pub recommended_tool: String,
+    pub replan_summary: String,
+}
+
+// ---------------------------------------------------------------------------
+// approval.resolve
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalResolveParams {
+    pub run_id: String,
+    pub approval_id: String,
+    pub decision: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalResolveResult {
+    pub approval_id: String,
+    pub run_id: String,
+    pub decision: String,
+    pub status: String,
+    pub summary: String,
+}
+
+// ---------------------------------------------------------------------------
+// Pending approval
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingApproval {
+    pub approval_id: String,
+    pub run_id: String,
+    pub action_description: String,
+    pub risk_reason: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+// ---------------------------------------------------------------------------
 // Run state (persisted in SQLite)
 // ---------------------------------------------------------------------------
 
@@ -278,6 +373,16 @@ pub struct RunState {
     pub status: String,
     pub plan: Vec<String>,
     pub current_step: usize,
+    pub completed_steps: Vec<String>,
+    pub pending_steps: Vec<String>,
+    pub last_action: Option<String>,
+    pub last_observation: Option<String>,
+    pub recommended_next_action: Option<String>,
+    pub recommended_tool: Option<String>,
+    pub latest_diff_summary: Option<String>,
+    pub latest_test_result: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }

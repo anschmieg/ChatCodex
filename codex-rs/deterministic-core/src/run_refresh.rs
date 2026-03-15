@@ -1,0 +1,128 @@
+//! Handler logic for `run.refresh`.
+//!
+//! Returns an updated snapshot of the run state.  This is a read-only
+//! operation: it does **not** trigger actions or perform LLM reasoning.
+
+use anyhow::Result;
+use deterministic_protocol::{PendingApproval, RunRefreshParams, RunRefreshResult, RunState};
+
+/// Refresh run state.
+///
+/// Merges persisted state with live workspace facts (git status, diff,
+/// test results) to produce a consistent snapshot.  Pure and
+/// deterministic — no side effects, no model calls.
+pub fn refresh(
+    _params: &RunRefreshParams,
+    state: &RunState,
+    pending_approvals: &[PendingApproval],
+    live_diff_summary: Option<&str>,
+) -> Result<RunRefreshResult> {
+    let mut warnings = state.warnings.clone();
+
+    // If there are pending approvals, ensure the status reflects that.
+    if !pending_approvals.is_empty() && state.status != "awaiting_approval" {
+        warnings.push("Run has pending approvals but status is not awaiting_approval".into());
+    }
+
+    // If status is done or failed, note it.
+    if state.status == "failed" {
+        warnings.push("Run is in a failed state — consider replanning".into());
+    }
+
+    Ok(RunRefreshResult {
+        run_id: state.run_id.clone(),
+        status: state.status.clone(),
+        current_step: state.current_step,
+        completed_steps: state.completed_steps.clone(),
+        pending_steps: state.pending_steps.clone(),
+        last_action: state.last_action.clone(),
+        last_observation: state.last_observation.clone(),
+        recommended_next_action: state.recommended_next_action.clone(),
+        recommended_tool: state.recommended_tool.clone(),
+        pending_approvals: pending_approvals.to_vec(),
+        latest_diff_summary: live_diff_summary
+            .map(String::from)
+            .or_else(|| state.latest_diff_summary.clone()),
+        latest_test_result: state.latest_test_result.clone(),
+        warnings,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_state(status: &str) -> RunState {
+        RunState {
+            run_id: "r1".into(),
+            workspace_id: "/tmp/ws".into(),
+            user_goal: "fix bug".into(),
+            status: status.into(),
+            plan: vec!["step 1".into(), "step 2".into()],
+            current_step: 0,
+            completed_steps: vec![],
+            pending_steps: vec!["step 1".into(), "step 2".into()],
+            last_action: None,
+            last_observation: None,
+            recommended_next_action: Some("inspect".into()),
+            recommended_tool: Some("get_workspace_summary".into()),
+            latest_diff_summary: None,
+            latest_test_result: None,
+            warnings: vec![],
+            created_at: "2024-01-01T00:00:00Z".into(),
+            updated_at: "2024-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn refresh_returns_consistent_snapshot() {
+        let state = make_state("active");
+        let params = RunRefreshParams {
+            run_id: "r1".into(),
+        };
+        let result = refresh(&params, &state, &[], None).unwrap();
+        assert_eq!(result.run_id, "r1");
+        assert_eq!(result.status, "active");
+        assert_eq!(result.pending_steps.len(), 2);
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn refresh_warns_on_pending_approvals_mismatch() {
+        let state = make_state("active");
+        let approval = PendingApproval {
+            approval_id: "a1".into(),
+            run_id: "r1".into(),
+            action_description: "delete file".into(),
+            risk_reason: "destructive".into(),
+            status: "pending".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+        };
+        let params = RunRefreshParams {
+            run_id: "r1".into(),
+        };
+        let result = refresh(&params, &state, &[approval], None).unwrap();
+        assert!(!result.warnings.is_empty());
+        assert!(result.warnings[0].contains("pending approvals"));
+    }
+
+    #[test]
+    fn refresh_includes_live_diff() {
+        let state = make_state("active");
+        let params = RunRefreshParams {
+            run_id: "r1".into(),
+        };
+        let result = refresh(&params, &state, &[], Some("3 files changed")).unwrap();
+        assert_eq!(result.latest_diff_summary.as_deref(), Some("3 files changed"));
+    }
+
+    #[test]
+    fn refresh_warns_on_failed_state() {
+        let state = make_state("failed");
+        let params = RunRefreshParams {
+            run_id: "r1".into(),
+        };
+        let result = refresh(&params, &state, &[], None).unwrap();
+        assert!(result.warnings.iter().any(|w| w.contains("failed")));
+    }
+}
