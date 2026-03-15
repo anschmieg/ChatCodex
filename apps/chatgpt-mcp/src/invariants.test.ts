@@ -31,6 +31,9 @@ describe("MCP tool registry invariants", () => {
       "apply_patch",
       "run_tests",
       "show_diff",
+      "refresh_run_state",
+      "replan_run",
+      "approve_action",
     ]);
     const actual = new Set(REGISTERED_TOOL_NAMES);
     assert.deepStrictEqual(actual, expected);

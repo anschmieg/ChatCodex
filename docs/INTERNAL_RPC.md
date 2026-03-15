@@ -35,7 +35,9 @@ Response:
 }
 ```
 
-## Methods for the first slice
+## Methods
+
+### Milestone 1–3 methods
 
 * `run.prepare`
 * `workspace.summary`
@@ -45,6 +47,12 @@ Response:
 * `patch.apply`
 * `tests.run`
 * `git.diff`
+
+### Milestone 4 methods
+
+* `run.refresh`
+* `run.replan`
+* `approval.resolve`
 
 ## Forbidden internal methods
 
@@ -62,6 +70,38 @@ Do not implement or surface:
 ### run.prepare
 
 Compile a deterministic run brief and initialize run state.
+
+### run.refresh
+
+Return an updated run-state snapshot.  Merges persisted state with
+live workspace facts (git status, diff summary).  Read-only — does
+not trigger actions or perform LLM reasoning.
+
+Params: `{ runId: string }`
+
+Returns: full run-state snapshot including `pendingApprovals`,
+`latestDiffSummary`, `latestTestResult`, `warnings`.
+
+### run.replan
+
+Deterministically recompute the run plan.  Inputs include a reason,
+optional new evidence strings, and optional failure context.  The
+backend applies rule-based logic to update `pendingSteps`,
+`recommendedNextAction`, and `recommendedTool`.
+
+Params: `{ runId, reason, newEvidence?, failureContext? }`
+
+Returns: updated plan fields + `replanSummary`.
+
+### approval.resolve
+
+Resolve a pending approval.  Decision must be `"approve"` or
+`"deny"`.  Approving the last pending approval unblocks the run;
+denying any approval blocks the run.
+
+Params: `{ runId, approvalId, decision, reason? }`
+
+Returns: resolution summary + resulting run status.
 
 ### workspace.summary
 

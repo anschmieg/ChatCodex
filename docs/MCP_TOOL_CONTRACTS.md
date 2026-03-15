@@ -149,6 +149,91 @@ Returns:
 - optionally patch text
 - updated run-state summary
 
+## refresh_run_state
+
+Refresh and return the current run state snapshot.  This is a read-only
+operation: it does not trigger actions or perform LLM reasoning.
+
+### Input
+
+- `runId`: string — Run ID from codex_prepare_run
+
+### Returns
+
+- `runId`
+- `status` — one of `prepared`, `active`, `blocked`, `awaiting_approval`, `done`, `failed`
+- `currentStep`
+- `completedSteps`
+- `pendingSteps`
+- `lastAction`
+- `lastObservation`
+- `recommendedNextAction`
+- `recommendedTool`
+- `pendingApprovals` — list of pending approval objects
+- `latestDiffSummary`
+- `latestTestResult`
+- `warnings`
+
+### Behavior
+
+- Merges persisted state with live workspace facts (e.g. current git diff)
+- Does not mutate state or trigger any actions
+- Does not call any LLM
+
+## replan_run
+
+Deterministically replan the run based on new evidence or failure context.
+
+### Input
+
+- `runId`: string — Run ID from codex_prepare_run
+- `reason`: string — Why the run needs replanning
+- `newEvidence?: string[]` — New evidence or observations
+- `failureContext?: string` — Error or failure context that triggered replanning
+
+### Returns
+
+- `runId`
+- `status`
+- `currentStep`
+- `pendingSteps`
+- `recommendedNextAction`
+- `recommendedTool`
+- `replanSummary`
+
+### Behavior
+
+- Rule-based replanning only — no LLM calls
+- If failure context is provided, inserts a recovery step
+- Updates recommended next action and tool based on pending steps
+- Persists updated state to SQLite
+
+## approve_action
+
+Resolve a pending approval (approve or deny a risky action).
+
+### Input
+
+- `runId`: string — Run ID from codex_prepare_run
+- `approvalId`: string — Approval ID to resolve
+- `decision`: `"approve"` | `"deny"`
+- `reason?: string` — Reason for the decision
+
+### Returns
+
+- `approvalId`
+- `runId`
+- `decision`
+- `status` — resulting run status after resolution
+- `summary`
+
+### Behavior
+
+- `"approve"` unblocks the run if no more pending approvals remain
+- `"deny"` blocks the run
+- Persists decision to SQLite
+- Does not trigger any autonomous continuation
+
 ## Forbidden public tools
 
 Do not expose:

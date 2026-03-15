@@ -127,3 +127,41 @@ export const ShowDiffInput = {
     .optional()
     .describe("Output format"),
 };
+
+// ---------------------------------------------------------------
+// refresh_run_state
+// ---------------------------------------------------------------
+export const RefreshRunStateInput = {
+  runId: z.string().describe("Run ID from codex_prepare_run"),
+};
+
+// ---------------------------------------------------------------
+// replan_run
+// ---------------------------------------------------------------
+export const ReplanRunInput = {
+  runId: z.string().describe("Run ID from codex_prepare_run"),
+  reason: z.string().describe("Why the run needs replanning"),
+  newEvidence: z
+    .array(z.string())
+    .optional()
+    .describe("New evidence or observations"),
+  failureContext: z
+    .string()
+    .optional()
+    .describe("Error or failure context that triggered replanning"),
+};
+
+// ---------------------------------------------------------------
+// approve_action
+// ---------------------------------------------------------------
+export const ApproveActionInput = {
+  runId: z.string().describe("Run ID from codex_prepare_run"),
+  approvalId: z.string().describe("Approval ID to resolve"),
+  decision: z
+    .enum(["approve", "deny"])
+    .describe("Whether to approve or deny the pending action"),
+  reason: z
+    .string()
+    .optional()
+    .describe("Reason for the decision"),
+};

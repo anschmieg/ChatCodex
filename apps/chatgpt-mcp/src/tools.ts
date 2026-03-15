@@ -20,6 +20,9 @@ import {
   ApplyPatchInput,
   RunTestsInput,
   ShowDiffInput,
+  RefreshRunStateInput,
+  ReplanRunInput,
+  ApproveActionInput,
 } from "./schemas.js";
 
 /**
@@ -50,6 +53,9 @@ export const REGISTERED_TOOL_NAMES = [
   "apply_patch",
   "run_tests",
   "show_diff",
+  "refresh_run_state",
+  "replan_run",
+  "approve_action",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -183,6 +189,57 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
         runId: params.runId,
         paths: params.paths ?? [],
         format: params.format,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- refresh_run_state ----
+  server.tool(
+    "refresh_run_state",
+    "Refresh and return the current run state snapshot (read-only, no side effects)",
+    RefreshRunStateInput,
+    async (params) => {
+      const result = await client.call("run.refresh", {
+        runId: params.runId,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- replan_run ----
+  server.tool(
+    "replan_run",
+    "Deterministically replan the run based on new evidence or failure context",
+    ReplanRunInput,
+    async (params) => {
+      const result = await client.call("run.replan", {
+        runId: params.runId,
+        reason: params.reason,
+        newEvidence: params.newEvidence ?? [],
+        failureContext: params.failureContext,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- approve_action ----
+  server.tool(
+    "approve_action",
+    "Resolve a pending approval (approve or deny a risky action)",
+    ApproveActionInput,
+    async (params) => {
+      const result = await client.call("approval.resolve", {
+        runId: params.runId,
+        approvalId: params.approvalId,
+        decision: params.decision,
+        reason: params.reason,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
