@@ -54,6 +54,12 @@ Response:
 * `run.replan`
 * `approval.resolve`
 
+### Milestone 7 methods (read-only)
+
+* `runs.list`
+* `run.get`
+* `run.history`
+
 ## Forbidden internal methods
 
 Do not implement or surface:
@@ -165,3 +171,29 @@ what to retry after approval.
 ### git.diff
 
 Return diff summary or patch text.
+
+### runs.list (Milestone 7)
+
+List known runs. Read-only.
+
+Params: `{ limit?, workspaceId?, status? }`
+
+Returns: `{ runs: RunSummary[], count }` ordered by `updatedAt` descending.
+
+### run.get (Milestone 7)
+
+Get the authoritative current state of a specific run. Read-only.
+
+Params: `{ runId }`
+
+Returns: `{ runState, pendingApprovals, retryableAction?, latestDiffSummary?, latestTestResult?, recommendedNextAction?, recommendedTool?, warnings }`
+
+### run.history (Milestone 7)
+
+Get the audit trail entries for a run. Read-only.
+
+Params: `{ runId, limit? }`
+
+Returns: `{ runId, entries: RunHistoryEntry[], count }` ordered newest-first.
+
+Events recorded: `run_prepared`, `refresh_performed`, `replan_performed`, `approval_created`, `approval_resolved`, `patch_applied`, `tests_run`.

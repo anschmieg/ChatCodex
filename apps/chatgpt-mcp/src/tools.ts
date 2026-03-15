@@ -23,6 +23,9 @@ import {
   RefreshRunStateInput,
   ReplanRunInput,
   ApproveActionInput,
+  ListRunsInput,
+  GetRunStateInput,
+  GetRunHistoryInput,
 } from "./schemas.js";
 
 /**
@@ -56,6 +59,10 @@ export const REGISTERED_TOOL_NAMES = [
   "refresh_run_state",
   "replan_run",
   "approve_action",
+  // Milestone 7: read-only history and state inspection
+  "list_runs",
+  "get_run_state",
+  "get_run_history",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -240,6 +247,54 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
         approvalId: params.approvalId,
         decision: params.decision,
         reason: params.reason,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- list_runs (Milestone 7) ----
+  server.tool(
+    "list_runs",
+    "List known runs with their status and metadata (read-only)",
+    ListRunsInput,
+    async (params) => {
+      const result = await client.call("runs.list", {
+        limit: params.limit,
+        workspaceId: params.workspaceId,
+        status: params.status,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- get_run_state (Milestone 7) ----
+  server.tool(
+    "get_run_state",
+    "Get the authoritative current state of a run including pending approvals and retryable actions (read-only)",
+    GetRunStateInput,
+    async (params) => {
+      const result = await client.call("run.get", {
+        runId: params.runId,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- get_run_history (Milestone 7) ----
+  server.tool(
+    "get_run_history",
+    "Get the audit trail of key events for a run (read-only)",
+    GetRunHistoryInput,
+    async (params) => {
+      const result = await client.call("run.history", {
+        runId: params.runId,
+        limit: params.limit,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

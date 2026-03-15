@@ -34,6 +34,10 @@ describe("MCP tool registry invariants", () => {
       "refresh_run_state",
       "replan_run",
       "approve_action",
+      // Milestone 7: read-only history and state inspection
+      "list_runs",
+      "get_run_state",
+      "get_run_history",
     ]);
     const actual = new Set(REGISTERED_TOOL_NAMES);
     assert.deepStrictEqual(actual, expected);

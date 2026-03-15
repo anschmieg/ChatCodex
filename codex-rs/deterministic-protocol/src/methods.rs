@@ -20,6 +20,10 @@ pub enum Method {
     TestsRun,
     GitDiff,
     ApprovalResolve,
+    // Milestone 7: read-only history and state inspection
+    RunsList,
+    RunGet,
+    RunHistory,
 }
 
 impl Method {
@@ -37,6 +41,10 @@ impl Method {
             Self::TestsRun => "tests.run",
             Self::GitDiff => "git.diff",
             Self::ApprovalResolve => "approval.resolve",
+            // Milestone 7
+            Self::RunsList => "runs.list",
+            Self::RunGet => "run.get",
+            Self::RunHistory => "run.history",
         }
     }
 
@@ -54,6 +62,10 @@ impl Method {
             "tests.run" => Some(Self::TestsRun),
             "git.diff" => Some(Self::GitDiff),
             "approval.resolve" => Some(Self::ApprovalResolve),
+            // Milestone 7
+            "runs.list" => Some(Self::RunsList),
+            "run.get" => Some(Self::RunGet),
+            "run.history" => Some(Self::RunHistory),
             _ => None,
         }
     }
@@ -72,6 +84,10 @@ impl Method {
             Self::TestsRun,
             Self::GitDiff,
             Self::ApprovalResolve,
+            // Milestone 7
+            Self::RunsList,
+            Self::RunGet,
+            Self::RunHistory,
         ]
     }
 }

@@ -87,9 +87,21 @@ ChatGPT-hosted model
 - No new public MCP tools; no new internal daemon methods
 - No autonomous continuation—ChatGPT must still invoke the next tool explicitly
 
+### Milestone 7: Deterministic Run History, Audit Trail, and State Inspection
+- Added three new read-only protocol types: `RunSummary`, `RunGetResult`, `RunHistoryEntry` and associated params/result structs
+- New internal daemon methods: `runs.list`, `run.get`, `run.history`
+- New public MCP tools: `list_runs`, `get_run_state`, `get_run_history` (all read-only)
+- Added `audit_trail` SQLite table to persist key run events; migration adds it to older databases
+- Key events recorded: run prepared, refresh performed, replan performed, approval created, approval resolved, patch applied, tests run
+- `list_runs` supports limit, workspace, and status filters
+- `run.get` returns the full authoritative run state with pending approvals, retryable action, and recommendations
+- `run.history` returns the audit trail for a run (newest first, configurable limit)
+- 13 new Rust persistence tests; TypeScript invariants test updated
+- Architecture invariants maintained: no model calls, no autonomous tools, deterministic only
+
 ## Current Implementation Surface
 
-### Public MCP Tools (11)
+### Public MCP Tools (14)
 
 | Tool | Description |
 |------|-------------|
@@ -104,8 +116,11 @@ ChatGPT-hosted model
 | `refresh_run_state` | Read-only run state snapshot |
 | `replan_run` | Deterministic rule-based replanning |
 | `approve_action` | Resolve pending approvals |
+| `list_runs` | List known runs with status and metadata (read-only) |
+| `get_run_state` | Get authoritative current state of a run (read-only) |
+| `get_run_history` | Get audit trail of key events for a run (read-only) |
 
-### Internal Daemon Methods (11)
+### Internal Daemon Methods (14)
 
 | Method | Description |
 |--------|-------------|
@@ -120,6 +135,9 @@ ChatGPT-hosted model
 | `tests.run` | Run tests with policy checks |
 | `git.diff` | Diff summary/patch |
 | `approval.resolve` | Resolve pending approvals |
+| `runs.list` | List runs (read-only) |
+| `run.get` | Get full run state with approvals and retryable action (read-only) |
+| `run.history` | Get audit trail entries for a run (read-only) |
 
 ### Run State Model
 
@@ -149,7 +167,7 @@ ChatGPT-hosted model
 
 ## Verified
 
-- ✅ 123 Rust tests pass (deterministic-protocol, deterministic-core, deterministic-daemon)
+- ✅ 129 Rust tests pass (deterministic-protocol, deterministic-core, deterministic-daemon)
 - ✅ 3 TypeScript tests pass (MCP gateway invariants)
 - ✅ Clippy clean
 - ✅ No forbidden methods or tools registered

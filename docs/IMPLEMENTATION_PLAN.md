@@ -190,6 +190,41 @@ Acceptance:
 - ✅ no new public tools or daemon methods needed
 - ✅ no autonomous continuation—ChatGPT still invokes next tool explicitly
 
+## Milestone 7: deterministic run history, audit trail, and state inspection ✅
+
+Add read-only visibility into prior runs and recent state transitions:
+
+### Run listing
+
+- `runs.list` daemon method → `list_runs` MCP tool
+- Returns `RunSummary` items with run ID, workspace, goal, status, step counts, timestamps
+- Supports limit (default 20, max 100), workspace filter, status filter
+
+### Run state inspection
+
+- `run.get` daemon method → `get_run_state` MCP tool
+- Returns `RunGetResult` with full run state, pending approvals, retryable action, diff/test metadata, recommendations
+
+### Audit trail
+
+- `run.history` daemon method → `get_run_history` MCP tool
+- Returns `RunHistoryEntry` list (newest first, configurable limit up to 200)
+- Key events recorded: `run_prepared`, `refresh_performed`, `replan_performed`, `approval_created`, `approval_resolved`, `patch_applied`, `tests_run`
+- Backed by `audit_trail` SQLite table
+
+### SQLite migration
+
+- Adds `audit_trail` table to new databases and migrates older databases (`CREATE TABLE IF NOT EXISTS`)
+- Backward compatible with Milestone 6 and earlier databases
+
+Acceptance:
+- ✅ prior runs can be listed deterministically
+- ✅ authoritative run state can be inspected directly
+- ✅ lightweight audit trail persisted and retrievable
+- ✅ all new tools are read-only (no autonomous operations)
+- ✅ no model/provider SDKs added
+- ✅ TypeScript remains thin
+
 ## Out of scope
 
 These are intentionally not implemented:

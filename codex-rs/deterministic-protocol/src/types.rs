@@ -452,3 +452,116 @@ pub struct RunState {
     pub created_at: String,
     pub updated_at: String,
 }
+
+// ---------------------------------------------------------------------------
+// runs.list  (Milestone 7)
+// ---------------------------------------------------------------------------
+
+/// Compact summary of a run for listing purposes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSummary {
+    pub run_id: String,
+    pub workspace_id: String,
+    pub user_goal: String,
+    pub status: String,
+    pub current_step: usize,
+    pub total_steps: usize,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunsListParams {
+    /// Maximum number of runs to return (default: 20, max: 100).
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Filter by workspace ID (optional).
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    /// Filter by status (optional).
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunsListResult {
+    pub runs: Vec<RunSummary>,
+    /// Number of runs returned (may be less than total if limit was applied).
+    pub count: usize,
+}
+
+// ---------------------------------------------------------------------------
+// run.get  (Milestone 7)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunGetParams {
+    pub run_id: String,
+}
+
+/// Full authoritative current state of a run for direct inspection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunGetResult {
+    pub run_state: RunState,
+    pub pending_approvals: Vec<PendingApproval>,
+    /// Retryable action metadata (from RunState).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retryable_action: Option<RetryableAction>,
+    /// Latest diff summary if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_diff_summary: Option<String>,
+    /// Latest test result if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_test_result: Option<String>,
+    /// Recommended next action (forwarded from RunState).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended_next_action: Option<String>,
+    /// Recommended MCP tool (forwarded from RunState).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended_tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// run.history  (Milestone 7)
+// ---------------------------------------------------------------------------
+
+/// A single audit-trail entry for a run event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunHistoryEntry {
+    pub entry_id: String,
+    pub run_id: String,
+    /// Event kind (e.g. "run_prepared", "patch_applied", "tests_run", ...).
+    pub event_kind: String,
+    /// Short human-readable description of what happened.
+    pub summary: String,
+    /// Optional structured metadata (JSON string).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<String>,
+    pub occurred_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunHistoryParams {
+    pub run_id: String,
+    /// Maximum number of entries to return (default: 50, max: 200).
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunHistoryResult {
+    pub run_id: String,
+    pub entries: Vec<RunHistoryEntry>,
+    /// Number of entries returned (may be less than total if limit was applied).
+    pub count: usize,
+}

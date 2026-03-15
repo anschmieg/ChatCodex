@@ -283,6 +283,78 @@ Resolve a pending approval (approve or deny a risky action).
 - Persists decision to SQLite
 - Does not trigger any autonomous continuation
 
+---
+
+## list_runs (Milestone 7)
+
+Read-only listing of known runs.
+
+### Input
+
+- `limit?: number` — Maximum runs to return (default 20, max 100)
+- `workspaceId?: string` — Filter by workspace path
+- `status?: string` — Filter by run status
+
+### Returns
+
+- `runs: RunSummary[]` — array of compact run summaries
+  - `runId`, `workspaceId`, `userGoal`, `status`, `currentStep`, `totalSteps`, `createdAt`, `updatedAt`
+- `count: number` — number of runs returned
+
+### Behavior
+
+- Read-only; does not modify any run state
+- Results ordered by `updatedAt` descending (most recently modified first)
+
+---
+
+## get_run_state (Milestone 7)
+
+Get the authoritative current state of a run.
+
+### Input
+
+- `runId`: string — Run ID to inspect
+
+### Returns
+
+- `runState` — full RunState
+- `pendingApprovals` — current pending approvals
+- `retryableAction?` — retryable action metadata if present
+- `latestDiffSummary?` — latest diff summary
+- `latestTestResult?` — latest test result
+- `recommendedNextAction?` — current recommendation
+- `recommendedTool?` — recommended MCP tool
+- `warnings[]` — active warnings
+
+### Behavior
+
+- Read-only; does not modify any run state
+- Returns the same fields as `refresh_run_state` but without triggering a refresh operation
+
+---
+
+## get_run_history (Milestone 7)
+
+Get the audit trail of key events for a run.
+
+### Input
+
+- `runId`: string — Run ID to retrieve history for
+- `limit?: number` — Maximum entries to return (default 50, max 200)
+
+### Returns
+
+- `runId`
+- `entries: RunHistoryEntry[]` — audit trail entries (newest first)
+  - `entryId`, `runId`, `eventKind`, `summary`, `metadata?`, `occurredAt`
+- `count: number` — number of entries returned
+
+### Behavior
+
+- Read-only; does not modify any run state
+- Events include: `run_prepared`, `refresh_performed`, `replan_performed`, `approval_created`, `approval_resolved`, `patch_applied`, `tests_run`
+
 ## Forbidden public tools
 
 Do not expose:

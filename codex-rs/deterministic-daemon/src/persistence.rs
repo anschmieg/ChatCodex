@@ -5,7 +5,7 @@
 //! access — unlike the previous JSON-file approach.
 
 use anyhow::{Context, Result};
-use deterministic_protocol::{PendingApproval, RetryableAction, RunState};
+use deterministic_protocol::{PendingApproval, RetryableAction, RunHistoryEntry, RunState, RunSummary};
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
@@ -79,6 +79,15 @@ impl Store {
                 created_at          TEXT NOT NULL,
                 resolved_at         TEXT,
                 FOREIGN KEY (run_id) REFERENCES runs(run_id)
+            );
+            CREATE TABLE IF NOT EXISTS audit_trail (
+                entry_id    TEXT PRIMARY KEY,
+                run_id      TEXT NOT NULL,
+                event_kind  TEXT NOT NULL,
+                summary     TEXT NOT NULL,
+                metadata    TEXT,
+                occurred_at TEXT NOT NULL,
+                FOREIGN KEY (run_id) REFERENCES runs(run_id)
             );",
         )
         .context("failed to create tables")?;
@@ -117,6 +126,20 @@ impl Store {
                 }),
             }
         }
+
+        // Milestone 7: ensure audit_trail table exists (for older DBs without it).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS audit_trail (
+                entry_id    TEXT PRIMARY KEY,
+                run_id      TEXT NOT NULL,
+                event_kind  TEXT NOT NULL,
+                summary     TEXT NOT NULL,
+                metadata    TEXT,
+                occurred_at TEXT NOT NULL,
+                FOREIGN KEY (run_id) REFERENCES runs(run_id)
+            );",
+        )
+        .context("failed to create audit_trail table")?;
 
         Ok(())
     }
@@ -399,6 +422,144 @@ impl Store {
             ));
         }
         Ok(())
+    }
+
+    // ----- Milestone 7: run listing -----
+
+    /// List runs, ordered by updated_at descending.
+    pub fn list_runs(
+        &self,
+        limit: usize,
+        workspace_id: Option<&str>,
+        status_filter: Option<&str>,
+    ) -> Result<Vec<RunSummary>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        // Build query dynamically based on optional filters.
+        let mut conditions = Vec::new();
+        if workspace_id.is_some() {
+            conditions.push("workspace_id = ?2");
+        }
+        if status_filter.is_some() {
+            let idx = if workspace_id.is_some() { 3 } else { 2 };
+            conditions.push(match idx {
+                2 => "status = ?2",
+                _ => "status = ?3",
+            });
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+
+        let sql = format!(
+            "SELECT run_id, workspace_id, user_goal, status, current_step, plan,
+                    created_at, updated_at
+             FROM runs {where_clause}
+             ORDER BY updated_at DESC
+             LIMIT ?1"
+        );
+
+        let mut stmt = conn.prepare(&sql).context("failed to prepare list_runs")?;
+
+        let mapper = |row: &rusqlite::Row<'_>| -> rusqlite::Result<RunSummary> {
+            let plan_json: String = row.get(5)?;
+            let total_steps: usize = serde_json::from_str::<Vec<String>>(&plan_json)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            Ok(RunSummary {
+                run_id: row.get(0)?,
+                workspace_id: row.get(1)?,
+                user_goal: row.get(2)?,
+                status: row.get(3)?,
+                current_step: row.get::<_, i64>(4)? as usize,
+                total_steps,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        };
+
+        let rows = match (workspace_id, status_filter) {
+            (None, None) => stmt
+                .query_map(rusqlite::params![limit as i64], mapper)
+                .context("failed to query runs")?,
+            (Some(ws), None) => stmt
+                .query_map(rusqlite::params![limit as i64, ws], mapper)
+                .context("failed to query runs")?,
+            (None, Some(st)) => stmt
+                .query_map(rusqlite::params![limit as i64, st], mapper)
+                .context("failed to query runs")?,
+            (Some(ws), Some(st)) => stmt
+                .query_map(rusqlite::params![limit as i64, ws, st], mapper)
+                .context("failed to query runs")?,
+        };
+
+        let mut summaries = Vec::new();
+        for row in rows {
+            summaries.push(row.map_err(|e| anyhow::anyhow!("failed to read run row: {e}"))?);
+        }
+        Ok(summaries)
+    }
+
+    // ----- Milestone 7: audit trail -----
+
+    /// Append an entry to the audit trail for a run.
+    pub fn append_audit_entry(
+        &self,
+        run_id: &str,
+        event_kind: &str,
+        summary: &str,
+        metadata: Option<&str>,
+    ) -> Result<String> {
+        let entry_id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute(
+            "INSERT INTO audit_trail (entry_id, run_id, event_kind, summary, metadata, occurred_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![entry_id, run_id, event_kind, summary, metadata, now],
+        )
+        .context("failed to append audit entry")?;
+        Ok(entry_id)
+    }
+
+    /// Retrieve audit trail entries for a run, newest first.
+    pub fn get_audit_entries(
+        &self,
+        run_id: &str,
+        limit: usize,
+    ) -> Result<Vec<RunHistoryEntry>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT entry_id, run_id, event_kind, summary, metadata, occurred_at
+                 FROM audit_trail
+                 WHERE run_id = ?1
+                 ORDER BY occurred_at DESC, rowid DESC
+                 LIMIT ?2",
+            )
+            .context("failed to prepare audit query")?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![run_id, limit as i64], |row| {
+                Ok(RunHistoryEntry {
+                    entry_id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    event_kind: row.get(2)?,
+                    summary: row.get(3)?,
+                    metadata: row.get(4)?,
+                    occurred_at: row.get(5)?,
+                })
+            })
+            .context("failed to query audit trail")?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row.map_err(|e| anyhow::anyhow!("failed to read audit row: {e}"))?);
+        }
+        Ok(entries)
     }
 }
 
@@ -994,6 +1155,273 @@ mod tests {
         let reloaded = store.get_run("r_m5").unwrap().unwrap();
         let ra = reloaded.retryable_action.as_ref().unwrap();
         assert_eq!(ra.kind, "patch.apply");
+    }
+
+    // ---- Milestone 7: run listing tests ----
+
+    #[test]
+    fn list_runs_empty() {
+        let store = Store::open_in_memory().unwrap();
+        let runs = store.list_runs(20, None, None).unwrap();
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn list_runs_returns_summaries() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_a", "active")).unwrap();
+        store.save_run(&make_run_state("r_b", "prepared")).unwrap();
+        store.save_run(&make_run_state("r_c", "done")).unwrap();
+
+        let runs = store.list_runs(20, None, None).unwrap();
+        assert_eq!(runs.len(), 3);
+        // Each summary should have basic fields.
+        for r in &runs {
+            assert!(!r.run_id.is_empty());
+            assert!(!r.workspace_id.is_empty());
+            assert!(!r.user_goal.is_empty());
+        }
+    }
+
+    #[test]
+    fn list_runs_respects_limit() {
+        let store = Store::open_in_memory().unwrap();
+        for i in 0..10 {
+            store
+                .save_run(&make_run_state(&format!("r_{i}"), "active"))
+                .unwrap();
+        }
+        let runs = store.list_runs(3, None, None).unwrap();
+        assert_eq!(runs.len(), 3);
+    }
+
+    #[test]
+    fn list_runs_filters_by_status() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_a", "active")).unwrap();
+        store.save_run(&make_run_state("r_b", "active")).unwrap();
+        store.save_run(&make_run_state("r_c", "done")).unwrap();
+
+        let active = store.list_runs(20, None, Some("active")).unwrap();
+        assert_eq!(active.len(), 2);
+
+        let done = store.list_runs(20, None, Some("done")).unwrap();
+        assert_eq!(done.len(), 1);
+    }
+
+    #[test]
+    fn list_runs_filters_by_workspace() {
+        let store = Store::open_in_memory().unwrap();
+        let mut s1 = make_run_state("r_ws1a", "active");
+        s1.workspace_id = "/ws/one".into();
+        let mut s2 = make_run_state("r_ws1b", "active");
+        s2.workspace_id = "/ws/one".into();
+        let mut s3 = make_run_state("r_ws2", "active");
+        s3.workspace_id = "/ws/two".into();
+        store.save_run(&s1).unwrap();
+        store.save_run(&s2).unwrap();
+        store.save_run(&s3).unwrap();
+
+        let ws1 = store.list_runs(20, Some("/ws/one"), None).unwrap();
+        assert_eq!(ws1.len(), 2);
+
+        let ws2 = store.list_runs(20, Some("/ws/two"), None).unwrap();
+        assert_eq!(ws2.len(), 1);
+    }
+
+    #[test]
+    fn list_runs_total_steps_matches_plan() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_steps", "active"); // plan has 2 steps
+        store.save_run(&state).unwrap();
+
+        let runs = store.list_runs(20, None, None).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].total_steps, 2);
+    }
+
+    // ---- Milestone 7: audit trail tests ----
+
+    #[test]
+    fn audit_entry_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_aud", "active")).unwrap();
+
+        let id = store
+            .append_audit_entry("r_aud", "run_prepared", "Run prepared: fix", None)
+            .unwrap();
+        assert!(!id.is_empty());
+
+        let entries = store.get_audit_entries("r_aud", 50).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].event_kind, "run_prepared");
+        assert_eq!(entries[0].summary, "Run prepared: fix");
+        assert!(entries[0].metadata.is_none());
+    }
+
+    #[test]
+    fn audit_multiple_entries_ordered_newest_first() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_ord", "active")).unwrap();
+
+        store
+            .append_audit_entry("r_ord", "run_prepared", "prepared", None)
+            .unwrap();
+        store
+            .append_audit_entry("r_ord", "refresh_performed", "refreshed", None)
+            .unwrap();
+        store
+            .append_audit_entry("r_ord", "patch_applied", "patched", None)
+            .unwrap();
+
+        let entries = store.get_audit_entries("r_ord", 50).unwrap();
+        assert_eq!(entries.len(), 3);
+        // Newest first — patch_applied was inserted last.
+        assert_eq!(entries[0].event_kind, "patch_applied");
+    }
+
+    #[test]
+    fn audit_entry_with_metadata() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_meta", "active")).unwrap();
+
+        store
+            .append_audit_entry(
+                "r_meta",
+                "patch_applied",
+                "Patch applied: 2 file(s) changed",
+                Some(r#"{"files":["src/main.rs","src/lib.rs"]}"#),
+            )
+            .unwrap();
+
+        let entries = store.get_audit_entries("r_meta", 50).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].metadata.as_deref(),
+            Some(r#"{"files":["src/main.rs","src/lib.rs"]}"#)
+        );
+    }
+
+    #[test]
+    fn audit_limit_respected() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_lim", "active")).unwrap();
+
+        for i in 0..10 {
+            store
+                .append_audit_entry("r_lim", "refresh_performed", &format!("refresh {i}"), None)
+                .unwrap();
+        }
+
+        let entries = store.get_audit_entries("r_lim", 3).unwrap();
+        assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn audit_isolated_by_run_id() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_x", "active")).unwrap();
+        store.save_run(&make_run_state("r_y", "active")).unwrap();
+
+        store
+            .append_audit_entry("r_x", "run_prepared", "prepared x", None)
+            .unwrap();
+        store
+            .append_audit_entry("r_y", "run_prepared", "prepared y", None)
+            .unwrap();
+
+        let x_entries = store.get_audit_entries("r_x", 50).unwrap();
+        assert_eq!(x_entries.len(), 1);
+        assert_eq!(x_entries[0].run_id, "r_x");
+
+        let y_entries = store.get_audit_entries("r_y", 50).unwrap();
+        assert_eq!(y_entries.len(), 1);
+        assert_eq!(y_entries[0].run_id, "r_y");
+    }
+
+    #[test]
+    fn migration_from_m6_adds_audit_trail_table() {
+        use rusqlite::Connection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("runs.db");
+
+        // Create Milestone 6 schema (without audit_trail table).
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    run_id                   TEXT PRIMARY KEY,
+                    workspace_id             TEXT NOT NULL,
+                    user_goal                TEXT NOT NULL,
+                    status                   TEXT NOT NULL,
+                    plan                     TEXT NOT NULL,
+                    current_step             INTEGER NOT NULL DEFAULT 0,
+                    completed_steps          TEXT NOT NULL DEFAULT '[]',
+                    pending_steps            TEXT NOT NULL DEFAULT '[]',
+                    last_action              TEXT,
+                    last_observation         TEXT,
+                    recommended_next_action  TEXT,
+                    recommended_tool         TEXT,
+                    latest_diff_summary      TEXT,
+                    latest_test_result       TEXT,
+                    focus_paths              TEXT NOT NULL DEFAULT '[]',
+                    warnings                 TEXT NOT NULL DEFAULT '[]',
+                    retryable_action         TEXT,
+                    created_at               TEXT NOT NULL,
+                    updated_at               TEXT NOT NULL
+                );
+                CREATE TABLE approvals (
+                    approval_id         TEXT PRIMARY KEY,
+                    run_id              TEXT NOT NULL,
+                    action_description  TEXT NOT NULL,
+                    risk_reason         TEXT NOT NULL,
+                    policy_rationale    TEXT NOT NULL DEFAULT '',
+                    status              TEXT NOT NULL DEFAULT 'pending',
+                    decision            TEXT,
+                    decision_reason     TEXT,
+                    created_at          TEXT NOT NULL,
+                    resolved_at         TEXT,
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+                );",
+            )
+            .unwrap();
+
+            conn.execute(
+                "INSERT INTO runs (run_id, workspace_id, user_goal, status, plan, current_step,
+                                   completed_steps, pending_steps, focus_paths, warnings,
+                                   created_at, updated_at)
+                 VALUES ('r_m6', '/tmp/ws', 'fix', 'active', '[\"step 1\"]', 0,
+                         '[]', '[\"step 1\"]', '[]', '[]',
+                         '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Open with Store — should migrate and add audit_trail table.
+        let store = Store::open(dir.path()).unwrap();
+        let loaded = store.get_run("r_m6").unwrap().unwrap();
+        assert_eq!(loaded.run_id, "r_m6");
+
+        // Should be able to write audit entries now.
+        store
+            .append_audit_entry("r_m6", "run_prepared", "migrated run", None)
+            .unwrap();
+        let entries = store.get_audit_entries("r_m6", 10).unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn fresh_database_has_audit_trail_table() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_fresh", "active")).unwrap();
+        // Just verify we can write without error.
+        store
+            .append_audit_entry("r_fresh", "run_prepared", "fresh db test", None)
+            .unwrap();
+        let entries = store.get_audit_entries("r_fresh", 10).unwrap();
+        assert_eq!(entries.len(), 1);
     }
 }
 

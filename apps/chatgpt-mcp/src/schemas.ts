@@ -165,3 +165,45 @@ export const ApproveActionInput = {
     .optional()
     .describe("Reason for the decision"),
 };
+
+// ---------------------------------------------------------------
+// list_runs  (Milestone 7)
+// ---------------------------------------------------------------
+export const ListRunsInput = {
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(100)
+    .optional()
+    .describe("Maximum number of runs to return (default: 20, max: 100)"),
+  workspaceId: z
+    .string()
+    .optional()
+    .describe("Filter by workspace path"),
+  status: z
+    .string()
+    .optional()
+    .describe("Filter by run status (e.g. active, done, blocked)"),
+};
+
+// ---------------------------------------------------------------
+// get_run_state  (Milestone 7)
+// ---------------------------------------------------------------
+export const GetRunStateInput = {
+  runId: z.string().describe("Run ID to inspect"),
+};
+
+// ---------------------------------------------------------------
+// get_run_history  (Milestone 7)
+// ---------------------------------------------------------------
+export const GetRunHistoryInput = {
+  runId: z.string().describe("Run ID to retrieve audit history for"),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(200)
+    .optional()
+    .describe("Maximum number of entries to return (default: 50, max: 200)"),
+};

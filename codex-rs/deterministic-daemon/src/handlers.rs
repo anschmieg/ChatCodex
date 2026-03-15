@@ -27,6 +27,10 @@ pub fn dispatch(
         Method::TestsRun => handle_tests_run(params, store),
         Method::GitDiff => handle_git_diff(params, store),
         Method::ApprovalResolve => handle_approval_resolve(params, store),
+        // Milestone 7: read-only history and state inspection
+        Method::RunsList => handle_runs_list(params, store),
+        Method::RunGet => handle_run_get(params, store),
+        Method::RunHistory => handle_run_history(params, store),
     }
 }
 
@@ -58,6 +62,13 @@ fn handle_run_prepare(
     let p: RunPrepareParams = serde_json::from_value(params)?;
     let (result, state) = deterministic_core::run_prepare::prepare(&p)?;
     store.save_run(&state)?;
+    // Audit trail: run prepared.
+    let _ = store.append_audit_entry(
+        &state.run_id,
+        "run_prepared",
+        &format!("Run prepared: {}", state.user_goal),
+        None,
+    );
     Ok((serde_json::to_value(result)?, Some(state)))
 }
 
@@ -91,6 +102,13 @@ fn handle_run_refresh(
         &pending_approvals,
         live_diff.as_deref(),
     )?;
+    // Audit trail: refresh performed.
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "refresh_performed",
+        &format!("Refresh performed; status={}", state.status),
+        None,
+    );
     Ok((serde_json::to_value(result)?, Some(state)))
 }
 
@@ -105,6 +123,13 @@ fn handle_run_replan(
 
     let result = deterministic_core::run_replan::replan(&p, &mut state)?;
     store.save_run(&state)?;
+    // Audit trail: replan performed.
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "replan_performed",
+        &format!("Replan performed: {}", p.reason),
+        None,
+    );
     Ok((serde_json::to_value(result)?, Some(state)))
 }
 
@@ -198,6 +223,13 @@ fn handle_patch_apply(
 
             store.save_approval(&approval)?;
             store.save_run(&state)?;
+            // Audit trail: approval created for patch.
+            let _ = store.append_audit_entry(
+                &p.run_id,
+                "approval_created",
+                &format!("Approval required for patch: {action_summary}"),
+                None,
+            );
             let result = PatchApplyResult {
                 changed_files: vec![],
                 diff_stats: String::new(),
@@ -210,6 +242,16 @@ fn handle_patch_apply(
             state.retryable_action = None;
             store.save_run(&state)?;
             let result = deterministic_core::patch_apply::apply(&p, &ws)?;
+            // Audit trail: patch applied.
+            let _ = store.append_audit_entry(
+                &p.run_id,
+                "patch_applied",
+                &format!(
+                    "Patch applied: {} file(s) changed",
+                    result.changed_files.len()
+                ),
+                None,
+            );
             let run_state = store.get_run(&p.run_id)?;
             Ok((serde_json::to_value(result)?, run_state))
         }
@@ -258,6 +300,13 @@ fn handle_tests_run(
 
             store.save_approval(&approval)?;
             store.save_run(&state)?;
+            // Audit trail: approval created for tests.
+            let _ = store.append_audit_entry(
+                &p.run_id,
+                "approval_created",
+                &format!("Approval required for tests: {action_summary}"),
+                None,
+            );
             let result = TestsRunResult {
                 resolved_command: String::new(),
                 exit_code: -1,
@@ -273,6 +322,16 @@ fn handle_tests_run(
             state.retryable_action = None;
             store.save_run(&state)?;
             let result = deterministic_core::tests_run::run(&p, &ws)?;
+            // Audit trail: tests run.
+            let _ = store.append_audit_entry(
+                &p.run_id,
+                "tests_run",
+                &format!(
+                    "Tests run: scope={} exit_code={}",
+                    p.scope, result.exit_code
+                ),
+                None,
+            );
             let run_state = store.get_run(&p.run_id)?;
             Ok((serde_json::to_value(result)?, run_state))
         }
@@ -322,6 +381,83 @@ fn handle_approval_resolve(
 
     let result = deterministic_core::approval::resolve(&p, &mut state, remaining.len())?;
     store.save_run(&state)?;
-
+    // Audit trail: approval resolved.
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "approval_resolved",
+        &format!(
+            "Approval {} resolved: decision={}",
+            p.approval_id, p.decision
+        ),
+        None,
+    );
     Ok((serde_json::to_value(result)?, Some(state)))
+}
+
+// ---- Milestone 7: read-only history and state inspection ----
+
+fn handle_runs_list(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunsListParams = serde_json::from_value(params)?;
+    let limit = p.limit.unwrap_or(20).min(100);
+    let runs = store.list_runs(
+        limit,
+        p.workspace_id.as_deref(),
+        p.status.as_deref(),
+    )?;
+    let count = runs.len();
+    let result = RunsListResult { runs, count };
+    Ok((serde_json::to_value(result)?, None))
+}
+
+fn handle_run_get(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunGetParams = serde_json::from_value(params)?;
+    let state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+    let pending_approvals = store.get_pending_approvals(&p.run_id)?;
+
+    let retryable_action = state.retryable_action.clone();
+    let latest_diff_summary = state.latest_diff_summary.clone();
+    let latest_test_result = state.latest_test_result.clone();
+    let recommended_next_action = state.recommended_next_action.clone();
+    let recommended_tool = state.recommended_tool.clone();
+    let warnings = state.warnings.clone();
+
+    let result = RunGetResult {
+        run_state: state.clone(),
+        pending_approvals,
+        retryable_action,
+        latest_diff_summary,
+        latest_test_result,
+        recommended_next_action,
+        recommended_tool,
+        warnings,
+    };
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
+fn handle_run_history(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunHistoryParams = serde_json::from_value(params)?;
+    // Verify the run exists.
+    let _ = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+    let limit = p.limit.unwrap_or(50).min(200);
+    let entries = store.get_audit_entries(&p.run_id, limit)?;
+    let count = entries.len();
+    let result = RunHistoryResult {
+        run_id: p.run_id,
+        entries,
+        count,
+    };
+    Ok((serde_json::to_value(result)?, None))
 }
