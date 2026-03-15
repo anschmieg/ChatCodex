@@ -88,9 +88,23 @@ Each edit:
 - `anchorText?`
 - `reason`
 
-Returns:
-- changed files
-- diff stats
+### Approval policy
+
+Before applying the patch, a deterministic policy is evaluated.
+The patch is gated (approval required) if any of the following hold:
+- Any edit has `operation: "delete"` (file deletion)
+- More than 5 edits in a single request (large patch)
+- Any path matches a sensitive pattern (`.env`, `.ssh`, `.git/`, `id_rsa`, etc.)
+- Any path is outside the run's declared `focusPaths` (when non-empty)
+
+If approval is required, the result includes `approvalRequired` with the
+pending approval details and the patch is **not** applied.
+
+### Returns
+
+- `changedFiles` — list of affected file paths (empty if approval required)
+- `diffStats` — summary of additions/deletions (empty if approval required)
+- `approvalRequired?` — pending approval object if the patch was gated
 - updated run-state summary
 
 ## run_tests
@@ -124,11 +138,22 @@ Execute a whitelisted test command in the workspace.
 
 ### Returns
 
-- `resolvedCommand`: string — The actual command that was executed
-- `exitCode`: number — Exit code from the test command
+- `resolvedCommand`: string — The actual command that was executed (empty if approval required)
+- `exitCode`: number — Exit code from the test command (-1 if approval required)
 - `stdout`: string — Standard output (truncated to 4096 chars)
 - `stderr`: string — Standard error (truncated to 4096 chars)
 - `summary`: string — Human-readable summary of results
+- `approvalRequired?` — Pending approval object if the test was gated
+
+### Approval policy
+
+Before running the test, a deterministic policy is evaluated.
+The test is gated (approval required) if:
+- `scope` is `"make"` and `target` is not a standard safe target
+  (`test`, `check`, `lint`, `build`, `clean`, `all`, `verify`, `fmt`, `format`)
+
+If approval is required, the result includes `approvalRequired` with the
+pending approval details and the test is **not** executed.
 
 ### Errors
 
@@ -226,11 +251,16 @@ Resolve a pending approval (approve or deny a risky action).
 - `decision`
 - `status` — resulting run status after resolution
 - `summary`
+- `recommendedNextAction?` — suggested next step after resolution
+- `recommendedTool?` — suggested MCP tool after resolution
 
 ### Behavior
 
 - `"approve"` unblocks the run if no more pending approvals remain
+  - Recommends retrying the previously gated action
 - `"deny"` blocks the run
+  - Recommends replanning via `replan_run`
+- Multiple pending approvals are handled predictably: each is resolved independently
 - Persists decision to SQLite
 - Does not trigger any autonomous continuation
 

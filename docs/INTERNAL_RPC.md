@@ -101,7 +101,11 @@ denying any approval blocks the run.
 
 Params: `{ runId, approvalId, decision, reason? }`
 
-Returns: resolution summary + resulting run status.
+Returns: resolution summary + resulting run status +
+`recommendedNextAction` and `recommendedTool` guidance.
+
+After approve (last pending): recommends retrying the gated action.
+After deny: recommends replanning via `replan_run`.
 
 ### workspace.summary
 
@@ -123,9 +127,20 @@ Return ranked text/symbol matches with snippets.
 
 Apply a validated patch within policy boundaries.
 
+Before executing the patch, a deterministic approval policy is evaluated.
+If the policy determines the patch is risky (e.g. file deletion,
+large patch, sensitive file path, outside focus paths), the handler
+creates a pending approval and returns the result with
+`approvalRequired` set instead of applying the patch.
+
 ### tests.run
 
 Resolve and run a canonical test command.
+
+Before executing the test, a deterministic approval policy is evaluated.
+If the policy determines the command is risky (e.g. non-standard make
+target), the handler creates a pending approval and returns the result
+with `approvalRequired` set instead of running the test.
 
 ### git.diff
 
