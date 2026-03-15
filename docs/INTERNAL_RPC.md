@@ -68,6 +68,11 @@ No new daemon methods. Existing methods extended:
 * `run.refresh` — returns `effectivePolicy`
 * `run.get` — returns `effectivePolicy`
 
+### Milestone 9 methods (read-only preflight)
+
+* `patch.preflight`
+* `tests.preflight`
+
 ## Forbidden internal methods
 
 Do not implement or surface:
@@ -239,3 +244,25 @@ Params: `{ runId, limit? }`
 Returns: `{ runId, entries: RunHistoryEntry[], count }` ordered newest-first.
 
 Events recorded: `run_prepared`, `refresh_performed`, `replan_performed`, `approval_created`, `approval_resolved`, `patch_applied`, `tests_run`.
+
+### patch.preflight (Milestone 9)
+
+Evaluate a proposed patch against the run's effective policy without applying
+any changes.  Read-only — no files, approvals, run state, or audit trail are
+modified.
+
+Params: `{ runId, edits: PatchEdit[] }`
+
+Returns: `PreflightResult` — `{ decision, actionSummary?, riskReason?, policyRationale?, effectivePolicy }`
+
+`decision` is `"proceed"` or `"requires_approval"`.
+
+### tests.preflight (Milestone 9)
+
+Evaluate a proposed test run against the run's effective policy without
+executing any tests.  Read-only — no commands are executed and no state is
+mutated.
+
+Params: `{ runId, scope, target?, reason? }`
+
+Returns: `PreflightResult` — same shape as `patch.preflight`.

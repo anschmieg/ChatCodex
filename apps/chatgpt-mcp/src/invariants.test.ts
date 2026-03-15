@@ -12,7 +12,11 @@ import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import { z } from "zod";
 import { FORBIDDEN_TOOL_NAMES, REGISTERED_TOOL_NAMES } from "./tools.js";
-import { PolicyProfileInputSchema } from "./schemas.js";
+import {
+  PolicyProfileInputSchema,
+  PreviewPatchPolicyInput,
+  PreviewTestPolicyInput,
+} from "./schemas.js";
 
 describe("MCP tool registry invariants", () => {
   it("should not contain any forbidden tool names", () => {
@@ -41,6 +45,9 @@ describe("MCP tool registry invariants", () => {
       "list_runs",
       "get_run_state",
       "get_run_history",
+      // Milestone 9: deterministic preflight / preview (read-only)
+      "preview_patch_policy",
+      "preview_test_policy",
     ]);
     const actual = new Set(REGISTERED_TOOL_NAMES);
     assert.deepStrictEqual(actual, expected);
@@ -112,5 +119,98 @@ describe("PolicyProfileInput schema (Milestone 8)", () => {
     const result = outerSchema.safeParse({});
     assert.ok(result.success, "Omitted policy field should be valid");
     assert.strictEqual(result.data?.policy, undefined);
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 9: preflight schema validation tests
+// ---------------------------------------------------------------
+const PreviewPatchPolicySchema = z.object(PreviewPatchPolicyInput);
+const PreviewTestPolicySchema = z.object(PreviewTestPolicyInput);
+
+describe("PreviewPatchPolicyInput schema (Milestone 9)", () => {
+  it("should accept a minimal valid patch preview request", () => {
+    const result = PreviewPatchPolicySchema.safeParse({
+      runId: "run-abc",
+      edits: [{ path: "src/main.rs", operation: "replace", newText: "fn main() {}" }],
+    });
+    assert.ok(result.success, "Minimal patch preview should be valid");
+  });
+
+  it("should reject missing runId", () => {
+    const result = PreviewPatchPolicySchema.safeParse({
+      edits: [{ path: "src/main.rs", operation: "replace", newText: "x" }],
+    });
+    assert.ok(!result.success, "Missing runId should be invalid");
+  });
+
+  it("should reject missing edits", () => {
+    const result = PreviewPatchPolicySchema.safeParse({ runId: "run-abc" });
+    assert.ok(!result.success, "Missing edits array should be invalid");
+  });
+
+  it("should accept multiple edits with optional fields", () => {
+    const result = PreviewPatchPolicySchema.safeParse({
+      runId: "run-xyz",
+      edits: [
+        { path: "a.rs", operation: "create", newText: "content", reason: "new file" },
+        { path: "b.rs", operation: "delete", newText: "" },
+      ],
+    });
+    assert.ok(result.success, "Multiple edits with optional fields should be valid");
+  });
+});
+
+describe("PreviewTestPolicyInput schema (Milestone 9)", () => {
+  it("should accept a minimal valid test preview request", () => {
+    const result = PreviewTestPolicySchema.safeParse({
+      runId: "run-abc",
+      scope: "cargo",
+    });
+    assert.ok(result.success, "Minimal test preview should be valid");
+  });
+
+  it("should accept a make target test preview", () => {
+    const result = PreviewTestPolicySchema.safeParse({
+      runId: "run-abc",
+      scope: "make",
+      target: "deploy-prod",
+      reason: "check if approval needed",
+    });
+    assert.ok(result.success, "Full test preview with target and reason should be valid");
+  });
+
+  it("should reject missing runId", () => {
+    const result = PreviewTestPolicySchema.safeParse({ scope: "cargo" });
+    assert.ok(!result.success, "Missing runId should be invalid");
+  });
+
+  it("should reject missing scope", () => {
+    const result = PreviewTestPolicySchema.safeParse({ runId: "run-abc" });
+    assert.ok(!result.success, "Missing scope should be invalid");
+  });
+});
+
+describe("No-hidden-agent regression (Milestone 9)", () => {
+  it("preview tools should be read-only (not coarse autonomous tools)", () => {
+    const previewTools = ["preview_patch_policy", "preview_test_policy"];
+    for (const tool of previewTools) {
+      assert.ok(
+        REGISTERED_TOOL_NAMES.includes(tool as (typeof REGISTERED_TOOL_NAMES)[number]),
+        `Preview tool '${tool}' should be registered`,
+      );
+    }
+  });
+
+  it("no continue/resume/agent patterns in registered tool names", () => {
+    const coarsePatterns = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end"];
+    for (const name of REGISTERED_TOOL_NAMES) {
+      for (const pattern of coarsePatterns) {
+        assert.ok(
+          !name.includes(pattern),
+          `Tool "${name}" contains forbidden autonomous pattern "${pattern}"`,
+        );
+      }
+    }
   });
 });

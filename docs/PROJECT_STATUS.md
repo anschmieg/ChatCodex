@@ -115,9 +115,21 @@ ChatGPT-hosted model
 - No new public MCP tools; no new internal daemon methods
 - No backend model calls; no autonomous continuation
 
+### Milestone 9: Deterministic Operation Preflight and Approval Preview
+- Added `PreflightDecision` enum (`proceed` | `requires_approval`) to `deterministic-protocol`
+- Added `PreflightResult` struct (shared result for both preflight methods): `decision`, `actionSummary?`, `riskReason?`, `policyRationale?`, `effectivePolicy`
+- Added `PatchPreflightParams` and `TestsPreflightParams` to `deterministic-protocol`
+- Added `patch.preflight` and `tests.preflight` daemon methods (read-only, no state mutation)
+- Handlers reuse existing `evaluate_patch` / `evaluate_test_run` policy logic (no duplication)
+- Added `preview_patch_policy` and `preview_test_policy` MCP tools in TypeScript
+- TypeScript schemas: `PreviewPatchPolicyInput` and `PreviewTestPolicyInput` (Zod validated)
+- 10 new Rust handler tests (proceed + requires-approval + no-mutation cases for both preflight methods, plus method registry)
+- 8 new TypeScript tests (schema validation + no-hidden-agent regression)
+- No backend model calls; no autonomous continuation; no state mutation from preview calls
+
 ## Current Implementation Surface
 
-### Public MCP Tools (14)
+### Public MCP Tools (16)
 
 | Tool | Description |
 |------|-------------|
@@ -135,8 +147,10 @@ ChatGPT-hosted model
 | `list_runs` | List known runs with status and metadata (read-only) |
 | `get_run_state` | Get authoritative current state of a run (read-only) |
 | `get_run_history` | Get audit trail of key events for a run (read-only) |
+| `preview_patch_policy` | Preview patch policy decision without applying changes (read-only, Milestone 9) |
+| `preview_test_policy` | Preview test-run policy decision without executing tests (read-only, Milestone 9) |
 
-### Internal Daemon Methods (14)
+### Internal Daemon Methods (16)
 
 | Method | Description |
 |--------|-------------|
@@ -154,6 +168,8 @@ ChatGPT-hosted model
 | `runs.list` | List runs (read-only) |
 | `run.get` | Get full run state with approvals and retryable action (read-only) |
 | `run.history` | Get audit trail entries for a run (read-only) |
+| `patch.preflight` | Evaluate patch policy without applying changes (read-only, Milestone 9) |
+| `tests.preflight` | Evaluate test-run policy without executing tests (read-only, Milestone 9) |
 
 ### Run State Model
 
@@ -201,8 +217,8 @@ Policy knobs are now taken from the per-run `RunPolicy` profile (Milestone 8).
 
 ## Verified
 
-- ✅ 146 Rust tests pass (105 core + 39 daemon + 2 protocol)
-- ✅ 9 TypeScript tests pass (3 registry invariants + 6 policy schema)
+- ✅ 156 Rust tests pass (105 core + 49 daemon + 2 protocol)
+- ✅ 19 TypeScript tests pass (3 registry invariants + 6 policy schema + 10 Milestone 9 preflight)
 - ✅ Clippy clean
 - ✅ No forbidden methods or tools registered
 - ✅ No model SDK dependencies in deterministic crates

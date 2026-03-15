@@ -24,6 +24,9 @@ pub enum Method {
     RunsList,
     RunGet,
     RunHistory,
+    // Milestone 9: deterministic preflight / preview (read-only)
+    PatchPreflight,
+    TestsPreflight,
 }
 
 impl Method {
@@ -45,6 +48,9 @@ impl Method {
             Self::RunsList => "runs.list",
             Self::RunGet => "run.get",
             Self::RunHistory => "run.history",
+            // Milestone 9
+            Self::PatchPreflight => "patch.preflight",
+            Self::TestsPreflight => "tests.preflight",
         }
     }
 
@@ -66,6 +72,9 @@ impl Method {
             "runs.list" => Some(Self::RunsList),
             "run.get" => Some(Self::RunGet),
             "run.history" => Some(Self::RunHistory),
+            // Milestone 9
+            "patch.preflight" => Some(Self::PatchPreflight),
+            "tests.preflight" => Some(Self::TestsPreflight),
             _ => None,
         }
     }
@@ -88,6 +97,9 @@ impl Method {
             Self::RunsList,
             Self::RunGet,
             Self::RunHistory,
+            // Milestone 9
+            Self::PatchPreflight,
+            Self::TestsPreflight,
         ]
     }
 }
