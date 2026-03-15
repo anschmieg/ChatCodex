@@ -104,7 +104,6 @@ Fine-grained execution tools:
 - `run.prepare`
 - `run.refresh`
 - `run.replan`
-- `run.get`
 - `workspace.summary`
 - `workspace.register`
 - `approval.resolve`
