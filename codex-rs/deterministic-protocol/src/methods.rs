@@ -31,6 +31,8 @@ pub enum Method {
     RunFinalize,
     // Milestone 11: deterministic run reopening
     RunReopen,
+    // Milestone 12: deterministic run supersession
+    RunSupersede,
 }
 
 impl Method {
@@ -59,6 +61,8 @@ impl Method {
             Self::RunFinalize => "run.finalize",
             // Milestone 11
             Self::RunReopen => "run.reopen",
+            // Milestone 12
+            Self::RunSupersede => "run.supersede",
         }
     }
 
@@ -87,6 +91,8 @@ impl Method {
             "run.finalize" => Some(Self::RunFinalize),
             // Milestone 11
             "run.reopen" => Some(Self::RunReopen),
+            // Milestone 12
+            "run.supersede" => Some(Self::RunSupersede),
             _ => None,
         }
     }
@@ -116,6 +122,8 @@ impl Method {
             Self::RunFinalize,
             // Milestone 11
             Self::RunReopen,
+            // Milestone 12
+            Self::RunSupersede,
         ]
     }
 }

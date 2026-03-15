@@ -398,6 +398,58 @@ Acceptance:
 - ✅ SQLite migration is backward compatible
 - ✅ no autonomous continuation
 
+## Milestone 12: deterministic run supersession and replacement lineage ✅
+
+Add explicit and deterministic run supersession so ChatGPT can replace a finalized run with
+a new successor run while preserving clear, auditable lineage between them.
+
+### New protocol types
+
+- `RunSupersedeParams`: `runId`, `newUserGoal?`, `reason`
+- `RunSupersedeResult`: `originalRunId`, `successorRunId`, `supersededAt`, `successorStatus`, `recommendedNextAction`, `recommendedTool`
+- Lineage fields added to `RunState`, `RunGetResult`, `RunSummary`:
+  - `supersedes_run_id: Option<String>` — the run this run supersedes (set on successor)
+  - `superseded_by_run_id: Option<String>` — the run that superseded this run (set on original)
+  - `supersession_reason: Option<String>` — human-readable reason for supersession (set on both)
+  - `superseded_at: Option<String>` — ISO 8601 timestamp of supersession (set on both)
+
+### New daemon method
+
+- `run.supersede` — create a successor run that explicitly replaces a finalized run
+  - Only finalized runs may be superseded; active/prepared/awaiting-approval runs are rejected
+  - Supersession creates a new run in `"prepared"` status (does not reactivate the original)
+  - Original run marked with `superseded_by_run_id`; status remains finalized (history preserved)
+  - Successor run carries `supersedes_run_id` pointing to the original
+  - Successor inherits workspace, focus paths, and policy profile from original
+  - Successor starts with an empty plan; no autonomous work is triggered
+  - Appends `run_superseded` (original) and `run_created_from_supersession` (successor) audit entries
+  - Returns deterministic guidance; no autonomous follow-up
+
+### New MCP tool
+
+- `supersede_run` — thin gateway to `run.supersede`; not a coarse autonomous tool
+
+### SQLite migration
+
+- Adds `supersedes_run_id TEXT`, `superseded_by_run_id TEXT`, `supersession_reason TEXT`, `superseded_at TEXT` columns to `runs` table
+- Backward compatible (NULL for all existing rows on older databases)
+
+### TypeScript gateway
+
+- `SupersedeRunInput` Zod schema in `schemas.ts`: `runId`, `newUserGoal?` (max 500 chars), `reason` (min 1, max 500 chars)
+- `tools.ts` registers `supersede_run`
+
+Acceptance:
+- ✅ ChatGPT can explicitly supersede a finalized run with a successor run
+- ✅ only finalized runs are supersedable; active/prepared runs are rejected deterministically
+- ✅ supersession is recorded in the audit trail on both original and successor runs
+- ✅ lineage metadata persists in SQLite with backward-compatible migration
+- ✅ original run remains preserved, inspectable, and carries superseded_by_run_id
+- ✅ successor run carries supersedes_run_id and starts in "prepared" status
+- ✅ lineage visible in `run.get`, `runs.list`
+- ✅ TypeScript remains thin
+- ✅ no autonomous continuation; no coarse autonomous tools
+
 ## Out of scope
 
 These are intentionally not implemented:

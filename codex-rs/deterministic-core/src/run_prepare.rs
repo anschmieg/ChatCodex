@@ -82,6 +82,10 @@ pub fn prepare(params: &RunPrepareParams) -> Result<(RunPrepareResult, RunState)
         policy_profile: effective_policy,
         finalized_outcome: None,
         reopen_metadata: None,
+        supersedes_run_id: None,
+        superseded_by_run_id: None,
+        supersession_reason: None,
+        superseded_at: None,
         created_at: now.clone(),
         updated_at: now,
     };

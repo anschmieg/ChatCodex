@@ -18,6 +18,7 @@ import {
   PreviewTestPolicyInput,
   FinalizeRunInput,
   ReopenRunInput,
+  SupersedeRunInput,
 } from "./schemas.js";
 
 describe("MCP tool registry invariants", () => {
@@ -54,6 +55,8 @@ describe("MCP tool registry invariants", () => {
       "finalize_run",
       // Milestone 11: deterministic run reopening
       "reopen_run",
+      // Milestone 12: deterministic run supersession
+      "supersede_run",
     ]);
     const actual = new Set(REGISTERED_TOOL_NAMES);
     assert.deepStrictEqual(actual, expected);
@@ -405,6 +408,122 @@ describe("No-hidden-agent regression (Milestone 11)", () => {
       assert.ok(
         method !== "run.reopen",
         `run.reopen must not be a forbidden agent-runtime method`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 12: SupersedeRunInput schema validation tests
+// ---------------------------------------------------------------
+describe("SupersedeRunInput schema (Milestone 12)", () => {
+  it("should accept a minimal supersede request (no new goal)", () => {
+    const schema = z.object(SupersedeRunInput);
+    const result = schema.safeParse({
+      runId: "run-orig",
+      reason: "Scope changed after completion",
+    });
+    assert.ok(result.success, "Minimal supersede request should be valid");
+  });
+
+  it("should accept a supersede request with a new goal", () => {
+    const schema = z.object(SupersedeRunInput);
+    const result = schema.safeParse({
+      runId: "run-orig",
+      newUserGoal: "Fix the same bug with a better approach",
+      reason: "Previous approach failed",
+    });
+    assert.ok(result.success, "Supersede request with new goal should be valid");
+  });
+
+  it("should reject a missing runId", () => {
+    const schema = z.object(SupersedeRunInput);
+    const result = schema.safeParse({ reason: "some reason" });
+    assert.ok(!result.success, "Missing runId should fail validation");
+  });
+
+  it("should reject a missing reason", () => {
+    const schema = z.object(SupersedeRunInput);
+    const result = schema.safeParse({ runId: "run-orig" });
+    assert.ok(!result.success, "Missing reason should fail validation");
+  });
+
+  it("should reject an empty reason", () => {
+    const schema = z.object(SupersedeRunInput);
+    const result = schema.safeParse({ runId: "run-orig", reason: "" });
+    assert.ok(!result.success, "Empty reason should fail validation (min 1)");
+  });
+
+  it("should reject a reason exceeding 500 characters", () => {
+    const schema = z.object(SupersedeRunInput);
+    const result = schema.safeParse({
+      runId: "run-orig",
+      reason: "x".repeat(501),
+    });
+    assert.ok(!result.success, "Reason exceeding 500 chars should fail validation");
+  });
+
+  it("should accept a reason of exactly 500 characters", () => {
+    const schema = z.object(SupersedeRunInput);
+    const result = schema.safeParse({
+      runId: "run-orig",
+      reason: "x".repeat(500),
+    });
+    assert.ok(result.success, "Reason of exactly 500 chars should be valid");
+  });
+
+  it("should reject a newUserGoal exceeding 500 characters", () => {
+    const schema = z.object(SupersedeRunInput);
+    const result = schema.safeParse({
+      runId: "run-orig",
+      reason: "valid reason",
+      newUserGoal: "x".repeat(501),
+    });
+    assert.ok(!result.success, "newUserGoal exceeding 500 chars should fail validation");
+  });
+
+  it("should accept omitted newUserGoal (inherits from original)", () => {
+    const schema = z.object(SupersedeRunInput);
+    const result = schema.safeParse({ runId: "run-orig", reason: "reason" });
+    assert.ok(result.success, "Omitted newUserGoal should be valid (optional)");
+    assert.strictEqual(result.data?.newUserGoal, undefined);
+  });
+});
+
+describe("No-hidden-agent regression (Milestone 12)", () => {
+  it("supersede_run should be registered as a lifecycle tool", () => {
+    assert.ok(
+      REGISTERED_TOOL_NAMES.includes("supersede_run" as (typeof REGISTERED_TOOL_NAMES)[number]),
+      "supersede_run must be in the tool registry",
+    );
+  });
+
+  it("supersede_run is not an autonomous continuation tool", () => {
+    const coarsePatterns = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end"];
+    for (const pattern of coarsePatterns) {
+      assert.ok(
+        !"supersede_run".includes(pattern),
+        `"supersede_run" must not contain autonomous pattern "${pattern}"`,
+      );
+    }
+  });
+
+  it("daemon method run.supersede is not a forbidden agent-runtime method", () => {
+    const forbiddenMethods = [
+      "turn/start",
+      "turn/steer",
+      "review/start",
+      "codex",
+      "codex-reply",
+      "continue_run",
+      "resume_thread",
+      "agent_step",
+      "fix_end_to_end",
+    ];
+    for (const method of forbiddenMethods) {
+      assert.ok(
+        method !== "run.supersede",
+        `run.supersede must not be a forbidden agent-runtime method`,
       );
     }
   });

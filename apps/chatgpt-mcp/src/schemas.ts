@@ -322,3 +322,32 @@ export const ReopenRunInput = {
       "Human-readable reason for reopening the run (required for auditability)",
     ),
 };
+
+// ---------------------------------------------------------------
+// supersede_run  (Milestone 12)
+//
+// Creates a new successor run that explicitly replaces a finalized run.
+// The original run remains preserved with its full audit history.
+// Only finalized runs may be superseded.  No autonomous work is triggered.
+// ---------------------------------------------------------------
+export const SupersedeRunInput = {
+  runId: z
+    .string()
+    .describe(
+      "Run ID of the finalized run to supersede (must be finalized: completed, failed, or abandoned)",
+    ),
+  newUserGoal: z
+    .string()
+    .max(500)
+    .optional()
+    .describe(
+      "Goal for the successor run. When omitted the original run's goal is inherited.",
+    ),
+  reason: z
+    .string()
+    .min(1)
+    .max(500)
+    .describe(
+      "Human-readable reason for supersession (required for auditability)",
+    ),
+};

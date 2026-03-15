@@ -590,6 +590,18 @@ pub struct RunState {
     /// Reopen lineage metadata if this run has been reopened one or more times (Milestone 11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reopen_metadata: Option<ReopenMetadata>,
+    /// The run ID that this run supersedes, if any (Milestone 12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes_run_id: Option<String>,
+    /// The run ID that superseded this run, if any (Milestone 12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by_run_id: Option<String>,
+    /// Human-readable reason this run was superseded or is superseding another (Milestone 12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersession_reason: Option<String>,
+    /// ISO 8601 timestamp of when the supersession occurred (Milestone 12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -614,6 +626,12 @@ pub struct RunSummary {
     /// Number of times this run has been reopened (Milestone 11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reopen_count: Option<u32>,
+    /// Run ID superseded by this run, if any (Milestone 12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes_run_id: Option<String>,
+    /// Run ID that superseded this run, if any (Milestone 12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by_run_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -681,6 +699,18 @@ pub struct RunGetResult {
     /// Reopen lineage metadata if this run has been reopened (Milestone 11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reopen_metadata: Option<ReopenMetadata>,
+    /// The run ID this run supersedes, if any (Milestone 12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes_run_id: Option<String>,
+    /// The run ID that superseded this run, if any (Milestone 12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by_run_id: Option<String>,
+    /// Human-readable reason for the supersession (Milestone 12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersession_reason: Option<String>,
+    /// ISO 8601 timestamp of when supersession occurred (Milestone 12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_at: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -881,4 +911,44 @@ pub struct RunFinalizeResult {
     pub status: String,
     /// Deterministic guidance on what to do next (varies by outcome_kind).
     pub recommended_next_action: String,
+}
+
+// ---------------------------------------------------------------------------
+// run.supersede  (Milestone 12)
+// ---------------------------------------------------------------------------
+
+/// Parameters for `run.supersede` — create a successor run that explicitly
+/// replaces a prior run.
+///
+/// The original run must be finalized before it can be superseded.  Supersession
+/// is deterministic, audited, and does not execute work.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSupersedeParams {
+    /// ID of the finalized run to supersede.
+    pub run_id: String,
+    /// Goal for the new successor run.  When omitted, the original run's goal
+    /// is inherited by the successor.
+    #[serde(default)]
+    pub new_user_goal: Option<String>,
+    /// Human-readable reason for supersession (required for auditability).
+    pub reason: String,
+}
+
+/// Result of `run.supersede`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSupersedeResult {
+    /// ID of the run that was superseded (now carries `superseded_by_run_id`).
+    pub original_run_id: String,
+    /// ID of the newly created successor run (carries `supersedes_run_id`).
+    pub successor_run_id: String,
+    /// ISO 8601 timestamp of when the supersession occurred.
+    pub superseded_at: String,
+    /// Status of the new successor run after creation.
+    pub successor_status: String,
+    /// Deterministic guidance on what to do next.
+    pub recommended_next_action: String,
+    /// Recommended MCP tool to invoke next.
+    pub recommended_tool: String,
 }

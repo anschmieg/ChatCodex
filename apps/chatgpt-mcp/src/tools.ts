@@ -30,6 +30,7 @@ import {
   PreviewTestPolicyInput,
   FinalizeRunInput,
   ReopenRunInput,
+  SupersedeRunInput,
 } from "./schemas.js";
 
 /**
@@ -74,6 +75,8 @@ export const REGISTERED_TOOL_NAMES = [
   "finalize_run",
   // Milestone 11: deterministic run reopening
   "reopen_run",
+  // Milestone 12: deterministic run supersession
+  "supersede_run",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -374,6 +377,23 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
     async (params) => {
       const result = await client.call("run.reopen", {
         runId: params.runId,
+        reason: params.reason,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- supersede_run (Milestone 12) ----
+  server.tool(
+    "supersede_run",
+    "Create a new successor run that explicitly replaces a finalized run. The original run remains preserved with its full audit history and plan. Only finalized runs (completed, failed, or abandoned) may be superseded. Supersession does not execute work; it creates a successor run in 'prepared' status and records lineage metadata on both runs.",
+    SupersedeRunInput,
+    async (params) => {
+      const result = await client.call("run.supersede", {
+        runId: params.runId,
+        newUserGoal: params.newUserGoal,
         reason: params.reason,
       });
       return {

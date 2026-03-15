@@ -471,6 +471,40 @@ Reopen a previously finalized run for deterministic continuation.
 - Prior plan, completed steps, and audit history are preserved
 - Reopen metadata is visible in `get_run_state`, `refresh_run_state`, and `list_runs`
 
+## supersede_run (Milestone 12)
+
+Create a new successor run that explicitly replaces a finalized run with preserved lineage.
+
+### Input
+
+- `runId`: string — Run ID of the finalized run to supersede (must be `finalized:completed`, `finalized:failed`, or `finalized:abandoned`)
+- `newUserGoal`: string (optional, max 500 chars) — goal for the successor run; if omitted, the original run's goal is inherited
+- `reason`: string — human-readable reason for supersession (required, 1–500 chars)
+
+### Returns
+
+- `originalRunId` — the run ID that was superseded
+- `successorRunId` — the newly created successor run ID
+- `supersededAt` — ISO 8601 timestamp of supersession
+- `successorStatus` — always `"prepared"`
+- `recommendedNextAction` — deterministic guidance string
+- `recommendedTool` — always `"refresh_run_state"`
+
+### Behavior
+
+- Only finalized runs may be superseded; active, prepared, or awaiting-approval runs are rejected deterministically
+- Supersession creates a **new** run in `"prepared"` status — it does **not** reactivate the original run
+- The original run remains finalized with its full history, plan, and outcome preserved
+- The original run is marked with `supersededByRunId` pointing to the successor
+- The successor run is created with `supersedesRunId` pointing to the original
+- Both runs carry the same `supersessionReason` and `supersededAt` timestamp
+- The successor inherits workspace, focus paths, and policy profile from the original
+- The successor starts with an **empty plan** (a clean slate for ChatGPT to replan)
+- Appends `run_superseded` audit entry to the original run
+- Appends `run_created_from_supersession` audit entry to the successor run
+- Does **not** execute work or trigger any autonomous follow-up
+- Lineage is visible in `get_run_state` and `list_runs`
+
 ## Forbidden public tools
 
 Do not expose:

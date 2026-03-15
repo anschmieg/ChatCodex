@@ -117,6 +117,11 @@ impl Store {
             ("runs", "finalized_outcome", "TEXT"),
             // Milestone 11 columns
             ("runs", "reopen_metadata", "TEXT"),
+            // Milestone 12 columns
+            ("runs", "supersedes_run_id", "TEXT"),
+            ("runs", "superseded_by_run_id", "TEXT"),
+            ("runs", "supersession_reason", "TEXT"),
+            ("runs", "superseded_at", "TEXT"),
         ];
 
         for (table, column, def) in migrations {
@@ -197,8 +202,9 @@ impl Store {
                  recommended_next_action, recommended_tool,
                  latest_diff_summary, latest_test_result, focus_paths, warnings,
                  retryable_action, policy_profile, outcome_kind, finalized_outcome,
-                 reopen_metadata, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                 reopen_metadata, supersedes_run_id, superseded_by_run_id,
+                 supersession_reason, superseded_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -221,6 +227,10 @@ impl Store {
                 outcome_kind,
                 finalized_outcome_json,
                 reopen_metadata_json,
+                state.supersedes_run_id,
+                state.superseded_by_run_id,
+                state.supersession_reason,
+                state.superseded_at,
                 state.created_at,
                 state.updated_at,
             ],
@@ -240,7 +250,8 @@ impl Store {
                         recommended_next_action, recommended_tool,
                         latest_diff_summary, latest_test_result, focus_paths, warnings,
                         retryable_action, policy_profile, finalized_outcome,
-                        reopen_metadata, created_at, updated_at
+                        reopen_metadata, supersedes_run_id, superseded_by_run_id,
+                        supersession_reason, superseded_at, created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
             .context("failed to prepare statement")?;
@@ -352,6 +363,12 @@ impl Store {
                         )
                     })?;
 
+                // Milestone 12: supersession lineage fields.
+                let supersedes_run_id: Option<String> = row.get(20)?;
+                let superseded_by_run_id: Option<String> = row.get(21)?;
+                let supersession_reason: Option<String> = row.get(22)?;
+                let superseded_at: Option<String> = row.get(23)?;
+
                 Ok(RunState {
                     run_id: row.get(0)?,
                     workspace_id: row.get(1)?,
@@ -373,8 +390,12 @@ impl Store {
                     policy_profile,
                     finalized_outcome,
                     reopen_metadata,
-                    created_at: row.get(20)?,
-                    updated_at: row.get(21)?,
+                    supersedes_run_id,
+                    superseded_by_run_id,
+                    supersession_reason,
+                    superseded_at,
+                    created_at: row.get(24)?,
+                    updated_at: row.get(25)?,
                 })
             })
             .context("failed to query run")?;
@@ -537,7 +558,8 @@ impl Store {
 
         let sql = format!(
             "SELECT run_id, workspace_id, user_goal, status, current_step, plan,
-                    created_at, updated_at, outcome_kind, reopen_metadata
+                    created_at, updated_at, outcome_kind, reopen_metadata,
+                    supersedes_run_id, superseded_by_run_id
              FROM runs {where_clause}
              ORDER BY updated_at DESC
              LIMIT ?1"
@@ -550,6 +572,7 @@ impl Store {
             //  0: run_id  1: workspace_id  2: user_goal  3: status
             //  4: current_step  5: plan  6: created_at  7: updated_at
             //  8: outcome_kind  9: reopen_metadata
+            // 10: supersedes_run_id  11: superseded_by_run_id
             let plan_json: String = row.get(5)?;
             let total_steps: usize = serde_json::from_str::<Vec<String>>(&plan_json)
                 .map(|v| v.len())
@@ -569,6 +592,8 @@ impl Store {
                 total_steps,
                 outcome_kind: row.get(8)?,
                 reopen_count,
+                supersedes_run_id: row.get(10)?,
+                superseded_by_run_id: row.get(11)?,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
@@ -682,6 +707,10 @@ mod tests {
             policy_profile: RunPolicy::default(),
             finalized_outcome: None,
             reopen_metadata: None,
+            supersedes_run_id: None,
+            superseded_by_run_id: None,
+            supersession_reason: None,
+            superseded_at: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -1923,6 +1952,144 @@ mod tests {
         let s2 = summaries.iter().find(|s| s.run_id == "r_list_2").unwrap();
         assert!(s1.reopen_count.is_none());
         assert_eq!(s2.reopen_count, Some(3));
+    }
+
+    // ---- Milestone 12: supersession lineage persistence tests ----
+
+    /// Verify supersession lineage fields roundtrip through SQLite.
+    #[test]
+    fn supersession_lineage_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+
+        // Original run: superseded by "r_successor"
+        let mut original = make_run_state("r_orig", "finalized:completed");
+        original.superseded_by_run_id = Some("r_successor".into());
+        original.supersession_reason = Some("scope changed".into());
+        original.superseded_at = Some("2024-08-01T12:00:00Z".into());
+        store.save_run(&original).unwrap();
+
+        // Successor run: supersedes "r_orig"
+        let mut successor = make_run_state("r_successor", "prepared");
+        successor.supersedes_run_id = Some("r_orig".into());
+        successor.supersession_reason = Some("scope changed".into());
+        successor.superseded_at = Some("2024-08-01T12:00:00Z".into());
+        store.save_run(&successor).unwrap();
+
+        // Load and verify original.
+        let loaded_orig = store.get_run("r_orig").unwrap().unwrap();
+        assert_eq!(loaded_orig.superseded_by_run_id.as_deref(), Some("r_successor"));
+        assert_eq!(loaded_orig.supersession_reason.as_deref(), Some("scope changed"));
+        assert_eq!(loaded_orig.superseded_at.as_deref(), Some("2024-08-01T12:00:00Z"));
+        assert!(loaded_orig.supersedes_run_id.is_none());
+
+        // Load and verify successor.
+        let loaded_succ = store.get_run("r_successor").unwrap().unwrap();
+        assert_eq!(loaded_succ.supersedes_run_id.as_deref(), Some("r_orig"));
+        assert_eq!(loaded_succ.supersession_reason.as_deref(), Some("scope changed"));
+        assert_eq!(loaded_succ.superseded_at.as_deref(), Some("2024-08-01T12:00:00Z"));
+        assert!(loaded_succ.superseded_by_run_id.is_none());
+    }
+
+    /// Verify that supersedes_run_id and superseded_by_run_id are None by default.
+    #[test]
+    fn supersession_fields_default_to_none() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_no_super", "active");
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_no_super").unwrap().unwrap();
+        assert!(loaded.supersedes_run_id.is_none());
+        assert!(loaded.superseded_by_run_id.is_none());
+        assert!(loaded.supersession_reason.is_none());
+        assert!(loaded.superseded_at.is_none());
+    }
+
+    /// Verify list_runs includes supersession lineage fields.
+    #[test]
+    fn list_runs_includes_supersession_lineage() {
+        let store = Store::open_in_memory().unwrap();
+
+        let state_plain = make_run_state("r_plain", "active");
+        store.save_run(&state_plain).unwrap();
+
+        let mut state_superseded = make_run_state("r_superseded", "finalized:completed");
+        state_superseded.superseded_by_run_id = Some("r_new".into());
+        store.save_run(&state_superseded).unwrap();
+
+        let mut state_successor = make_run_state("r_new", "prepared");
+        state_successor.supersedes_run_id = Some("r_superseded".into());
+        store.save_run(&state_successor).unwrap();
+
+        let summaries = store.list_runs(10, None, None).unwrap();
+        let plain = summaries.iter().find(|s| s.run_id == "r_plain").unwrap();
+        let superseded = summaries.iter().find(|s| s.run_id == "r_superseded").unwrap();
+        let successor = summaries.iter().find(|s| s.run_id == "r_new").unwrap();
+
+        assert!(plain.supersedes_run_id.is_none());
+        assert!(plain.superseded_by_run_id.is_none());
+
+        assert_eq!(superseded.superseded_by_run_id.as_deref(), Some("r_new"));
+        assert!(superseded.supersedes_run_id.is_none());
+
+        assert_eq!(successor.supersedes_run_id.as_deref(), Some("r_superseded"));
+        assert!(successor.superseded_by_run_id.is_none());
+    }
+
+    /// Verify that migration from an older schema (pre-M12) correctly handles
+    /// the new supersession columns being absent (NULL default).
+    #[test]
+    fn migration_m12_columns_default_to_null() {
+        use rusqlite::Connection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("runs.db");
+
+        // Simulate a Milestone 11 schema (no M12 columns).
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    run_id               TEXT PRIMARY KEY,
+                    workspace_id         TEXT NOT NULL,
+                    user_goal            TEXT NOT NULL,
+                    status               TEXT NOT NULL,
+                    plan                 TEXT NOT NULL DEFAULT '[]',
+                    current_step         INTEGER NOT NULL DEFAULT 0,
+                    completed_steps      TEXT NOT NULL DEFAULT '[]',
+                    pending_steps        TEXT NOT NULL DEFAULT '[]',
+                    last_action          TEXT,
+                    last_observation     TEXT,
+                    recommended_next_action TEXT,
+                    recommended_tool     TEXT,
+                    latest_diff_summary  TEXT,
+                    latest_test_result   TEXT,
+                    focus_paths          TEXT NOT NULL DEFAULT '[]',
+                    warnings             TEXT NOT NULL DEFAULT '[]',
+                    retryable_action     TEXT,
+                    policy_profile       TEXT NOT NULL DEFAULT '{}',
+                    outcome_kind         TEXT,
+                    finalized_outcome    TEXT,
+                    reopen_metadata      TEXT,
+                    created_at           TEXT NOT NULL,
+                    updated_at           TEXT NOT NULL
+                );",
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO runs (run_id, workspace_id, user_goal, status, plan, created_at, updated_at)
+                 VALUES ('r_m11', '/tmp/ws', 'old goal', 'active', '[]', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                [],
+            ).unwrap();
+        }
+
+        // Open with migration — should add M12 columns.
+        let store = Store::open(dir.path()).unwrap();
+        let loaded = store.get_run("r_m11").unwrap().unwrap();
+
+        // M12 columns must have NULL defaults.
+        assert!(loaded.supersedes_run_id.is_none());
+        assert!(loaded.superseded_by_run_id.is_none());
+        assert!(loaded.supersession_reason.is_none());
+        assert!(loaded.superseded_at.is_none());
     }
 }
 

@@ -38,6 +38,8 @@ pub fn dispatch(
         Method::RunFinalize => handle_run_finalize(params, store),
         // Milestone 11: deterministic run reopening
         Method::RunReopen => handle_run_reopen(params, store),
+        // Milestone 12: deterministic run supersession
+        Method::RunSupersede => handle_run_supersede(params, store),
     }
 }
 
@@ -438,6 +440,10 @@ fn handle_run_get(
     let effective_policy = state.policy_profile.clone();
     let finalized_outcome = state.finalized_outcome.clone();
     let reopen_metadata = state.reopen_metadata.clone();
+    let supersedes_run_id = state.supersedes_run_id.clone();
+    let superseded_by_run_id = state.superseded_by_run_id.clone();
+    let supersession_reason = state.supersession_reason.clone();
+    let superseded_at = state.superseded_at.clone();
 
     let result = RunGetResult {
         run_state: state.clone(),
@@ -451,6 +457,10 @@ fn handle_run_get(
         effective_policy,
         finalized_outcome,
         reopen_metadata,
+        supersedes_run_id,
+        superseded_by_run_id,
+        supersession_reason,
+        superseded_at,
     };
     Ok((serde_json::to_value(result)?, Some(state)))
 }
@@ -637,6 +647,65 @@ fn handle_run_reopen(
     Ok((serde_json::to_value(result)?, Some(state)))
 }
 
+// ---- Milestone 12: deterministic run supersession ----
+
+/// Supersede a finalized run by creating a new successor run.
+///
+/// Deterministic lifecycle rules (enforced in `deterministic_core::run_supersede`):
+/// - Only finalized runs (`status` starts with `"finalized:"`) may be superseded.
+/// - Active, prepared, or awaiting-approval runs are rejected.
+/// - Supersession creates a new run; it does not mutate the original run back to active.
+/// - Prior audit history and plan on the original run are preserved.
+/// - Both the original and successor runs record lineage metadata.
+fn handle_run_supersede(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunSupersedeParams = serde_json::from_value(params)?;
+    let mut original_state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let successor_run_id = deterministic_core::run_supersede::make_successor_run_id(&p.run_id);
+
+    let (result, successor_state) =
+        deterministic_core::run_supersede::supersede(&p, &mut original_state, &successor_run_id)?;
+
+    // Persist both the updated original and the new successor.
+    store.save_run(&original_state)?;
+    store.save_run(&successor_state)?;
+
+    // Audit trail: original run superseded.
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "run_superseded",
+        &format!(
+            "Run superseded by '{}': reason={}",
+            successor_run_id, p.reason
+        ),
+        Some(&format!(
+            "{{\"superseded_by\":\"{}\",\"reason\":\"{}\"}}",
+            successor_run_id, p.reason
+        )),
+    );
+
+    // Audit trail: successor run created from supersession.
+    let _ = store.append_audit_entry(
+        &successor_run_id,
+        "run_created_from_supersession",
+        &format!(
+            "Successor run created, supersedes '{}': reason={}",
+            p.run_id, p.reason
+        ),
+        Some(&format!(
+            "{{\"supersedes\":\"{}\",\"reason\":\"{}\"}}",
+            p.run_id, p.reason
+        )),
+    );
+
+    Ok((serde_json::to_value(result)?, Some(successor_state)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,6 +734,10 @@ mod tests {
             policy_profile: RunPolicy::default(),
             finalized_outcome: None,
             reopen_metadata: None,
+            supersedes_run_id: None,
+            superseded_by_run_id: None,
+            supersession_reason: None,
+            superseded_at: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -1192,5 +1265,155 @@ mod tests {
         let meta = get_result.reopen_metadata.as_ref().unwrap();
         assert_eq!(meta.reopen_count, 1);
         assert_eq!(meta.reopened_from_outcome_kind, "completed");
+    }
+
+    // ---- Milestone 12: run supersession handler tests ----
+
+    #[test]
+    fn run_supersede_completed_run_creates_successor() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_sup_1");
+        store.save_run(&state).unwrap();
+        finalize_run_in_store(&store, "r_sup_1", "completed");
+
+        let params = serde_json::json!({
+            "runId": "r_sup_1",
+            "reason": "scope changed after completion"
+        });
+        let (val, successor_state) = dispatch(Method::RunSupersede, params, &store).unwrap();
+        let result: RunSupersedeResult = serde_json::from_value(val).unwrap();
+
+        assert_eq!(result.original_run_id, "r_sup_1");
+        assert!(!result.successor_run_id.is_empty());
+        assert_eq!(result.successor_status, "prepared");
+        assert!(!result.superseded_at.is_empty());
+        assert_eq!(result.recommended_tool, "refresh_run_state");
+
+        // Original run should be marked superseded.
+        let orig = store.get_run("r_sup_1").unwrap().unwrap();
+        assert!(orig.status.starts_with("finalized:"));
+        assert_eq!(
+            orig.superseded_by_run_id.as_deref(),
+            Some(result.successor_run_id.as_str())
+        );
+        assert_eq!(
+            orig.supersession_reason.as_deref(),
+            Some("scope changed after completion")
+        );
+
+        // Successor run should be in "prepared" status.
+        let successor = store.get_run(&result.successor_run_id).unwrap().unwrap();
+        assert_eq!(successor.status, "prepared");
+        assert_eq!(successor.supersedes_run_id.as_deref(), Some("r_sup_1"));
+
+        // dispatch returns successor state
+        assert!(successor_state.is_some());
+        assert_eq!(successor_state.unwrap().run_id, result.successor_run_id);
+    }
+
+    #[test]
+    fn run_supersede_failed_run_creates_successor() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_sup_failed");
+        store.save_run(&state).unwrap();
+        finalize_run_in_store(&store, "r_sup_failed", "failed");
+
+        let params = serde_json::json!({
+            "runId": "r_sup_failed",
+            "newUserGoal": "fix with better approach",
+            "reason": "previous approach failed"
+        });
+        let (val, _) = dispatch(Method::RunSupersede, params, &store).unwrap();
+        let result: RunSupersedeResult = serde_json::from_value(val).unwrap();
+
+        let successor = store.get_run(&result.successor_run_id).unwrap().unwrap();
+        assert_eq!(successor.user_goal, "fix with better approach");
+        assert_eq!(successor.supersedes_run_id.as_deref(), Some("r_sup_failed"));
+    }
+
+    #[test]
+    fn run_supersede_active_run_rejected() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_sup_active");
+        store.save_run(&state).unwrap();
+        // DO NOT finalize — status stays "active"
+
+        let params = serde_json::json!({
+            "runId": "r_sup_active",
+            "reason": "trying to supersede active run"
+        });
+        let err = dispatch(Method::RunSupersede, params, &store).unwrap_err();
+        assert!(err.to_string().contains("cannot be superseded"));
+        // Original run must be unchanged.
+        let orig = store.get_run("r_sup_active").unwrap().unwrap();
+        assert_eq!(orig.status, "active");
+        assert!(orig.superseded_by_run_id.is_none());
+    }
+
+    #[test]
+    fn run_supersede_unknown_run_rejected() {
+        let store = Store::open_in_memory().unwrap();
+        let params = serde_json::json!({
+            "runId": "nonexistent",
+            "reason": "should fail"
+        });
+        let err = dispatch(Method::RunSupersede, params, &store).unwrap_err();
+        assert!(err.to_string().contains("unknown run"));
+    }
+
+    #[test]
+    fn run_supersede_audit_trail_appended() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_sup_audit");
+        store.save_run(&state).unwrap();
+        finalize_run_in_store(&store, "r_sup_audit", "completed");
+
+        let params = serde_json::json!({
+            "runId": "r_sup_audit",
+            "reason": "audit test"
+        });
+        let (val, _) = dispatch(Method::RunSupersede, params, &store).unwrap();
+        let result: RunSupersedeResult = serde_json::from_value(val).unwrap();
+
+        // Audit entries should have been appended to both runs.
+        let orig_audit = store.get_audit_entries("r_sup_audit", 50).unwrap();
+        let orig_superseded_event = orig_audit.iter().find(|e| e.event_kind == "run_superseded");
+        assert!(orig_superseded_event.is_some(), "run_superseded audit entry missing for original");
+
+        let succ_audit = store.get_audit_entries(&result.successor_run_id, 50).unwrap();
+        let succ_created_event = succ_audit
+            .iter()
+            .find(|e| e.event_kind == "run_created_from_supersession");
+        assert!(succ_created_event.is_some(), "run_created_from_supersession audit entry missing for successor");
+    }
+
+    #[test]
+    fn run_supersede_lineage_visible_in_run_get() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_sup_get_orig");
+        store.save_run(&state).unwrap();
+        finalize_run_in_store(&store, "r_sup_get_orig", "completed");
+
+        let params = serde_json::json!({
+            "runId": "r_sup_get_orig",
+            "reason": "checking run.get lineage"
+        });
+        let (val, _) = dispatch(Method::RunSupersede, params, &store).unwrap();
+        let result: RunSupersedeResult = serde_json::from_value(val).unwrap();
+
+        // run.get on original should expose superseded_by_run_id
+        let get_orig = serde_json::json!({ "runId": "r_sup_get_orig" });
+        let (orig_val, _) = dispatch(Method::RunGet, get_orig, &store).unwrap();
+        let orig_get: RunGetResult = serde_json::from_value(orig_val).unwrap();
+        assert_eq!(
+            orig_get.superseded_by_run_id.as_deref(),
+            Some(result.successor_run_id.as_str())
+        );
+
+        // run.get on successor should expose supersedes_run_id
+        let get_succ = serde_json::json!({ "runId": result.successor_run_id });
+        let (succ_val, _) = dispatch(Method::RunGet, get_succ, &store).unwrap();
+        let succ_get: RunGetResult = serde_json::from_value(succ_val).unwrap();
+        assert_eq!(succ_get.supersedes_run_id.as_deref(), Some("r_sup_get_orig"));
     }
 }

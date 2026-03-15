@@ -166,9 +166,35 @@ ChatGPT-hosted model
 - 10 new TypeScript tests (8 schema validation + 2 no-hidden-agent regression)
 - No backend model calls; no autonomous continuation; no coarse tools introduced
 
+### Milestone 12: Deterministic Run Supersession and Replacement Lineage
+- Added `supersedes_run_id`, `superseded_by_run_id`, `supersession_reason`, `superseded_at` fields to `RunState` (all `Option<String>`, Milestone 12)
+- Added the same lineage fields to `RunGetResult` for direct inspection
+- Added `supersedes_run_id` and `superseded_by_run_id` to `RunSummary` for concise run listings
+- Added `RunSupersedeParams` and `RunSupersedeResult` to `deterministic-protocol`
+- Added `run.supersede` internal daemon method with deterministic lifecycle rules:
+  - Only finalized runs (`finalized:completed`, `finalized:failed`, `finalized:abandoned`) may be superseded
+  - Active, prepared, or awaiting-approval runs are rejected deterministically
+  - Supersession creates a new successor run in `"prepared"` status
+  - Original run is marked with `superseded_by_run_id` (status remains finalized; history and plan preserved)
+  - Successor run carries `supersedes_run_id` pointing to the original
+  - Both runs share `supersession_reason` and `superseded_at` timestamp
+  - Successor inherits workspace, focus paths, and policy profile from original
+  - Successor starts with an empty plan (clean slate for ChatGPT to replan)
+  - Supersession appends `run_superseded` (original) and `run_created_from_supersession` (successor) audit entries
+  - No autonomous follow-up work is triggered
+- Added `supersede_run` MCP tool in TypeScript (lifecycle tool, not a coarse autonomous tool)
+- TypeScript schema: `SupersedeRunInput` (Zod validated) — `runId`, `newUserGoal?` (max 500 chars, optional), `reason` (required, 1–500 chars)
+- SQLite migration adds `supersedes_run_id TEXT`, `superseded_by_run_id TEXT`, `supersession_reason TEXT`, `superseded_at TEXT` columns with backward compatibility (NULL default)
+- Lineage metadata is visible in `run.get`, `runs.list`, and audit trail entries
+- 12 new Rust core tests (completed/failed/abandoned supersession, active/prepared rejection, workspace/policy inheritance, history preservation, empty plan start, goal fallback, successor ID format)
+- 8 new Rust handler tests (create successor, custom goal, rejection, unknown run, audit trail, run.get lineage)
+- 5 new Rust persistence tests (roundtrip, default null, list_runs lineage, M12 migration)
+- 12 new TypeScript tests (9 schema validation + 3 no-hidden-agent regression)
+- No backend model calls; no autonomous continuation; no coarse tools introduced
+
 ## Current Implementation Surface
 
-### Public MCP Tools (18)
+### Public MCP Tools (19)
 
 | Tool | Description |
 |------|-------------|
@@ -190,8 +216,9 @@ ChatGPT-hosted model
 | `preview_test_policy` | Preview test-run policy decision without executing tests (read-only, Milestone 9) |
 | `finalize_run` | Explicitly close a run with a structured outcome record (Milestone 10) |
 | `reopen_run` | Reopen a finalized run for deterministic continuation (Milestone 11) |
+| `supersede_run` | Create a successor run that explicitly replaces a finalized run with preserved lineage (Milestone 12) |
 
-### Internal Daemon Methods (18)
+### Internal Daemon Methods (19)
 
 | Method | Description |
 |--------|-------------|
@@ -213,6 +240,7 @@ ChatGPT-hosted model
 | `tests.preflight` | Evaluate test-run policy without executing tests (read-only, Milestone 9) |
 | `run.finalize` | Close a run with structured outcome record (Milestone 10) |
 | `run.reopen` | Reopen a finalized run for deterministic continuation (Milestone 11) |
+| `run.supersede` | Create a successor run that supersedes a finalized run with preserved lineage (Milestone 12) |
 
 ### Run State Model
 
@@ -229,6 +257,7 @@ ChatGPT-hosted model
 - `policyProfile` (Milestone 8) — effective `RunPolicy` governing the run
 - `finalizedOutcome` (Milestone 10) — structured outcome record for closed runs
 - `reopenMetadata` (Milestone 11) — compact reopen lineage metadata for reopened runs
+- `supersedes_run_id` / `superseded_by_run_id` / `supersession_reason` / `superseded_at` (Milestone 12) — supersession lineage
 - `warnings`
 - `createdAt`, `updatedAt`
 

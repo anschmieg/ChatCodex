@@ -88,6 +88,10 @@ mod tests {
             policy_profile: RunPolicy::default(),
             finalized_outcome: None,
             reopen_metadata: None,
+            supersedes_run_id: None,
+            superseded_by_run_id: None,
+            supersession_reason: None,
+            superseded_at: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

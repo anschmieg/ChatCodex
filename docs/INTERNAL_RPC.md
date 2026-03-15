@@ -126,6 +126,43 @@ Returns `RunReopenResult`:
 - `recommendedNextAction` — deterministic guidance string
 - `recommendedTool` — `"refresh_run_state"` (always)
 
+### Milestone 12 methods
+
+* `run.supersede` — create a successor run that explicitly replaces a finalized run with preserved lineage
+
+Only finalized runs (`finalized:completed`, `finalized:failed`, `finalized:abandoned`) may be superseded.
+Active, prepared, or awaiting-approval runs cannot be superseded.
+Supersession does not execute work; it creates a new run in `"prepared"` status,
+marks the original run with `superseded_by_run_id`, and appends audit entries to both runs.
+
+#### `run.supersede` params
+
+```json
+{
+  "runId": "run_abc",
+  "newUserGoal": "Fix the same bug with a better approach",
+  "reason": "Previous approach failed; trying fresh"
+}
+```
+
+`reason` is required (min 1 character) for auditability.
+`newUserGoal` is optional; when omitted the original run's goal is inherited.
+
+Returns `RunSupersedeResult`:
+- `originalRunId` — the run that was superseded
+- `successorRunId` — the newly created successor run ID
+- `supersededAt` — ISO 8601 timestamp
+- `successorStatus` — always `"prepared"`
+- `recommendedNextAction` — deterministic guidance string
+- `recommendedTool` — `"refresh_run_state"` (always)
+
+Lifecycle rules enforced by the daemon:
+- Original run remains finalized; its plan, completed steps, outcome, and audit history are all preserved
+- Successor run inherits workspace, focus paths, and policy profile from the original
+- Successor run starts with an empty plan (clean slate for replan)
+- `run_superseded` audit entry appended to the original run
+- `run_created_from_supersession` audit entry appended to the successor run
+
 ## Forbidden internal methods
 
 Do not implement or surface:
