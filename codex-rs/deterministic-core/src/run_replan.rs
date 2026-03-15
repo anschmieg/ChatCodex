@@ -43,7 +43,7 @@ pub fn replan(params: &RunReplanParams, state: &mut RunState) -> Result<RunRepla
     let (recommended_action, recommended_tool) = if state.pending_steps.is_empty() {
         state.status = "done".to_string();
         (
-            "All steps complete — review diff and finalise.".to_string(),
+            "All steps complete — review diff and finalize.".to_string(),
             "show_diff".to_string(),
         )
     } else {
