@@ -814,5 +814,186 @@ mod tests {
         let reloaded = store.get_run("r_m3").unwrap().unwrap();
         assert_eq!(reloaded.focus_paths, vec!["src/"]);
     }
+
+    // ---- Milestone 6: retryable action persistence tests ----
+
+    #[test]
+    fn retryable_action_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_retry", "awaiting_approval");
+        state.retryable_action = Some(RetryableAction {
+            kind: "patch.apply".into(),
+            summary: "Edit src/main.rs".into(),
+            payload: Some(r#"{"run_id":"r_retry","edits":[]}"#.into()),
+            retryable_reason: "Blocked by approval policy".into(),
+            is_valid: true,
+            is_recommended: false,
+            invalidation_reason: None,
+            recommended_tool: "apply_patch".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+        });
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_retry").unwrap().unwrap();
+        let ra = loaded.retryable_action.as_ref().unwrap();
+        assert_eq!(ra.kind, "patch.apply");
+        assert_eq!(ra.summary, "Edit src/main.rs");
+        assert!(ra.is_valid);
+        assert!(!ra.is_recommended);
+        assert_eq!(ra.recommended_tool, "apply_patch");
+        assert!(ra.payload.is_some());
+    }
+
+    #[test]
+    fn retryable_action_null_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_null", "active");
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_null").unwrap().unwrap();
+        assert!(loaded.retryable_action.is_none());
+    }
+
+    #[test]
+    fn retryable_action_update_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_upd", "awaiting_approval");
+        state.retryable_action = Some(RetryableAction {
+            kind: "tests.run".into(),
+            summary: "Run make test".into(),
+            payload: None,
+            retryable_reason: "Blocked".into(),
+            is_valid: true,
+            is_recommended: false,
+            invalidation_reason: None,
+            recommended_tool: "run_tests".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+        });
+        store.save_run(&state).unwrap();
+
+        // Simulate denial: invalidate the retryable action.
+        if let Some(ref mut ra) = state.retryable_action {
+            ra.is_valid = false;
+            ra.is_recommended = false;
+            ra.invalidation_reason = Some("Denied: too risky".into());
+        }
+        state.status = "blocked".into();
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_upd").unwrap().unwrap();
+        let ra = loaded.retryable_action.as_ref().unwrap();
+        assert!(!ra.is_valid);
+        assert_eq!(ra.invalidation_reason.as_deref(), Some("Denied: too risky"));
+    }
+
+    #[test]
+    fn retryable_action_cleared_after_success() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_clr", "active");
+        state.retryable_action = Some(RetryableAction {
+            kind: "patch.apply".into(),
+            summary: "Edit file".into(),
+            payload: None,
+            retryable_reason: "Blocked".into(),
+            is_valid: true,
+            is_recommended: true,
+            invalidation_reason: None,
+            recommended_tool: "apply_patch".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+        });
+        store.save_run(&state).unwrap();
+
+        // Simulate successful patch: clear retryable action.
+        state.retryable_action = None;
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_clr").unwrap().unwrap();
+        assert!(loaded.retryable_action.is_none());
+    }
+
+    #[test]
+    fn migration_from_m5_adds_retryable_action_column() {
+        use rusqlite::Connection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("runs.db");
+
+        // Create Milestone 5 schema (without retryable_action column).
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    run_id                   TEXT PRIMARY KEY,
+                    workspace_id             TEXT NOT NULL,
+                    user_goal                TEXT NOT NULL,
+                    status                   TEXT NOT NULL,
+                    plan                     TEXT NOT NULL,
+                    current_step             INTEGER NOT NULL DEFAULT 0,
+                    completed_steps          TEXT NOT NULL DEFAULT '[]',
+                    pending_steps            TEXT NOT NULL DEFAULT '[]',
+                    last_action              TEXT,
+                    last_observation         TEXT,
+                    recommended_next_action  TEXT,
+                    recommended_tool         TEXT,
+                    latest_diff_summary      TEXT,
+                    latest_test_result       TEXT,
+                    focus_paths              TEXT NOT NULL DEFAULT '[]',
+                    warnings                 TEXT NOT NULL DEFAULT '[]',
+                    created_at               TEXT NOT NULL,
+                    updated_at               TEXT NOT NULL
+                );
+                CREATE TABLE approvals (
+                    approval_id         TEXT PRIMARY KEY,
+                    run_id              TEXT NOT NULL,
+                    action_description  TEXT NOT NULL,
+                    risk_reason         TEXT NOT NULL,
+                    policy_rationale    TEXT NOT NULL DEFAULT '',
+                    status              TEXT NOT NULL DEFAULT 'pending',
+                    decision            TEXT,
+                    decision_reason     TEXT,
+                    created_at          TEXT NOT NULL,
+                    resolved_at         TEXT,
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+                );",
+            )
+            .unwrap();
+
+            conn.execute(
+                "INSERT INTO runs (run_id, workspace_id, user_goal, status, plan, current_step,
+                                   completed_steps, pending_steps, focus_paths, warnings,
+                                   created_at, updated_at)
+                 VALUES ('r_m5', '/tmp/ws', 'fix', 'active', '[\"step 1\"]', 0,
+                         '[]', '[\"step 1\"]', '[]', '[]',
+                         '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Open with Store — should migrate and add retryable_action column.
+        let store = Store::open(dir.path()).unwrap();
+        let loaded = store.get_run("r_m5").unwrap().unwrap();
+        // retryable_action should default to None.
+        assert!(loaded.retryable_action.is_none());
+
+        // Should be able to save a run with retryable_action.
+        let mut updated = loaded;
+        updated.retryable_action = Some(RetryableAction {
+            kind: "patch.apply".into(),
+            summary: "Edit file".into(),
+            payload: None,
+            retryable_reason: "Blocked".into(),
+            is_valid: true,
+            is_recommended: false,
+            invalidation_reason: None,
+            recommended_tool: "apply_patch".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+        });
+        store.save_run(&updated).unwrap();
+
+        let reloaded = store.get_run("r_m5").unwrap().unwrap();
+        let ra = reloaded.retryable_action.as_ref().unwrap();
+        assert_eq!(ra.kind, "patch.apply");
+    }
 }
 

@@ -290,4 +290,110 @@ mod tests {
             assert_eq!(tool, expected_tool, "step '{step}' should map to '{expected_tool}'");
         }
     }
+
+    // ---- Milestone 6: retryable action during replan ----
+
+    fn make_retryable_action() -> deterministic_protocol::RetryableAction {
+        deterministic_protocol::RetryableAction {
+            kind: "patch.apply".into(),
+            summary: "Edit src/main.rs".into(),
+            payload: Some(r#"{"run_id":"r1","edits":[]}"#.into()),
+            retryable_reason: "Blocked by approval policy".into(),
+            is_valid: true,
+            is_recommended: true,
+            invalidation_reason: None,
+            recommended_tool: "apply_patch".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn replan_with_failure_invalidates_retryable_action() {
+        let mut state = make_state();
+        state.retryable_action = Some(make_retryable_action());
+
+        let params = RunReplanParams {
+            run_id: "r1".into(),
+            reason: "tests failed".into(),
+            new_evidence: vec![],
+            failure_context: Some("compilation error".into()),
+        };
+        let result = replan(&params, &mut state).unwrap();
+
+        // Retryable action should be invalidated.
+        let ra = result.retryable_action.as_ref().unwrap();
+        assert!(!ra.is_valid);
+        assert!(!ra.is_recommended);
+        assert!(ra.invalidation_reason.as_deref().unwrap().contains("failure context"));
+
+        // Replan delta should mention invalidation.
+        assert!(result.replan_delta.as_deref().unwrap().contains("invalidated"));
+    }
+
+    #[test]
+    fn replan_without_failure_preserves_retryable_action() {
+        let mut state = make_state();
+        state.retryable_action = Some(make_retryable_action());
+
+        let params = RunReplanParams {
+            run_id: "r1".into(),
+            reason: "add new evidence".into(),
+            new_evidence: vec!["found more context".into()],
+            failure_context: None,
+        };
+        let result = replan(&params, &mut state).unwrap();
+
+        // Retryable action should be preserved and still valid.
+        let ra = result.retryable_action.as_ref().unwrap();
+        assert!(ra.is_valid);
+        assert!(ra.invalidation_reason.is_none());
+    }
+
+    #[test]
+    fn replan_from_blocked_preserves_but_unrecommends_retryable() {
+        let mut state = make_state();
+        state.status = "blocked".to_string();
+        state.retryable_action = Some(make_retryable_action());
+
+        let params = RunReplanParams {
+            run_id: "r1".into(),
+            reason: "try alternative approach".into(),
+            new_evidence: vec![],
+            failure_context: None,
+        };
+        let result = replan(&params, &mut state).unwrap();
+        assert_eq!(result.status, "active");
+
+        let ra = result.retryable_action.as_ref().unwrap();
+        assert!(ra.is_valid);
+        assert!(!ra.is_recommended);
+
+        assert!(result.replan_delta.as_deref().unwrap().contains("preserved but not recommended"));
+    }
+
+    #[test]
+    fn replan_delta_contains_evidence_count() {
+        let mut state = make_state();
+        let params = RunReplanParams {
+            run_id: "r1".into(),
+            reason: "more info".into(),
+            new_evidence: vec!["a".into(), "b".into()],
+            failure_context: None,
+        };
+        let result = replan(&params, &mut state).unwrap();
+        assert!(result.replan_delta.as_deref().unwrap().contains("2 new evidence"));
+    }
+
+    #[test]
+    fn replan_no_retryable_action_still_works() {
+        let mut state = make_state();
+        let params = RunReplanParams {
+            run_id: "r1".into(),
+            reason: "plain replan".into(),
+            new_evidence: vec![],
+            failure_context: None,
+        };
+        let result = replan(&params, &mut state).unwrap();
+        assert!(result.retryable_action.is_none());
+    }
 }

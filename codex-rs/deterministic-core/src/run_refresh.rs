@@ -140,4 +140,69 @@ mod tests {
         let result = refresh(&params, &state, &[], None).unwrap();
         assert!(result.warnings.iter().any(|w| w.contains("failed")));
     }
+
+    // ---- Milestone 6: retryable action in refresh ----
+
+    #[test]
+    fn refresh_surfaces_valid_retryable_action() {
+        let mut state = make_state("active");
+        state.retryable_action = Some(deterministic_protocol::RetryableAction {
+            kind: "patch.apply".into(),
+            summary: "Edit main.rs".into(),
+            payload: None,
+            retryable_reason: "Blocked by policy".into(),
+            is_valid: true,
+            is_recommended: true,
+            invalidation_reason: None,
+            recommended_tool: "apply_patch".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+        });
+        let params = RunRefreshParams { run_id: "r1".into() };
+        let result = refresh(&params, &state, &[], None).unwrap();
+        let ra = result.retryable_action.as_ref().unwrap();
+        assert!(ra.is_valid);
+        assert!(ra.is_recommended);
+        assert_eq!(ra.kind, "patch.apply");
+        // No staleness warning.
+        assert!(result.warnings.iter().all(|w| !w.contains("stale")));
+    }
+
+    #[test]
+    fn refresh_warns_on_stale_retryable_action() {
+        let mut state = make_state("active");
+        state.retryable_action = Some(deterministic_protocol::RetryableAction {
+            kind: "tests.run".into(),
+            summary: "Run unit tests".into(),
+            payload: None,
+            retryable_reason: "Blocked by policy".into(),
+            is_valid: false,
+            is_recommended: false,
+            invalidation_reason: Some("Invalidated by replan".into()),
+            recommended_tool: "run_tests".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+        });
+        let params = RunRefreshParams { run_id: "r1".into() };
+        let result = refresh(&params, &state, &[], None).unwrap();
+        assert!(result.warnings.iter().any(|w| w.contains("stale")));
+        assert!(result.warnings.iter().any(|w| w.contains("tests.run")));
+    }
+
+    #[test]
+    fn refresh_warns_on_invalid_retryable_action_without_reason() {
+        let mut state = make_state("active");
+        state.retryable_action = Some(deterministic_protocol::RetryableAction {
+            kind: "patch.apply".into(),
+            summary: "Edit".into(),
+            payload: None,
+            retryable_reason: "Blocked".into(),
+            is_valid: false,
+            is_recommended: false,
+            invalidation_reason: None,
+            recommended_tool: "apply_patch".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+        });
+        let params = RunRefreshParams { run_id: "r1".into() };
+        let result = refresh(&params, &state, &[], None).unwrap();
+        assert!(result.warnings.iter().any(|w| w.contains("no longer valid")));
+    }
 }

@@ -283,4 +283,125 @@ mod tests {
         let result = resolve(&params, &mut state, 0);
         assert!(result.is_err());
     }
+
+    // ---- Milestone 6: retryable action guidance tests ----
+
+    fn make_retryable_action() -> deterministic_protocol::RetryableAction {
+        deterministic_protocol::RetryableAction {
+            kind: "patch.apply".into(),
+            summary: "Edit src/main.rs".into(),
+            payload: Some(r#"{"run_id":"r1","edits":[]}"#.into()),
+            retryable_reason: "Blocked by approval policy".into(),
+            is_valid: true,
+            is_recommended: false,
+            invalidation_reason: None,
+            recommended_tool: "apply_patch".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn approve_with_retryable_action_recommends_retry() {
+        let mut state = make_state();
+        state.status = "awaiting_approval".into();
+        state.retryable_action = Some(make_retryable_action());
+
+        let params = ApprovalResolveParams {
+            run_id: "r1".into(),
+            approval_id: "a1".into(),
+            decision: "approve".into(),
+            reason: None,
+        };
+        let result = resolve(&params, &mut state, 0).unwrap();
+        assert_eq!(result.status, "active");
+        // Retryable action should be recommended.
+        let ra = result.retryable_action.as_ref().unwrap();
+        assert!(ra.is_valid);
+        assert!(ra.is_recommended);
+        assert_eq!(ra.recommended_tool, "apply_patch");
+        // State recommended tool should point at the retryable action's tool.
+        assert_eq!(state.recommended_tool.as_deref(), Some("apply_patch"));
+        assert!(state.recommended_next_action.as_deref().unwrap().contains("Retry"));
+    }
+
+    #[test]
+    fn approve_with_invalid_retryable_action_recommends_replan() {
+        let mut state = make_state();
+        state.status = "awaiting_approval".into();
+        let mut ra = make_retryable_action();
+        ra.is_valid = false;
+        ra.invalidation_reason = Some("superseded by replan".into());
+        state.retryable_action = Some(ra);
+
+        let params = ApprovalResolveParams {
+            run_id: "r1".into(),
+            approval_id: "a1".into(),
+            decision: "approve".into(),
+            reason: None,
+        };
+        let result = resolve(&params, &mut state, 0).unwrap();
+        assert_eq!(result.status, "active");
+        assert_eq!(state.recommended_tool.as_deref(), Some("replan_run"));
+        assert!(state.recommended_next_action.as_deref().unwrap().contains("no longer valid"));
+    }
+
+    #[test]
+    fn deny_invalidates_retryable_action() {
+        let mut state = make_state();
+        state.status = "awaiting_approval".into();
+        state.retryable_action = Some(make_retryable_action());
+
+        let params = ApprovalResolveParams {
+            run_id: "r1".into(),
+            approval_id: "a1".into(),
+            decision: "deny".into(),
+            reason: Some("too risky".into()),
+        };
+        let result = resolve(&params, &mut state, 0).unwrap();
+        assert_eq!(result.status, "blocked");
+        let ra = result.retryable_action.as_ref().unwrap();
+        assert!(!ra.is_valid);
+        assert!(!ra.is_recommended);
+        assert!(ra.invalidation_reason.as_deref().unwrap().contains("denied"));
+        assert_eq!(state.recommended_tool.as_deref(), Some("replan_run"));
+    }
+
+    #[test]
+    fn approve_without_retryable_action_uses_defaults() {
+        let mut state = make_state();
+        state.status = "awaiting_approval".into();
+        // No retryable_action set.
+
+        let params = ApprovalResolveParams {
+            run_id: "r1".into(),
+            approval_id: "a1".into(),
+            decision: "approve".into(),
+            reason: None,
+        };
+        let result = resolve(&params, &mut state, 0).unwrap();
+        assert_eq!(result.status, "active");
+        assert!(result.retryable_action.is_none());
+        assert_eq!(state.recommended_tool.as_deref(), Some("refresh_run_state"));
+    }
+
+    #[test]
+    fn approve_with_remaining_still_awaiting() {
+        let mut state = make_state();
+        state.status = "awaiting_approval".into();
+        state.retryable_action = Some(make_retryable_action());
+
+        let params = ApprovalResolveParams {
+            run_id: "r1".into(),
+            approval_id: "a1".into(),
+            decision: "approve".into(),
+            reason: None,
+        };
+        let result = resolve(&params, &mut state, 1).unwrap();
+        assert_eq!(result.status, "awaiting_approval");
+        // Retryable action is marked recommended but can't be retried yet.
+        let ra = result.retryable_action.as_ref().unwrap();
+        assert!(ra.is_valid);
+        assert!(ra.is_recommended);
+        assert_eq!(state.recommended_tool.as_deref(), Some("approve_action"));
+    }
 }
