@@ -160,6 +160,36 @@ Acceptance:
 - ✅ policy decisions are deterministic
 - ✅ policy rationale is captured and returned
 
+## Milestone 6: deterministic action resumption ✅
+
+Add structured retryable action metadata to enable deterministic resumption after policy blocks:
+
+### Retryable action model
+
+- `RetryableAction` type with `kind`, `summary`, `payload`, `validity`, `recommendation`
+- Recorded when `patch.apply` or `tests.run` is blocked by approval policy
+- Updated on approval resolution (validated/invalidated)
+- Preserved or invalidated on replan based on context
+
+### Run state extensions
+
+- `retryableAction` field in `RunState`
+- `replanDelta` field for concise change description
+- Refresh surfaces retryable action metadata and warns on staleness
+
+### SQLite migration
+
+- Adds `retryable_action` column with backward compatibility
+- Safe defaults for existing databases
+
+Acceptance:
+- ✅ retryable action recorded on policy block
+- ✅ approval resolution updates retryable action state
+- ✅ replan preserves valid retryable actions, invalidates stale ones
+- ✅ refresh surfaces retryable action with staleness warnings
+- ✅ no new public tools or daemon methods needed
+- ✅ no autonomous continuation—ChatGPT still invokes next tool explicitly
+
 ## Out of scope
 
 These are intentionally not implemented:
@@ -177,17 +207,17 @@ These are intentionally not implemented:
 
 If extending the project, likely next steps:
 
-### Milestone 6: enhanced policy
+### Milestone 7: enhanced policy
 - User-configurable approval thresholds
 - More granular policy rules
 - Policy configuration persistence
 
-### Milestone 7: run history
+### Milestone 8: run history
 - Persistence of completed runs
 - Searchable run history
 - Run comparison and diff
 
-### Milestone 8: workspace templates
+### Milestone 9: workspace templates
 - Predefined workspace configurations
 - Template sharing
 - Project scaffolding
