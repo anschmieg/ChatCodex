@@ -99,6 +99,22 @@ ChatGPT-hosted model
 - 13 new Rust persistence tests; TypeScript invariants test updated
 - Architecture invariants maintained: no model calls, no autonomous tools, deterministic only
 
+### Milestone 8: Deterministic Policy Configuration and Per-Run Execution Constraints
+- Added `RunPolicy` struct to `deterministic-protocol`: `patchEditThreshold`, `deleteRequiresApproval`, `sensitivePathRequiresApproval`, `outsideFocusRequiresApproval`, `extraSafeMakeTargets`, `focusPaths`
+- Added `RunPolicyInput` struct for optional partial policy input at prepare time; missing fields fall back to defaults
+- `RunPrepareParams` accepts an optional `policy: RunPolicyInput` field
+- `RunPrepareResult`, `RunRefreshResult`, and `RunGetResult` now include `effectivePolicy: RunPolicy`
+- `RunState` persists the active `policyProfile: RunPolicy` in SQLite (`policy_profile` TEXT column)
+- Approval policy (`approval_policy.rs`) uses per-run `RunPolicy` instead of hardcoded constants
+- `focusPaths` are always copied into `RunPolicy.focusPaths` for backward compatibility
+- `extraSafeMakeTargets` are normalised to lowercase at validation time
+- SQLite migration M7→M8 adds `policy_profile TEXT NOT NULL DEFAULT '{}'`; older runs get default policy
+- TypeScript `schemas.ts` exports `PolicyProfileInputSchema` (Zod) and `CodexPrepareRunInput` now includes `policy`
+- `tools.ts` passes `policy` through to `run.prepare`
+- 3 new Rust persistence tests (default, custom, migration); 6 TypeScript policy schema tests
+- No new public MCP tools; no new internal daemon methods
+- No backend model calls; no autonomous continuation
+
 ## Current Implementation Surface
 
 ### Public MCP Tools (14)
@@ -151,24 +167,42 @@ ChatGPT-hosted model
 - `focusPaths` (Milestone 5)
 - `latestDiffSummary`, `latestTestResult`
 - `retryableAction` (Milestone 6) — structured metadata for the last gated/failed action
+- `policyProfile` (Milestone 8) — effective `RunPolicy` governing the run
 - `warnings`
 - `createdAt`, `updatedAt`
 
-### Approval Policy (Milestone 5)
+### Approval Policy (Milestones 5 & 8)
+
+Policy knobs are now taken from the per-run `RunPolicy` profile (Milestone 8).
 
 **Patch gates:**
-- File deletion operations
-- Patches with >5 edits
-- Sensitive file paths (`.env`, `.ssh/`, `.git/`, `id_rsa`, etc.)
-- Paths outside declared `focusPaths`
+- File deletion operations (when `deleteRequiresApproval` is true; default: true)
+- Patches with more than `patchEditThreshold` edits (default: 5)
+- Sensitive file paths (`.env`, `.ssh/`, `.git/`, `id_rsa`, etc.) when `sensitivePathRequiresApproval` is true (default: true)
+- Paths outside declared `focusPaths` when `outsideFocusRequiresApproval` is true and focus is non-empty (default: true)
 
 **Test-run gates:**
-- `make` scope with non-standard targets (not in: `test`, `check`, `lint`, `build`, `clean`, `all`, `verify`, `fmt`, `format`)
+- `make` scope with non-standard targets (not in the built-in safe list or `extraSafeMakeTargets`)
+
+**Default built-in safe make targets:** `test`, `check`, `lint`, `build`, `clean`, `all`, `verify`, `fmt`, `format`
+
+### Per-Run Policy Profile (Milestone 8)
+
+`RunPolicy` fields:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `patchEditThreshold` | `usize` | `5` | Max edits in one patch before approval |
+| `deleteRequiresApproval` | `bool` | `true` | Whether file deletion always gates |
+| `sensitivePathRequiresApproval` | `bool` | `true` | Whether sensitive paths always gate |
+| `outsideFocusRequiresApproval` | `bool` | `true` | Whether out-of-focus edits gate (when focus is set) |
+| `extraSafeMakeTargets` | `Vec<String>` | `[]` | Additional safe make targets (normalised to lowercase) |
+| `focusPaths` | `Vec<String>` | `[]` | Copied from prepare params for backward compatibility |
 
 ## Verified
 
-- ✅ 129 Rust tests pass (deterministic-protocol, deterministic-core, deterministic-daemon)
-- ✅ 3 TypeScript tests pass (MCP gateway invariants)
+- ✅ 146 Rust tests pass (105 core + 39 daemon + 2 protocol)
+- ✅ 9 TypeScript tests pass (3 registry invariants + 6 policy schema)
 - ✅ Clippy clean
 - ✅ No forbidden methods or tools registered
 - ✅ No model SDK dependencies in deterministic crates
@@ -191,10 +225,9 @@ These are intentionally not implemented and not planned for the current phase:
 
 If extending the project, likely next milestones would be:
 
-1. **Enhanced policy** — more granular approval rules, user-configurable policies
-2. **Run history** — persistence of completed runs, searchable history
-3. **Workspace templates** — predefined workspace configurations
-4. **Multi-workspace** — support for runs spanning multiple workspaces
+1. **Policy amendment** — allow ChatGPT to tighten or relax constraints mid-run
+2. **Workspace templates** — predefined workspace configurations
+3. **Multi-workspace** — support for runs spanning multiple workspaces
 
 ## Repository Structure
 

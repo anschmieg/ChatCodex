@@ -60,6 +60,14 @@ Response:
 * `run.get`
 * `run.history`
 
+### Milestone 8 changes
+
+No new daemon methods. Existing methods extended:
+
+* `run.prepare` — accepts optional `policy` input; returns `effectivePolicy`
+* `run.refresh` — returns `effectivePolicy`
+* `run.get` — returns `effectivePolicy`
+
 ## Forbidden internal methods
 
 Do not implement or surface:
@@ -77,6 +85,31 @@ Do not implement or surface:
 
 Compile a deterministic run brief and initialize run state.
 
+Params:
+```json
+{
+  "workspaceId": "string",
+  "userGoal": "string",
+  "focusPaths": ["string"],
+  "mode": "plan | refresh | repair | review",
+  "policy": {
+    "patchEditThreshold": 5,
+    "deleteRequiresApproval": true,
+    "sensitivePathRequiresApproval": true,
+    "outsideFocusRequiresApproval": true,
+    "extraSafeMakeTargets": []
+  }
+}
+```
+
+All `policy` fields are optional. Omitted fields use deterministic defaults
+(matching pre-Milestone-8 behavior). `focusPaths` is always copied into the
+effective policy's `focusPaths` field for backward compatibility.
+`extraSafeMakeTargets` values are normalised to lowercase.
+
+Returns: run brief + run ID + plan + `effectivePolicy` — the resolved active
+`RunPolicy` that will govern this run (Milestone 8).
+
 ### run.refresh
 
 Return an updated run-state snapshot.  Merges persisted state with
@@ -86,7 +119,8 @@ not trigger actions or perform LLM reasoning.
 Params: `{ runId: string }`
 
 Returns: full run-state snapshot including `pendingApprovals`,
-`latestDiffSummary`, `latestTestResult`, `retryableAction`, `warnings`.
+`latestDiffSummary`, `latestTestResult`, `retryableAction`, `warnings`,
+and `effectivePolicy` (Milestone 8) — the active `RunPolicy` for this run.
 
 Milestone 6: if a retryable action is persisted and invalid/stale,
 `warnings` will include a staleness note.
@@ -145,11 +179,14 @@ Return ranked text/symbol matches with snippets.
 
 Apply a validated patch within policy boundaries.
 
-Before executing the patch, a deterministic approval policy is evaluated.
-If the policy determines the patch is risky (e.g. file deletion,
-large patch, sensitive file path, outside focus paths), the handler
-creates a pending approval and returns the result with
-`approvalRequired` set instead of applying the patch.
+Before executing the patch, a deterministic approval policy is evaluated
+using the run's effective `RunPolicy` (Milestone 8).
+If the policy determines the patch is risky (e.g. file deletion with
+`deleteRequiresApproval`, patch exceeds `patchEditThreshold`, sensitive
+file path with `sensitivePathRequiresApproval`, or outside focus paths
+with `outsideFocusRequiresApproval`), the handler creates a pending
+approval and returns the result with `approvalRequired` set instead of
+applying the patch.
 
 Milestone 6: when a patch is blocked by policy, a `retryableAction`
 record is persisted in the run state so ChatGPT can later identify
@@ -159,10 +196,12 @@ what to retry after approval.
 
 Resolve and run a canonical test command.
 
-Before executing the test, a deterministic approval policy is evaluated.
+Before executing the test, a deterministic approval policy is evaluated
+using the run's effective `RunPolicy` (Milestone 8).
 If the policy determines the command is risky (e.g. non-standard make
-target), the handler creates a pending approval and returns the result
-with `approvalRequired` set instead of running the test.
+target not in `extraSafeMakeTargets`), the handler creates a pending
+approval and returns the result with `approvalRequired` set instead of
+running the test.
 
 Milestone 6: when a test run is blocked by policy, a `retryableAction`
 record is persisted in the run state so ChatGPT can later identify
@@ -186,7 +225,10 @@ Get the authoritative current state of a specific run. Read-only.
 
 Params: `{ runId }`
 
-Returns: `{ runState, pendingApprovals, retryableAction?, latestDiffSummary?, latestTestResult?, recommendedNextAction?, recommendedTool?, warnings }`
+Returns: `{ runState, pendingApprovals, retryableAction?, latestDiffSummary?, latestTestResult?, recommendedNextAction?, recommendedTool?, effectivePolicy, warnings }`
+
+Milestone 8: `effectivePolicy` contains the active `RunPolicy` for the run.
+`runState` also includes `policyProfile` with the same values.
 
 ### run.history (Milestone 7)
 

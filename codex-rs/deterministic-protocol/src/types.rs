@@ -54,6 +54,102 @@ pub struct ResponseEnvelope {
 }
 
 // ---------------------------------------------------------------------------
+// RunPolicy — deterministic per-run execution constraints (Milestone 8)
+// ---------------------------------------------------------------------------
+
+/// Deterministic per-run policy profile.
+///
+/// Captures the active execution constraints for a run.  When omitted at
+/// prepare time the backend applies deterministic defaults that match the
+/// pre-Milestone-8 behaviour.  Persisted alongside run state in SQLite.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunPolicy {
+    /// Maximum number of edits allowed in a single patch before approval
+    /// is required.  Default: 5.
+    pub patch_edit_threshold: usize,
+    /// If true, any file-delete operation always requires approval.
+    /// Default: true.
+    pub delete_requires_approval: bool,
+    /// If true, edits to paths that match a sensitive-file pattern always
+    /// require approval.  Default: true.
+    pub sensitive_path_requires_approval: bool,
+    /// If true, edits to paths outside the declared `focusPaths` require
+    /// approval (when `focusPaths` is non-empty).  Default: true.
+    pub outside_focus_requires_approval: bool,
+    /// Additional `make` targets (beyond the built-in safe list) that may
+    /// run without approval.  Values are normalised to lowercase.
+    #[serde(default)]
+    pub extra_safe_make_targets: Vec<String>,
+    /// Focus paths for this run — copied from `RunPrepareParams.focusPaths`
+    /// for backward compatibility.  Evaluated by approval policy when
+    /// `outsideFocusRequiresApproval` is true.
+    #[serde(default)]
+    pub focus_paths: Vec<String>,
+}
+
+impl Default for RunPolicy {
+    fn default() -> Self {
+        Self {
+            patch_edit_threshold: 5,
+            delete_requires_approval: true,
+            sensitive_path_requires_approval: true,
+            outside_focus_requires_approval: true,
+            extra_safe_make_targets: vec![],
+            focus_paths: vec![],
+        }
+    }
+}
+
+/// Optional policy configuration accepted at run-prepare time.
+///
+/// All fields are optional — omitted fields fall back to `RunPolicy` defaults.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RunPolicyInput {
+    #[serde(default)]
+    pub patch_edit_threshold: Option<usize>,
+    #[serde(default)]
+    pub delete_requires_approval: Option<bool>,
+    #[serde(default)]
+    pub sensitive_path_requires_approval: Option<bool>,
+    #[serde(default)]
+    pub outside_focus_requires_approval: Option<bool>,
+    #[serde(default)]
+    pub extra_safe_make_targets: Option<Vec<String>>,
+}
+
+impl RunPolicyInput {
+    /// Merge with defaults derived from `focus_paths` to produce an effective
+    /// `RunPolicy`.  `focus_paths` is always taken from the top-level prepare
+    /// params for backward compatibility.
+    pub fn into_policy(self, focus_paths: Vec<String>) -> RunPolicy {
+        let defaults = RunPolicy::default();
+        RunPolicy {
+            patch_edit_threshold: self
+                .patch_edit_threshold
+                .unwrap_or(defaults.patch_edit_threshold),
+            delete_requires_approval: self
+                .delete_requires_approval
+                .unwrap_or(defaults.delete_requires_approval),
+            sensitive_path_requires_approval: self
+                .sensitive_path_requires_approval
+                .unwrap_or(defaults.sensitive_path_requires_approval),
+            outside_focus_requires_approval: self
+                .outside_focus_requires_approval
+                .unwrap_or(defaults.outside_focus_requires_approval),
+            extra_safe_make_targets: self
+                .extra_safe_make_targets
+                .unwrap_or_default()
+                .into_iter()
+                .map(|t| t.to_lowercase())
+                .collect(),
+            focus_paths,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // run.prepare
 // ---------------------------------------------------------------------------
 
@@ -66,6 +162,10 @@ pub struct RunPrepareParams {
     pub focus_paths: Vec<String>,
     #[serde(default)]
     pub mode: Option<String>,
+    /// Optional per-run policy configuration (Milestone 8).
+    /// When omitted the daemon uses deterministic defaults.
+    #[serde(default)]
+    pub policy: Option<RunPolicyInput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +180,8 @@ pub struct RunPrepareResult {
     pub current_step: usize,
     pub recommended_next_action: String,
     pub recommended_tool: String,
+    /// The effective policy profile that will govern this run (Milestone 8).
+    pub effective_policy: RunPolicy,
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +403,8 @@ pub struct RunRefreshResult {
     pub retryable_action: Option<RetryableAction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// The effective policy profile governing this run (Milestone 8).
+    pub effective_policy: RunPolicy,
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +553,9 @@ pub struct RunState {
     /// The last action that was gated or failed and may be retryable (Milestone 6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retryable_action: Option<RetryableAction>,
+    /// Per-run policy profile governing approval decisions (Milestone 8).
+    #[serde(default)]
+    pub policy_profile: RunPolicy,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -526,6 +633,8 @@ pub struct RunGetResult {
     pub recommended_tool: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// The effective policy profile governing this run (Milestone 8).
+    pub effective_policy: RunPolicy,
 }
 
 // ---------------------------------------------------------------------------

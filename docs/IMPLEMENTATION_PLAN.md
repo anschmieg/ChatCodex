@@ -225,6 +225,54 @@ Acceptance:
 - ✅ no model/provider SDKs added
 - ✅ TypeScript remains thin
 
+## Milestone 8: deterministic policy configuration and per-run execution constraints ✅
+
+Add structured, inspectable, per-run policy profiles:
+
+### Per-run policy profile
+
+- `RunPolicy` struct: `patchEditThreshold`, `deleteRequiresApproval`, `sensitivePathRequiresApproval`, `outsideFocusRequiresApproval`, `extraSafeMakeTargets`, `focusPaths`
+- `RunPolicyInput` for optional partial input at prepare time (missing fields → defaults)
+- `RunState.policyProfile` persisted in SQLite
+
+### Policy-aware run preparation
+
+- `RunPrepareParams.policy: Option<RunPolicyInput>` — pass custom constraints at run creation
+- `RunPrepareResult.effectivePolicy` — daemon returns the resolved active policy
+- `focusPaths` always copied into `RunPolicy.focusPaths` for backward compatibility
+- `extraSafeMakeTargets` normalised to lowercase at validation time
+
+### Policy-aware approval evaluation
+
+- `approval_policy.rs` reads thresholds and flags from the per-run `RunPolicy` instead of hardcoded constants
+- All rules remain deterministic; no LLM reasoning involved
+
+### Policy surfacing in responses
+
+- `RunRefreshResult.effectivePolicy` — policy visible on every refresh
+- `RunGetResult.effectivePolicy` — policy visible on direct run inspection
+
+### SQLite migration
+
+- Adds `policy_profile TEXT NOT NULL DEFAULT '{}'` column to `runs` table
+- Existing runs get `RunPolicy::default()` on upgrade
+
+### TypeScript gateway
+
+- `PolicyProfileInputSchema` Zod schema in `schemas.ts`
+- `CodexPrepareRunInput` includes optional `policy` field
+- `tools.ts` passes `policy` to `run.prepare`
+
+Acceptance:
+- ✅ each run has an explicit effective policy profile
+- ✅ default policy matches pre-Milestone-8 behavior
+- ✅ custom policy validated deterministically
+- ✅ approval decisions use per-run policy
+- ✅ policy rationale remains explicit and audit-friendly
+- ✅ no autonomous continuation
+- ✅ TypeScript remains thin
+- ✅ SQLite migration is backward compatible
+
 ## Out of scope
 
 These are intentionally not implemented:
@@ -242,17 +290,11 @@ These are intentionally not implemented:
 
 If extending the project, likely next steps:
 
-### Milestone 7: enhanced policy
-- User-configurable approval thresholds
-- More granular policy rules
-- Policy configuration persistence
+### Milestone 9: policy amendment mid-run
+- Allow ChatGPT to tighten or relax constraints during an active run
+- Structured policy diff and rationale
 
-### Milestone 8: run history
-- Persistence of completed runs
-- Searchable run history
-- Run comparison and diff
-
-### Milestone 9: workspace templates
+### Milestone 10: workspace templates
 - Predefined workspace configurations
 - Template sharing
 - Project scaffolding

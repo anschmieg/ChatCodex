@@ -197,6 +197,7 @@ mod tests {
             focus_paths: vec![],
             warnings: vec![],
             retryable_action: None,
+            policy_profile: deterministic_protocol::RunPolicy::default(),
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

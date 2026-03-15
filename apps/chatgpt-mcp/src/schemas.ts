@@ -8,6 +8,46 @@
 import { z } from "zod";
 
 // ---------------------------------------------------------------
+// PolicyProfileInput — per-run policy configuration (Milestone 8)
+// ---------------------------------------------------------------
+export const PolicyProfileInputSchema = z
+  .object({
+    patchEditThreshold: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "Maximum edits in a single patch before approval is required (default: 5)",
+      ),
+    deleteRequiresApproval: z
+      .boolean()
+      .optional()
+      .describe(
+        "Whether file deletion always requires approval (default: true)",
+      ),
+    sensitivePathRequiresApproval: z
+      .boolean()
+      .optional()
+      .describe(
+        "Whether edits to sensitive file paths always require approval (default: true)",
+      ),
+    outsideFocusRequiresApproval: z
+      .boolean()
+      .optional()
+      .describe(
+        "Whether edits outside declared focus paths require approval when focus is non-empty (default: true)",
+      ),
+    extraSafeMakeTargets: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Additional make targets that may run without approval beyond the built-in safe list",
+      ),
+  })
+  .describe("Optional per-run policy configuration");
+
+// ---------------------------------------------------------------
 // codex_prepare_run
 // ---------------------------------------------------------------
 export const CodexPrepareRunInput = {
@@ -21,6 +61,9 @@ export const CodexPrepareRunInput = {
     .enum(["plan", "refresh", "repair", "review"])
     .optional()
     .describe("Run mode"),
+  policy: PolicyProfileInputSchema.optional().describe(
+    "Optional per-run policy configuration. When omitted the daemon uses deterministic defaults.",
+  ),
 };
 
 // ---------------------------------------------------------------

@@ -77,6 +77,7 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
         userGoal: params.userGoal,
         focusPaths: params.focusPaths ?? [],
         mode: params.mode,
+        policy: params.policy,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

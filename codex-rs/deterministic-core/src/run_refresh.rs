@@ -57,6 +57,7 @@ pub fn refresh(
         latest_test_result: state.latest_test_result.clone(),
         retryable_action: state.retryable_action.clone(),
         warnings,
+        effective_policy: state.policy_profile.clone(),
     })
 }
 
@@ -83,6 +84,7 @@ mod tests {
             focus_paths: vec![],
             warnings: vec![],
             retryable_action: None,
+            policy_profile: deterministic_protocol::RunPolicy::default(),
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -204,5 +206,31 @@ mod tests {
         let params = RunRefreshParams { run_id: "r1".into() };
         let result = refresh(&params, &state, &[], None).unwrap();
         assert!(result.warnings.iter().any(|w| w.contains("no longer valid")));
+    }
+
+    // ---- Milestone 8: effective_policy in refresh ----
+
+    #[test]
+    fn refresh_surfaces_default_effective_policy() {
+        let state = make_state("active");
+        let params = RunRefreshParams { run_id: "r1".into() };
+        let result = refresh(&params, &state, &[], None).unwrap();
+        let defaults = deterministic_protocol::RunPolicy::default();
+        assert_eq!(result.effective_policy.patch_edit_threshold, defaults.patch_edit_threshold);
+        assert_eq!(result.effective_policy.delete_requires_approval, defaults.delete_requires_approval);
+    }
+
+    #[test]
+    fn refresh_surfaces_custom_effective_policy() {
+        let mut state = make_state("active");
+        state.policy_profile = deterministic_protocol::RunPolicy {
+            patch_edit_threshold: 15,
+            delete_requires_approval: false,
+            ..Default::default()
+        };
+        let params = RunRefreshParams { run_id: "r1".into() };
+        let result = refresh(&params, &state, &[], None).unwrap();
+        assert_eq!(result.effective_policy.patch_edit_threshold, 15);
+        assert!(!result.effective_policy.delete_requires_approval);
     }
 }

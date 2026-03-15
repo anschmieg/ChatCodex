@@ -9,6 +9,14 @@ Input:
 - `userGoal: string`
 - `focusPaths?: string[]`
 - `mode?: "plan" | "refresh" | "repair" | "review"`
+- `policy?: PolicyProfileInput` (Milestone 8) — optional per-run policy configuration
+
+`PolicyProfileInput` fields (all optional, omitted fields use defaults):
+- `patchEditThreshold?: number` — max edits in one patch before approval (default: `5`)
+- `deleteRequiresApproval?: boolean` — whether file deletion always gates (default: `true`)
+- `sensitivePathRequiresApproval?: boolean` — whether sensitive path edits always gate (default: `true`)
+- `outsideFocusRequiresApproval?: boolean` — whether out-of-focus edits gate when focus is set (default: `true`)
+- `extraSafeMakeTargets?: string[]` — additional make targets that may run without approval (normalised to lowercase)
 
 Returns structured content:
 - `runId`
@@ -20,6 +28,8 @@ Returns structured content:
 - `recommendedNextAction`
 - `recommendedTool`
 - `status`
+- `effectivePolicy` (Milestone 8) — the resolved active `RunPolicy` that will govern this run:
+  - `patchEditThreshold`, `deleteRequiresApproval`, `sensitivePathRequiresApproval`, `outsideFocusRequiresApproval`, `extraSafeMakeTargets`, `focusPaths`
 
 ## get_workspace_summary
 
@@ -90,12 +100,12 @@ Each edit:
 
 ### Approval policy
 
-Before applying the patch, a deterministic policy is evaluated.
+Before applying the patch, a deterministic policy is evaluated using the run's effective `RunPolicy` (Milestone 8).
 The patch is gated (approval required) if any of the following hold:
-- Any edit has `operation: "delete"` (file deletion)
-- More than 5 edits in a single request (large patch)
-- Any path matches a sensitive pattern (`.env`, `.ssh`, `.git/`, `id_rsa`, etc.)
-- Any path is outside the run's declared `focusPaths` (when non-empty)
+- Any edit has `operation: "delete"` (file deletion) and `deleteRequiresApproval` is `true`
+- More than `patchEditThreshold` edits in a single request (default: 5)
+- Any path matches a sensitive pattern (`.env`, `.ssh`, `.git/`, `id_rsa`, etc.) and `sensitivePathRequiresApproval` is `true`
+- Any path is outside the run's declared `focusPaths` (when non-empty) and `outsideFocusRequiresApproval` is `true`
 
 If approval is required, the result includes `approvalRequired` with the
 pending approval details and the patch is **not** applied.
@@ -147,10 +157,11 @@ Execute a whitelisted test command in the workspace.
 
 ### Approval policy
 
-Before running the test, a deterministic policy is evaluated.
+Before running the test, a deterministic policy is evaluated using the run's effective `RunPolicy` (Milestone 8).
 The test is gated (approval required) if:
 - `scope` is `"make"` and `target` is not a standard safe target
   (`test`, `check`, `lint`, `build`, `clean`, `all`, `verify`, `fmt`, `format`)
+  and not in the run's `extraSafeMakeTargets` list
 
 If approval is required, the result includes `approvalRequired` with the
 pending approval details and the test is **not** executed.
@@ -204,6 +215,7 @@ operation: it does not trigger actions or perform LLM reasoning.
   - `isRecommended` — whether retry is the recommended next step
   - `invalidationReason?` — why the action is no longer valid
   - `recommendedTool` — MCP tool to invoke for retry
+- `effectivePolicy` (Milestone 8) — the active `RunPolicy` for this run
 - `warnings`
 
 ### Behavior
@@ -318,13 +330,14 @@ Get the authoritative current state of a run.
 
 ### Returns
 
-- `runState` — full RunState
+- `runState` — full RunState (includes `policyProfile` field)
 - `pendingApprovals` — current pending approvals
 - `retryableAction?` — retryable action metadata if present
 - `latestDiffSummary?` — latest diff summary
 - `latestTestResult?` — latest test result
 - `recommendedNextAction?` — current recommendation
 - `recommendedTool?` — recommended MCP tool
+- `effectivePolicy` (Milestone 8) — the active `RunPolicy` for this run
 - `warnings[]` — active warnings
 
 ### Behavior
