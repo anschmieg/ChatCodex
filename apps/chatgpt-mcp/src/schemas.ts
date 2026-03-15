@@ -8,6 +8,46 @@
 import { z } from "zod";
 
 // ---------------------------------------------------------------
+// PolicyProfile (Milestone 8)
+// Optional per-run policy configuration.
+// TypeScript validates structure only — policy logic stays in Rust.
+// ---------------------------------------------------------------
+export const PolicyProfileInput = z.object({
+  patchEditThreshold: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe(
+      "Max edits in a single patch before approval is required (default: 5)",
+    ),
+  deleteRequiresApproval: z
+    .boolean()
+    .optional()
+    .describe("Whether file deletions require approval (default: true)"),
+  sensitivePathRequiresApproval: z
+    .boolean()
+    .optional()
+    .describe(
+      "Whether edits to sensitive paths require approval (default: true)",
+    ),
+  outsideFocusRequiresApproval: z
+    .boolean()
+    .optional()
+    .describe(
+      "Whether edits outside focus paths require approval (default: true)",
+    ),
+  extraSafeMakeTargets: z
+    .array(z.string().min(1))
+    .optional()
+    .describe("Additional make targets considered safe beyond the built-in list"),
+  focusPaths: z
+    .array(z.string())
+    .optional()
+    .describe("Focus paths for this run (overrides top-level focusPaths)"),
+});
+
+// ---------------------------------------------------------------
 // codex_prepare_run
 // ---------------------------------------------------------------
 export const CodexPrepareRunInput = {
@@ -21,6 +61,11 @@ export const CodexPrepareRunInput = {
     .enum(["plan", "refresh", "repair", "review"])
     .optional()
     .describe("Run mode"),
+  // Optional per-run policy configuration (Milestone 8).
+  // If omitted, deterministic defaults are applied.
+  policy: PolicyProfileInput.optional().describe(
+    "Optional per-run policy configuration. Deterministic defaults apply if omitted.",
+  ),
 };
 
 // ---------------------------------------------------------------

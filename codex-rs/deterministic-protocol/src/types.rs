@@ -54,6 +54,66 @@ pub struct ResponseEnvelope {
 }
 
 // ---------------------------------------------------------------------------
+// Per-run policy profile (Milestone 8)
+// ---------------------------------------------------------------------------
+
+/// Per-run execution policy profile.
+///
+/// Controls which operations require approval and other safety constraints.
+/// All fields have deterministic defaults matching prior hardcoded behavior.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunPolicy {
+    /// Maximum number of edits in a single patch before approval is required.
+    /// Default: 5 (matches the previous hardcoded constant).
+    #[serde(default = "default_patch_edit_threshold")]
+    pub patch_edit_threshold: usize,
+    /// Whether file delete operations always require approval.
+    /// Default: true.
+    #[serde(default = "default_true")]
+    pub delete_requires_approval: bool,
+    /// Whether edits to sensitive file paths require approval.
+    /// Default: true.
+    #[serde(default = "default_true")]
+    pub sensitive_path_requires_approval: bool,
+    /// Whether edits outside declared focus paths require approval
+    /// (only applies when `focus_paths` is non-empty).
+    /// Default: true.
+    #[serde(default = "default_true")]
+    pub outside_focus_requires_approval: bool,
+    /// Additional make targets that are considered safe beyond the built-in list.
+    /// Default: empty.
+    #[serde(default)]
+    pub extra_safe_make_targets: Vec<String>,
+    /// Focus paths for this run. Edits outside these paths require approval
+    /// when `outside_focus_requires_approval` is true.
+    /// Default: empty (no focus restriction).
+    #[serde(default)]
+    pub focus_paths: Vec<String>,
+}
+
+fn default_patch_edit_threshold() -> usize {
+    5
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for RunPolicy {
+    fn default() -> Self {
+        Self {
+            patch_edit_threshold: default_patch_edit_threshold(),
+            delete_requires_approval: true,
+            sensitive_path_requires_approval: true,
+            outside_focus_requires_approval: true,
+            extra_safe_make_targets: vec![],
+            focus_paths: vec![],
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // run.prepare
 // ---------------------------------------------------------------------------
 
@@ -66,6 +126,10 @@ pub struct RunPrepareParams {
     pub focus_paths: Vec<String>,
     #[serde(default)]
     pub mode: Option<String>,
+    /// Optional policy configuration for this run (Milestone 8).
+    /// If omitted, deterministic defaults are applied matching prior behavior.
+    #[serde(default)]
+    pub policy: Option<RunPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +144,8 @@ pub struct RunPrepareResult {
     pub current_step: usize,
     pub recommended_next_action: String,
     pub recommended_tool: String,
+    /// The effective policy profile applied to this run (Milestone 8).
+    pub effective_policy: RunPolicy,
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +367,9 @@ pub struct RunRefreshResult {
     pub retryable_action: Option<RetryableAction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Effective policy profile for this run (Milestone 8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_policy: Option<RunPolicy>,
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +518,9 @@ pub struct RunState {
     /// The last action that was gated or failed and may be retryable (Milestone 6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retryable_action: Option<RetryableAction>,
+    /// Effective per-run policy profile (Milestone 8).
+    #[serde(default)]
+    pub policy_profile: RunPolicy,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -526,6 +598,8 @@ pub struct RunGetResult {
     pub recommended_tool: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Effective policy profile for this run (Milestone 8).
+    pub effective_policy: RunPolicy,
 }
 
 // ---------------------------------------------------------------------------

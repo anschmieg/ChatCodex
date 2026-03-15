@@ -5,11 +5,14 @@
  * 1. No forbidden tool names are registered
  * 2. No forbidden daemon methods are called
  * 3. The tool registry matches the expected set
+ * 4. Milestone 8: PolicyProfileInput schema validates correctly
  */
 
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
+import { z } from "zod";
 import { FORBIDDEN_TOOL_NAMES, REGISTERED_TOOL_NAMES } from "./tools.js";
+import { PolicyProfileInput } from "./schemas.js";
 
 describe("MCP tool registry invariants", () => {
   it("should not contain any forbidden tool names", () => {
@@ -59,6 +62,58 @@ describe("MCP tool registry invariants", () => {
           `Tool name "${name}" contains forbidden pattern "${pattern}"`,
         );
       }
+    }
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 8: PolicyProfileInput schema validation
+// ---------------------------------------------------------------
+describe("PolicyProfileInput schema (Milestone 8)", () => {
+  it("accepts an empty object (all defaults)", () => {
+    const result = PolicyProfileInput.safeParse({});
+    assert.ok(result.success, "empty object should be valid");
+  });
+
+  it("accepts a fully populated valid policy", () => {
+    const result = PolicyProfileInput.safeParse({
+      patchEditThreshold: 10,
+      deleteRequiresApproval: false,
+      sensitivePathRequiresApproval: true,
+      outsideFocusRequiresApproval: false,
+      extraSafeMakeTargets: ["deploy-staging", "release"],
+      focusPaths: ["src/", "tests/"],
+    });
+    assert.ok(result.success, "fully populated policy should be valid");
+  });
+
+  it("rejects patchEditThreshold of 0 (must be >= 1)", () => {
+    const result = PolicyProfileInput.safeParse({ patchEditThreshold: 0 });
+    assert.ok(!result.success, "threshold 0 should be rejected");
+  });
+
+  it("rejects negative patchEditThreshold", () => {
+    const result = PolicyProfileInput.safeParse({ patchEditThreshold: -1 });
+    assert.ok(!result.success, "negative threshold should be rejected");
+  });
+
+  it("rejects extraSafeMakeTargets with empty string entries", () => {
+    const result = PolicyProfileInput.safeParse({
+      extraSafeMakeTargets: ["valid", ""],
+    });
+    assert.ok(!result.success, "empty string in make targets should be rejected");
+  });
+
+  it("accepts partial policy with only some fields set", () => {
+    const result = PolicyProfileInput.safeParse({
+      patchEditThreshold: 3,
+      deleteRequiresApproval: true,
+    });
+    assert.ok(result.success, "partial policy should be valid");
+    if (result.success) {
+      assert.strictEqual(result.data.patchEditThreshold, 3);
+      assert.strictEqual(result.data.deleteRequiresApproval, true);
+      assert.strictEqual(result.data.sensitivePathRequiresApproval, undefined);
     }
   });
 });

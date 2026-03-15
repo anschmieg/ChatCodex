@@ -5,7 +5,7 @@
 //! access — unlike the previous JSON-file approach.
 
 use anyhow::{Context, Result};
-use deterministic_protocol::{PendingApproval, RetryableAction, RunHistoryEntry, RunState, RunSummary};
+use deterministic_protocol::{PendingApproval, RetryableAction, RunHistoryEntry, RunPolicy, RunState, RunSummary};
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
@@ -110,6 +110,8 @@ impl Store {
             ("approvals", "policy_rationale", "TEXT NOT NULL DEFAULT ''"),
             // Milestone 6 columns
             ("runs", "retryable_action", "TEXT"),
+            // Milestone 8 columns
+            ("runs", "policy_profile", "TEXT NOT NULL DEFAULT '{}'"),
         ];
 
         for (table, column, def) in migrations {
@@ -163,14 +165,16 @@ impl Store {
             .map(serde_json::to_string)
             .transpose()
             .context("failed to serialise retryable_action")?;
+        let policy_profile_json = serde_json::to_string(&state.policy_profile)
+            .context("failed to serialise policy_profile")?;
         conn.execute(
             "INSERT OR REPLACE INTO runs
                 (run_id, workspace_id, user_goal, status, plan, current_step,
                  completed_steps, pending_steps, last_action, last_observation,
                  recommended_next_action, recommended_tool,
                  latest_diff_summary, latest_test_result, focus_paths, warnings,
-                 retryable_action, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                 retryable_action, policy_profile, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -189,6 +193,7 @@ impl Store {
                 focus_paths_json,
                 warnings_json,
                 retryable_action_json,
+                policy_profile_json,
                 state.created_at,
                 state.updated_at,
             ],
@@ -207,7 +212,7 @@ impl Store {
                         last_action, last_observation,
                         recommended_next_action, recommended_tool,
                         latest_diff_summary, latest_test_result, focus_paths, warnings,
-                        retryable_action, created_at, updated_at
+                        retryable_action, policy_profile, created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
             .context("failed to prepare statement")?;
@@ -274,6 +279,22 @@ impl Store {
                         )
                     })?;
 
+                // Milestone 8: load policy_profile.
+                // Old rows may have NULL or '{}' — fall back to default policy
+                // with focus_paths populated from the focus_paths column.
+                let policy_profile_json: Option<String> = row.get(17)?;
+                let mut policy_profile: RunPolicy =
+                    policy_profile_json
+                        .as_deref()
+                        .filter(|s| !s.is_empty() && *s != "{}")
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or_default();
+                // Back-fill focus_paths from the dedicated column when the
+                // persisted policy profile doesn't have them set (old records).
+                if policy_profile.focus_paths.is_empty() && !focus_paths.is_empty() {
+                    policy_profile.focus_paths = focus_paths.clone();
+                }
+
                 Ok(RunState {
                     run_id: row.get(0)?,
                     workspace_id: row.get(1)?,
@@ -292,8 +313,9 @@ impl Store {
                     focus_paths,
                     warnings,
                     retryable_action,
-                    created_at: row.get(17)?,
-                    updated_at: row.get(18)?,
+                    policy_profile,
+                    created_at: row.get(18)?,
+                    updated_at: row.get(19)?,
                 })
             })
             .context("failed to query run")?;
@@ -586,6 +608,7 @@ mod tests {
             focus_paths: vec![],
             warnings: vec![],
             retryable_action: None,
+            policy_profile: RunPolicy::default(),
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -1422,6 +1445,165 @@ mod tests {
             .unwrap();
         let entries = store.get_audit_entries("r_fresh", 10).unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    // ---- Milestone 8: policy profile persistence tests ----
+
+    #[test]
+    fn policy_profile_default_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_pol_default", "active");
+        // Default policy is set by make_run_state via RunPolicy::default().
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_pol_default").unwrap().unwrap();
+        assert_eq!(loaded.policy_profile.patch_edit_threshold, 5);
+        assert!(loaded.policy_profile.delete_requires_approval);
+        assert!(loaded.policy_profile.sensitive_path_requires_approval);
+        assert!(loaded.policy_profile.outside_focus_requires_approval);
+        assert!(loaded.policy_profile.extra_safe_make_targets.is_empty());
+        assert!(loaded.policy_profile.focus_paths.is_empty());
+    }
+
+    #[test]
+    fn policy_profile_custom_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_pol_custom", "active");
+        state.policy_profile = RunPolicy {
+            patch_edit_threshold: 10,
+            delete_requires_approval: false,
+            sensitive_path_requires_approval: true,
+            outside_focus_requires_approval: false,
+            extra_safe_make_targets: vec!["deploy-staging".to_string(), "release".to_string()],
+            focus_paths: vec!["src/".to_string(), "tests/".to_string()],
+        };
+        state.focus_paths = state.policy_profile.focus_paths.clone();
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_pol_custom").unwrap().unwrap();
+        assert_eq!(loaded.policy_profile.patch_edit_threshold, 10);
+        assert!(!loaded.policy_profile.delete_requires_approval);
+        assert!(loaded.policy_profile.sensitive_path_requires_approval);
+        assert!(!loaded.policy_profile.outside_focus_requires_approval);
+        assert_eq!(
+            loaded.policy_profile.extra_safe_make_targets,
+            vec!["deploy-staging", "release"]
+        );
+        assert_eq!(
+            loaded.policy_profile.focus_paths,
+            vec!["src/", "tests/"]
+        );
+    }
+
+    #[test]
+    fn policy_profile_focus_paths_backfilled_from_focus_paths_column() {
+        // Simulate an old DB record that has focus_paths set but no policy_profile.
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_backfill", "active");
+        state.focus_paths = vec!["src/".to_string()];
+        // Explicitly set policy_profile.focus_paths empty to simulate old record.
+        state.policy_profile = RunPolicy {
+            focus_paths: vec![],
+            ..RunPolicy::default()
+        };
+        store.save_run(&state).unwrap();
+
+        // The policy_profile JSON stored will have empty focus_paths.
+        // When loaded, the code should back-fill from the focus_paths column.
+        let loaded = store.get_run("r_backfill").unwrap().unwrap();
+        // focus_paths column is set, so policy_profile.focus_paths should be back-filled.
+        assert_eq!(loaded.policy_profile.focus_paths, vec!["src/"]);
+    }
+
+    #[test]
+    fn migration_from_m6_adds_policy_profile_column() {
+        use rusqlite::Connection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("runs.db");
+
+        // Create Milestone 6 schema (without policy_profile column).
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    run_id                   TEXT PRIMARY KEY,
+                    workspace_id             TEXT NOT NULL,
+                    user_goal                TEXT NOT NULL,
+                    status                   TEXT NOT NULL,
+                    plan                     TEXT NOT NULL,
+                    current_step             INTEGER NOT NULL DEFAULT 0,
+                    completed_steps          TEXT NOT NULL DEFAULT '[]',
+                    pending_steps            TEXT NOT NULL DEFAULT '[]',
+                    last_action              TEXT,
+                    last_observation         TEXT,
+                    recommended_next_action  TEXT,
+                    recommended_tool         TEXT,
+                    latest_diff_summary      TEXT,
+                    latest_test_result       TEXT,
+                    focus_paths              TEXT NOT NULL DEFAULT '[]',
+                    warnings                 TEXT NOT NULL DEFAULT '[]',
+                    retryable_action         TEXT,
+                    created_at               TEXT NOT NULL,
+                    updated_at               TEXT NOT NULL
+                );
+                CREATE TABLE approvals (
+                    approval_id         TEXT PRIMARY KEY,
+                    run_id              TEXT NOT NULL,
+                    action_description  TEXT NOT NULL,
+                    risk_reason         TEXT NOT NULL,
+                    policy_rationale    TEXT NOT NULL DEFAULT '',
+                    status              TEXT NOT NULL DEFAULT 'pending',
+                    decision            TEXT,
+                    decision_reason     TEXT,
+                    created_at          TEXT NOT NULL,
+                    resolved_at         TEXT,
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+                );
+                CREATE TABLE IF NOT EXISTS audit_trail (
+                    entry_id    TEXT PRIMARY KEY,
+                    run_id      TEXT NOT NULL,
+                    event_kind  TEXT NOT NULL,
+                    summary     TEXT NOT NULL,
+                    metadata    TEXT,
+                    occurred_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+                );",
+            )
+            .unwrap();
+
+            conn.execute(
+                "INSERT INTO runs (run_id, workspace_id, user_goal, status, plan, current_step,
+                                   completed_steps, pending_steps, focus_paths, warnings,
+                                   created_at, updated_at)
+                 VALUES ('r_m6_pol', '/tmp/ws', 'fix', 'active', '[\"step 1\"]', 0,
+                         '[]', '[\"step 1\"]', '[\"src/\"]', '[]',
+                         '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Open with Store — should migrate and add policy_profile column.
+        let store = Store::open(dir.path()).unwrap();
+        let loaded = store.get_run("r_m6_pol").unwrap().unwrap();
+
+        // Old run without explicit policy_profile gets default values.
+        assert_eq!(loaded.policy_profile.patch_edit_threshold, 5);
+        assert!(loaded.policy_profile.delete_requires_approval);
+        // focus_paths should be back-filled from the focus_paths column.
+        assert_eq!(loaded.policy_profile.focus_paths, vec!["src/"]);
+
+        // Should be able to save a run with an explicit policy_profile.
+        let mut updated = loaded;
+        updated.policy_profile = RunPolicy {
+            patch_edit_threshold: 15,
+            ..RunPolicy::default()
+        };
+        store.save_run(&updated).unwrap();
+
+        let reloaded = store.get_run("r_m6_pol").unwrap().unwrap();
+        assert_eq!(reloaded.policy_profile.patch_edit_threshold, 15);
     }
 }
 

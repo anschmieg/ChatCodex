@@ -196,7 +196,7 @@ fn handle_patch_apply(
 
     // Evaluate approval policy before applying the patch.
     let decision =
-        deterministic_core::approval_policy::evaluate_patch(&p, &state.focus_paths);
+        deterministic_core::approval_policy::evaluate_patch(&p, &state.policy_profile);
 
     match decision {
         deterministic_core::approval_policy::PolicyDecision::RequiresApproval {
@@ -273,7 +273,7 @@ fn handle_tests_run(
         .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
 
     // Evaluate approval policy before running tests.
-    let decision = deterministic_core::approval_policy::evaluate_test_run(&p);
+    let decision = deterministic_core::approval_policy::evaluate_test_run(&p, &state.policy_profile);
 
     match decision {
         deterministic_core::approval_policy::PolicyDecision::RequiresApproval {
@@ -438,6 +438,7 @@ fn handle_run_get(
         recommended_next_action,
         recommended_tool,
         warnings,
+        effective_policy: state.policy_profile.clone(),
     };
     Ok((serde_json::to_value(result)?, Some(state)))
 }
