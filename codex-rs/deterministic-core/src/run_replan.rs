@@ -13,13 +13,19 @@ use deterministic_protocol::{RunReplanParams, RunReplanResult, RunState};
 /// Takes the current persisted state plus optional new evidence /
 /// failure context and recomputes plan fields.  The result is a new
 /// set of pending steps and a recommended next action.
+///
+/// Milestone 6: handles retryable action validity.  If failure context
+/// is provided, stale retryable actions are invalidated.  If still
+/// valid, they are preserved.  A concise replan delta is emitted.
 pub fn replan(params: &RunReplanParams, state: &mut RunState) -> Result<RunReplanResult> {
     let now = chrono::Utc::now().to_rfc3339();
+    let mut delta_parts: Vec<String> = Vec::new();
 
     // Absorb new evidence into the observation log.
     if !params.new_evidence.is_empty() {
         let evidence_text = params.new_evidence.join("; ");
         state.last_observation = Some(format!("Replan evidence: {evidence_text}"));
+        delta_parts.push(format!("absorbed {} new evidence item(s)", params.new_evidence.len()));
     }
 
     // If failure context is provided, mark the current step as failed
@@ -30,18 +36,52 @@ pub fn replan(params: &RunReplanParams, state: &mut RunState) -> Result<RunRepla
         // set externally.
         if state.status == "blocked" || state.status == "awaiting_approval" {
             state.status = "active".to_string();
+            delta_parts.push(format!("status {} → active", state.status));
         }
 
         // Insert a recovery step at the current position.
         let recovery_step = format!("recover from failure: {}", truncate(failure, 120));
         if !state.pending_steps.contains(&recovery_step) {
             state.pending_steps.insert(0, recovery_step);
+            delta_parts.push("inserted recovery step".into());
+        }
+
+        // Milestone 6: invalidate retryable action on failure context.
+        if let Some(ref mut ra) = state.retryable_action
+            && ra.is_valid
+        {
+            ra.is_valid = false;
+            ra.is_recommended = false;
+            ra.invalidation_reason = Some(format!(
+                "Invalidated by replan failure context: {}",
+                truncate(failure, 80)
+            ));
+            delta_parts.push(format!("invalidated retryable action '{}'", ra.kind));
+        }
+    } else {
+        // Milestone 6: no failure context — preserve valid retryable actions,
+        // but if status is recovering from blocked, reconsider validity.
+        if state.status == "blocked" {
+            if let Some(ref mut ra) = state.retryable_action
+                && ra.is_valid
+            {
+                // Still blocked but no failure — the action may still be
+                // valid if the user just wants to replan around it.
+                ra.is_recommended = false;
+                delta_parts.push(format!(
+                    "retryable action '{}' preserved but not recommended (blocked state replan)",
+                    ra.kind
+                ));
+            }
+            state.status = "active".to_string();
+            delta_parts.push("status blocked → active".into());
         }
     }
 
     // Determine recommended next action from pending steps.
     let (recommended_action, recommended_tool) = if state.pending_steps.is_empty() {
         state.status = "done".to_string();
+        delta_parts.push("all steps complete".into());
         (
             "All steps complete — review diff and finalize.".to_string(),
             "show_diff".to_string(),
@@ -54,6 +94,7 @@ pub fn replan(params: &RunReplanParams, state: &mut RunState) -> Result<RunRepla
     // If the run was prepared but not yet active, mark active on replan.
     if state.status == "prepared" {
         state.status = "active".to_string();
+        delta_parts.push("status prepared → active".into());
     }
 
     state.recommended_next_action = Some(recommended_action.clone());
@@ -67,6 +108,12 @@ pub fn replan(params: &RunReplanParams, state: &mut RunState) -> Result<RunRepla
         recommended_action,
     );
 
+    let replan_delta = if delta_parts.is_empty() {
+        None
+    } else {
+        Some(delta_parts.join("; "))
+    };
+
     Ok(RunReplanResult {
         run_id: state.run_id.clone(),
         status: state.status.clone(),
@@ -75,6 +122,8 @@ pub fn replan(params: &RunReplanParams, state: &mut RunState) -> Result<RunRepla
         recommended_next_action: recommended_action,
         recommended_tool,
         replan_summary: summary,
+        retryable_action: state.retryable_action.clone(),
+        replan_delta,
     })
 }
 
@@ -145,6 +194,7 @@ mod tests {
             latest_test_result: None,
             focus_paths: vec![],
             warnings: vec![],
+            retryable_action: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

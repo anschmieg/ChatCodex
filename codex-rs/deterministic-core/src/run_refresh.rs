@@ -29,6 +29,17 @@ pub fn refresh(
         warnings.push("Run is in a failed state — consider replanning".into());
     }
 
+    // Surface retryable action staleness warnings (Milestone 6).
+    if let Some(ref ra) = state.retryable_action
+        && !ra.is_valid
+    {
+        if let Some(ref reason) = ra.invalidation_reason {
+            warnings.push(format!("Retryable action '{}' is stale: {}", ra.kind, reason));
+        } else {
+            warnings.push(format!("Retryable action '{}' is no longer valid", ra.kind));
+        }
+    }
+
     Ok(RunRefreshResult {
         run_id: state.run_id.clone(),
         status: state.status.clone(),
@@ -44,6 +55,7 @@ pub fn refresh(
             .map(String::from)
             .or_else(|| state.latest_diff_summary.clone()),
         latest_test_result: state.latest_test_result.clone(),
+        retryable_action: state.retryable_action.clone(),
         warnings,
     })
 }
@@ -70,6 +82,7 @@ mod tests {
             latest_test_result: None,
             focus_paths: vec![],
             warnings: vec![],
+            retryable_action: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

@@ -66,6 +66,7 @@ pub fn prepare(params: &RunPrepareParams) -> Result<(RunPrepareResult, RunState)
         latest_test_result: None,
         focus_paths: params.focus_paths.clone(),
         warnings: vec![],
+        retryable_action: None,
         created_at: now.clone(),
         updated_at: now,
     };

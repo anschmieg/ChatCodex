@@ -296,6 +296,9 @@ pub struct RunRefreshResult {
     pub pending_approvals: Vec<PendingApproval>,
     pub latest_diff_summary: Option<String>,
     pub latest_test_result: Option<String>,
+    /// Retryable action metadata for resumption guidance (Milestone 6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retryable_action: Option<RetryableAction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
@@ -325,6 +328,12 @@ pub struct RunReplanResult {
     pub recommended_next_action: String,
     pub recommended_tool: String,
     pub replan_summary: String,
+    /// Retryable action state after replanning (Milestone 6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retryable_action: Option<RetryableAction>,
+    /// Concise delta describing what changed during replanning (Milestone 6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replan_delta: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +364,9 @@ pub struct ApprovalResolveResult {
     /// Recommended MCP tool to invoke next.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recommended_tool: Option<String>,
+    /// Retryable action state after the decision (Milestone 6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retryable_action: Option<RetryableAction>,
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +384,39 @@ pub struct PendingApproval {
     #[serde(default)]
     pub policy_rationale: String,
     pub status: String,
+    pub created_at: String,
+}
+
+// ---------------------------------------------------------------------------
+// Retryable action (persisted in RunState, Milestone 6)
+// ---------------------------------------------------------------------------
+
+/// A structured representation of a gated or failed action that ChatGPT
+/// may retry after approval, or should avoid after denial/replanning.
+///
+/// This is purely deterministic metadata — the backend never auto-retries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryableAction {
+    /// Action kind: `"patch.apply"` or `"tests.run"`.
+    pub kind: String,
+    /// Human-readable summary of what the action does.
+    pub summary: String,
+    /// Normalized action payload (JSON string of the original request).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<String>,
+    /// Why this action became retryable (e.g. "blocked by approval policy").
+    pub retryable_reason: String,
+    /// Whether retrying this action is still valid.
+    pub is_valid: bool,
+    /// Whether retrying this action is the recommended next step.
+    pub is_recommended: bool,
+    /// If the action is no longer valid, why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalidation_reason: Option<String>,
+    /// The MCP tool to invoke if retrying.
+    pub recommended_tool: String,
+    /// When this retryable record was created.
     pub created_at: String,
 }
 
@@ -401,6 +446,9 @@ pub struct RunState {
     pub focus_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// The last action that was gated or failed and may be retryable (Milestone 6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retryable_action: Option<RetryableAction>,
     pub created_at: String,
     pub updated_at: String,
 }

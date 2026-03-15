@@ -30,6 +30,27 @@ pub fn dispatch(
     }
 }
 
+/// Build a retryable action record when an operation is gated by approval.
+fn build_retryable_action(
+    kind: &str,
+    summary: &str,
+    payload_json: Option<String>,
+    retryable_reason: &str,
+    recommended_tool: &str,
+) -> RetryableAction {
+    RetryableAction {
+        kind: kind.to_string(),
+        summary: summary.to_string(),
+        payload: payload_json,
+        retryable_reason: retryable_reason.to_string(),
+        is_valid: true,
+        is_recommended: false,
+        invalidation_reason: None,
+        recommended_tool: recommended_tool.to_string(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
 fn handle_run_prepare(
     params: serde_json::Value,
     store: &Store,
@@ -164,6 +185,17 @@ fn handle_patch_apply(
                 &risk_reason,
                 &policy_rationale,
             );
+
+            // Milestone 6: record retryable action.
+            let payload_json = serde_json::to_string(&p).ok();
+            state.retryable_action = Some(build_retryable_action(
+                "patch.apply",
+                &action_summary,
+                payload_json,
+                &format!("Blocked by approval policy: {policy_rationale}"),
+                "apply_patch",
+            ));
+
             store.save_approval(&approval)?;
             store.save_run(&state)?;
             let result = PatchApplyResult {
@@ -174,6 +206,9 @@ fn handle_patch_apply(
             Ok((serde_json::to_value(result)?, Some(state)))
         }
         deterministic_core::approval_policy::PolicyDecision::Proceed => {
+            // Clear retryable action on successful execution.
+            state.retryable_action = None;
+            store.save_run(&state)?;
             let result = deterministic_core::patch_apply::apply(&p, &ws)?;
             let run_state = store.get_run(&p.run_id)?;
             Ok((serde_json::to_value(result)?, run_state))
@@ -210,6 +245,17 @@ fn handle_tests_run(
                 &risk_reason,
                 &policy_rationale,
             );
+
+            // Milestone 6: record retryable action.
+            let payload_json = serde_json::to_string(&p).ok();
+            state.retryable_action = Some(build_retryable_action(
+                "tests.run",
+                &action_summary,
+                payload_json,
+                &format!("Blocked by approval policy: {policy_rationale}"),
+                "run_tests",
+            ));
+
             store.save_approval(&approval)?;
             store.save_run(&state)?;
             let result = TestsRunResult {
@@ -223,6 +269,9 @@ fn handle_tests_run(
             Ok((serde_json::to_value(result)?, Some(state)))
         }
         deterministic_core::approval_policy::PolicyDecision::Proceed => {
+            // Clear retryable action on successful execution.
+            state.retryable_action = None;
+            store.save_run(&state)?;
             let result = deterministic_core::tests_run::run(&p, &ws)?;
             let run_state = store.get_run(&p.run_id)?;
             Ok((serde_json::to_value(result)?, run_state))

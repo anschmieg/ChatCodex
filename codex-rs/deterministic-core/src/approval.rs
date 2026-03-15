@@ -42,8 +42,10 @@ pub fn create_approval(
 /// Resolve a pending approval.
 ///
 /// - `"approve"` → transitions the run back to `active` if no more
-///   pending approvals remain.
-/// - `"deny"` → transitions the run to `blocked`.
+///   pending approvals remain.  If a retryable action is recorded,
+///   marks it as recommended so ChatGPT knows to retry.
+/// - `"deny"` → transitions the run to `blocked`.  Invalidates any
+///   retryable action so ChatGPT knows not to retry unchanged.
 ///
 /// Returns a summary of what happened, including recommended next
 /// action after the decision.
@@ -56,17 +58,50 @@ pub fn resolve(
 
     let (new_status, summary, rec_action, rec_tool) = match params.decision.as_str() {
         "approve" => {
+            // Mark retryable action as recommended if present and valid.
+            if let Some(ref mut ra) = state.retryable_action
+                && ra.is_valid
+            {
+                ra.is_recommended = true;
+            }
+
             if remaining_pending_count == 0 {
                 // This was the last pending approval — unblock the run.
                 state.status = "active".to_string();
-                state.recommended_next_action =
-                    Some("Retry the previously gated action.".to_string());
-                state.recommended_tool = Some("refresh_run_state".to_string());
+
+                // Use the retryable action's tool if available.
+                let (action_text, tool) = if let Some(ref ra) = state.retryable_action {
+                    if ra.is_valid {
+                        (
+                            format!("Retry the approved action: {}", ra.summary),
+                            ra.recommended_tool.clone(),
+                        )
+                    } else {
+                        (
+                            format!(
+                                "Previously gated action is no longer valid{}. Consider replanning.",
+                                ra.invalidation_reason
+                                    .as_deref()
+                                    .map(|r| format!(": {r}"))
+                                    .unwrap_or_default()
+                            ),
+                            "replan_run".to_string(),
+                        )
+                    }
+                } else {
+                    (
+                        "Retry the previously gated action.".to_string(),
+                        "refresh_run_state".to_string(),
+                    )
+                };
+
+                state.recommended_next_action = Some(action_text.clone());
+                state.recommended_tool = Some(tool.clone());
                 (
                     "active".to_string(),
                     "Approval granted; run unblocked.".to_string(),
-                    Some("Retry the previously gated action.".to_string()),
-                    Some("refresh_run_state".to_string()),
+                    Some(action_text),
+                    Some(tool),
                 )
             } else {
                 state.recommended_next_action = Some(format!(
@@ -86,6 +121,20 @@ pub fn resolve(
             }
         }
         "deny" => {
+            // Invalidate retryable action on denial.
+            if let Some(ref mut ra) = state.retryable_action {
+                ra.is_valid = false;
+                ra.is_recommended = false;
+                ra.invalidation_reason = Some(format!(
+                    "Action denied{}",
+                    params
+                        .reason
+                        .as_deref()
+                        .map(|r| format!(": {r}"))
+                        .unwrap_or_default()
+                ));
+            }
+
             state.status = "blocked".to_string();
             state.recommended_next_action =
                 Some("Replan the run to work around the denied action.".to_string());
@@ -121,6 +170,7 @@ pub fn resolve(
         summary,
         recommended_next_action: rec_action,
         recommended_tool: rec_tool,
+        retryable_action: state.retryable_action.clone(),
     })
 }
 
@@ -146,6 +196,7 @@ mod tests {
             latest_test_result: None,
             focus_paths: vec![],
             warnings: vec![],
+            retryable_action: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

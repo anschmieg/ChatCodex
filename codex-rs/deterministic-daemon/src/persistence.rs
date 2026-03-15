@@ -5,7 +5,7 @@
 //! access — unlike the previous JSON-file approach.
 
 use anyhow::{Context, Result};
-use deterministic_protocol::{PendingApproval, RunState};
+use deterministic_protocol::{PendingApproval, RetryableAction, RunState};
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
@@ -99,6 +99,8 @@ impl Store {
             // Milestone 5 columns
             ("runs", "focus_paths", "TEXT NOT NULL DEFAULT '[]'"),
             ("approvals", "policy_rationale", "TEXT NOT NULL DEFAULT ''"),
+            // Milestone 6 columns
+            ("runs", "retryable_action", "TEXT"),
         ];
 
         for (table, column, def) in migrations {
@@ -132,14 +134,20 @@ impl Store {
             .context("failed to serialise focus_paths")?;
         let warnings_json =
             serde_json::to_string(&state.warnings).context("failed to serialise warnings")?;
+        let retryable_action_json: Option<String> = state
+            .retryable_action
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .context("failed to serialise retryable_action")?;
         conn.execute(
             "INSERT OR REPLACE INTO runs
                 (run_id, workspace_id, user_goal, status, plan, current_step,
                  completed_steps, pending_steps, last_action, last_observation,
                  recommended_next_action, recommended_tool,
                  latest_diff_summary, latest_test_result, focus_paths, warnings,
-                 created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                 retryable_action, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -157,6 +165,7 @@ impl Store {
                 state.latest_test_result,
                 focus_paths_json,
                 warnings_json,
+                retryable_action_json,
                 state.created_at,
                 state.updated_at,
             ],
@@ -175,7 +184,7 @@ impl Store {
                         last_action, last_observation,
                         recommended_next_action, recommended_tool,
                         latest_diff_summary, latest_test_result, focus_paths, warnings,
-                        created_at, updated_at
+                        retryable_action, created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
             .context("failed to prepare statement")?;
@@ -229,6 +238,19 @@ impl Store {
                         )
                     })?;
 
+                let retryable_action_json: Option<String> = row.get(16)?;
+                let retryable_action: Option<RetryableAction> = retryable_action_json
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            16,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+
                 Ok(RunState {
                     run_id: row.get(0)?,
                     workspace_id: row.get(1)?,
@@ -246,8 +268,9 @@ impl Store {
                     latest_test_result: row.get(13)?,
                     focus_paths,
                     warnings,
-                    created_at: row.get(16)?,
-                    updated_at: row.get(17)?,
+                    retryable_action,
+                    created_at: row.get(17)?,
+                    updated_at: row.get(18)?,
                 })
             })
             .context("failed to query run")?;
@@ -401,6 +424,7 @@ mod tests {
             latest_test_result: None,
             focus_paths: vec![],
             warnings: vec![],
+            retryable_action: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
