@@ -142,9 +142,43 @@ fn handle_patch_apply(
     let ws = store
         .workspace_for_run(&p.run_id)?
         .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
-    let result = deterministic_core::patch_apply::apply(&p, &ws)?;
-    let run_state = store.get_run(&p.run_id)?;
-    Ok((serde_json::to_value(result)?, run_state))
+
+    // Load run state for policy evaluation.
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    // Evaluate approval policy before applying the patch.
+    let decision =
+        deterministic_core::approval_policy::evaluate_patch(&p, &state.focus_paths);
+
+    match decision {
+        deterministic_core::approval_policy::PolicyDecision::RequiresApproval {
+            action_summary,
+            risk_reason,
+            policy_rationale,
+        } => {
+            let approval = deterministic_core::approval::create_approval(
+                &mut state,
+                &action_summary,
+                &risk_reason,
+                &policy_rationale,
+            );
+            store.save_approval(&approval)?;
+            store.save_run(&state)?;
+            let result = PatchApplyResult {
+                changed_files: vec![],
+                diff_stats: String::new(),
+                approval_required: Some(approval),
+            };
+            Ok((serde_json::to_value(result)?, Some(state)))
+        }
+        deterministic_core::approval_policy::PolicyDecision::Proceed => {
+            let result = deterministic_core::patch_apply::apply(&p, &ws)?;
+            let run_state = store.get_run(&p.run_id)?;
+            Ok((serde_json::to_value(result)?, run_state))
+        }
+    }
 }
 
 fn handle_tests_run(
@@ -155,9 +189,45 @@ fn handle_tests_run(
     let ws = store
         .workspace_for_run(&p.run_id)?
         .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
-    let result = deterministic_core::tests_run::run(&p, &ws)?;
-    let run_state = store.get_run(&p.run_id)?;
-    Ok((serde_json::to_value(result)?, run_state))
+
+    // Load run state for policy evaluation.
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    // Evaluate approval policy before running tests.
+    let decision = deterministic_core::approval_policy::evaluate_test_run(&p);
+
+    match decision {
+        deterministic_core::approval_policy::PolicyDecision::RequiresApproval {
+            action_summary,
+            risk_reason,
+            policy_rationale,
+        } => {
+            let approval = deterministic_core::approval::create_approval(
+                &mut state,
+                &action_summary,
+                &risk_reason,
+                &policy_rationale,
+            );
+            store.save_approval(&approval)?;
+            store.save_run(&state)?;
+            let result = TestsRunResult {
+                resolved_command: String::new(),
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: String::new(),
+                summary: format!("Approval required: {action_summary}"),
+                approval_required: Some(approval),
+            };
+            Ok((serde_json::to_value(result)?, Some(state)))
+        }
+        deterministic_core::approval_policy::PolicyDecision::Proceed => {
+            let result = deterministic_core::tests_run::run(&p, &ws)?;
+            let run_state = store.get_run(&p.run_id)?;
+            Ok((serde_json::to_value(result)?, run_state))
+        }
+    }
 }
 
 fn handle_git_diff(

@@ -106,6 +106,7 @@ pub fn apply(params: &PatchApplyParams, workspace_root: &str) -> Result<PatchApp
     Ok(PatchApplyResult {
         changed_files,
         diff_stats: format!("+{total_additions} -{total_deletions}"),
+        approval_required: None,
     })
 }
 

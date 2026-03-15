@@ -211,6 +211,9 @@ pub struct PatchApplyParams {
 pub struct PatchApplyResult {
     pub changed_files: Vec<String>,
     pub diff_stats: String,
+    /// When set, the patch was NOT applied — an approval is required first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_required: Option<PendingApproval>,
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +243,9 @@ pub struct TestsRunResult {
     pub stdout: String,
     pub stderr: String,
     pub summary: String,
+    /// When set, the test was NOT run — an approval is required first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_required: Option<PendingApproval>,
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +349,12 @@ pub struct ApprovalResolveResult {
     pub decision: String,
     pub status: String,
     pub summary: String,
+    /// Guidance on what to do next after the approval decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended_next_action: Option<String>,
+    /// Recommended MCP tool to invoke next.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended_tool: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +368,9 @@ pub struct PendingApproval {
     pub run_id: String,
     pub action_description: String,
     pub risk_reason: String,
+    /// The specific policy rule that triggered this approval.
+    #[serde(default)]
+    pub policy_rationale: String,
     pub status: String,
     pub created_at: String,
 }
@@ -381,6 +396,9 @@ pub struct RunState {
     pub recommended_tool: Option<String>,
     pub latest_diff_summary: Option<String>,
     pub latest_test_result: Option<String>,
+    /// Focus paths declared at run-prepare time, used for approval policy.
+    #[serde(default)]
+    pub focus_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     pub created_at: String,

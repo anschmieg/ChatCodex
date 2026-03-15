@@ -68,6 +68,7 @@ mod tests {
             recommended_tool: Some("get_workspace_summary".into()),
             latest_diff_summary: None,
             latest_test_result: None,
+            focus_paths: vec![],
             warnings: vec![],
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
@@ -95,6 +96,7 @@ mod tests {
             run_id: "r1".into(),
             action_description: "delete file".into(),
             risk_reason: "destructive".into(),
+            policy_rationale: "Policy: file deletion requires approval".into(),
             status: "pending".into(),
             created_at: "2024-01-01T00:00:00Z".into(),
         };

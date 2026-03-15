@@ -218,6 +218,7 @@ pub fn run(params: &TestsRunParams, workspace_root: &str) -> Result<TestsRunResu
         stdout: stdout_truncated,
         stderr: stderr_truncated,
         summary,
+        approval_required: None,
     })
 }
 

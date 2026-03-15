@@ -64,6 +64,7 @@ pub fn prepare(params: &RunPrepareParams) -> Result<(RunPrepareResult, RunState)
         recommended_tool: Some("get_workspace_summary".to_string()),
         latest_diff_summary: None,
         latest_test_result: None,
+        focus_paths: params.focus_paths.clone(),
         warnings: vec![],
         created_at: now.clone(),
         updated_at: now,

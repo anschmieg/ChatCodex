@@ -45,7 +45,7 @@ impl Store {
     /// Uses ALTER TABLE to add missing columns for backward compatibility.
     fn migrate(conn: &Connection) -> Result<()> {
         // Create the base tables if they don't exist.
-        // Note: This creates tables with the full Milestone 4 schema for new databases.
+        // Note: This creates tables with the full Milestone 5 schema for new databases.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS runs (
                 run_id                   TEXT PRIMARY KEY,
@@ -62,6 +62,7 @@ impl Store {
                 recommended_tool         TEXT,
                 latest_diff_summary      TEXT,
                 latest_test_result       TEXT,
+                focus_paths              TEXT NOT NULL DEFAULT '[]',
                 warnings                 TEXT NOT NULL DEFAULT '[]',
                 created_at               TEXT NOT NULL,
                 updated_at               TEXT NOT NULL
@@ -71,6 +72,7 @@ impl Store {
                 run_id              TEXT NOT NULL,
                 action_description  TEXT NOT NULL,
                 risk_reason         TEXT NOT NULL,
+                policy_rationale    TEXT NOT NULL DEFAULT '',
                 status              TEXT NOT NULL DEFAULT 'pending',
                 decision            TEXT,
                 decision_reason     TEXT,
@@ -81,9 +83,10 @@ impl Store {
         )
         .context("failed to create tables")?;
 
-        // Migrate older databases: add columns that may be missing from Milestone 3 era.
+        // Migrate older databases: add columns that may be missing from earlier milestones.
         // SQLite supports ALTER TABLE ADD COLUMN; we ignore errors if columns already exist.
         let migrations = [
+            // Milestone 4 columns
             ("runs", "completed_steps", "TEXT NOT NULL DEFAULT '[]'"),
             ("runs", "pending_steps", "TEXT NOT NULL DEFAULT '[]'"),
             ("runs", "last_action", "TEXT"),
@@ -93,6 +96,9 @@ impl Store {
             ("runs", "latest_diff_summary", "TEXT"),
             ("runs", "latest_test_result", "TEXT"),
             ("runs", "warnings", "TEXT NOT NULL DEFAULT '[]'"),
+            // Milestone 5 columns
+            ("runs", "focus_paths", "TEXT NOT NULL DEFAULT '[]'"),
+            ("approvals", "policy_rationale", "TEXT NOT NULL DEFAULT ''"),
         ];
 
         for (table, column, def) in migrations {
@@ -122,6 +128,8 @@ impl Store {
             .context("failed to serialise completed_steps")?;
         let pending_json = serde_json::to_string(&state.pending_steps)
             .context("failed to serialise pending_steps")?;
+        let focus_paths_json = serde_json::to_string(&state.focus_paths)
+            .context("failed to serialise focus_paths")?;
         let warnings_json =
             serde_json::to_string(&state.warnings).context("failed to serialise warnings")?;
         conn.execute(
@@ -129,9 +137,9 @@ impl Store {
                 (run_id, workspace_id, user_goal, status, plan, current_step,
                  completed_steps, pending_steps, last_action, last_observation,
                  recommended_next_action, recommended_tool,
-                 latest_diff_summary, latest_test_result, warnings,
+                 latest_diff_summary, latest_test_result, focus_paths, warnings,
                  created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -147,6 +155,7 @@ impl Store {
                 state.recommended_tool,
                 state.latest_diff_summary,
                 state.latest_test_result,
+                focus_paths_json,
                 warnings_json,
                 state.created_at,
                 state.updated_at,
@@ -165,7 +174,7 @@ impl Store {
                         current_step, completed_steps, pending_steps,
                         last_action, last_observation,
                         recommended_next_action, recommended_tool,
-                        latest_diff_summary, latest_test_result, warnings,
+                        latest_diff_summary, latest_test_result, focus_paths, warnings,
                         created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
@@ -176,7 +185,8 @@ impl Store {
                 let plan_json: String = row.get(4)?;
                 let completed_json: String = row.get(6)?;
                 let pending_json: String = row.get(7)?;
-                let warnings_json: String = row.get(14)?;
+                let focus_paths_json: String = row.get(14)?;
+                let warnings_json: String = row.get(15)?;
 
                 let plan: Vec<String> =
                     serde_json::from_str(&plan_json).map_err(|e| {
@@ -202,10 +212,18 @@ impl Store {
                             Box::new(e),
                         )
                     })?;
+                let focus_paths: Vec<String> =
+                    serde_json::from_str(&focus_paths_json).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            14,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
                 let warnings: Vec<String> =
                     serde_json::from_str(&warnings_json).map_err(|e| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            14,
+                            15,
                             rusqlite::types::Type::Text,
                             Box::new(e),
                         )
@@ -226,9 +244,10 @@ impl Store {
                     recommended_tool: row.get(11)?,
                     latest_diff_summary: row.get(12)?,
                     latest_test_result: row.get(13)?,
+                    focus_paths,
                     warnings,
-                    created_at: row.get(15)?,
-                    updated_at: row.get(16)?,
+                    created_at: row.get(16)?,
+                    updated_at: row.get(17)?,
                 })
             })
             .context("failed to query run")?;
@@ -252,13 +271,14 @@ impl Store {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         conn.execute(
             "INSERT OR REPLACE INTO approvals
-                (approval_id, run_id, action_description, risk_reason, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (approval_id, run_id, action_description, risk_reason, policy_rationale, status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
                 approval.approval_id,
                 approval.run_id,
                 approval.action_description,
                 approval.risk_reason,
+                approval.policy_rationale,
                 approval.status,
                 approval.created_at,
             ],
@@ -272,7 +292,7 @@ impl Store {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut stmt = conn
             .prepare(
-                "SELECT approval_id, run_id, action_description, risk_reason, status, created_at
+                "SELECT approval_id, run_id, action_description, risk_reason, policy_rationale, status, created_at
                  FROM approvals WHERE run_id = ?1 AND status = 'pending'",
             )
             .context("failed to prepare statement")?;
@@ -284,8 +304,9 @@ impl Store {
                     run_id: row.get(1)?,
                     action_description: row.get(2)?,
                     risk_reason: row.get(3)?,
-                    status: row.get(4)?,
-                    created_at: row.get(5)?,
+                    policy_rationale: row.get(4)?,
+                    status: row.get(5)?,
+                    created_at: row.get(6)?,
                 })
             })
             .context("failed to query approvals")?;
@@ -302,7 +323,7 @@ impl Store {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut stmt = conn
             .prepare(
-                "SELECT approval_id, run_id, action_description, risk_reason, status, created_at
+                "SELECT approval_id, run_id, action_description, risk_reason, policy_rationale, status, created_at
                  FROM approvals WHERE approval_id = ?1",
             )
             .context("failed to prepare statement")?;
@@ -314,8 +335,9 @@ impl Store {
                     run_id: row.get(1)?,
                     action_description: row.get(2)?,
                     risk_reason: row.get(3)?,
-                    status: row.get(4)?,
-                    created_at: row.get(5)?,
+                    policy_rationale: row.get(4)?,
+                    status: row.get(5)?,
+                    created_at: row.get(6)?,
                 })
             })
             .context("failed to query approval")?;
@@ -377,6 +399,7 @@ mod tests {
             recommended_tool: Some("get_workspace_summary".into()),
             latest_diff_summary: None,
             latest_test_result: None,
+            focus_paths: vec![],
             warnings: vec![],
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
@@ -479,6 +502,7 @@ mod tests {
             run_id: "r1".into(),
             action_description: "delete file".into(),
             risk_reason: "destructive operation".into(),
+            policy_rationale: "Policy: file deletion requires approval".into(),
             status: "pending".into(),
             created_at: "2024-01-01T00:00:00Z".into(),
         };
@@ -501,6 +525,7 @@ mod tests {
             run_id: "r1".into(),
             action_description: "delete file".into(),
             risk_reason: "destructive operation".into(),
+            policy_rationale: "Policy: file deletion requires approval".into(),
             status: "pending".into(),
             created_at: "2024-01-01T00:00:00Z".into(),
         };
@@ -525,6 +550,7 @@ mod tests {
             run_id: "r1".into(),
             action_description: "rm -rf /".into(),
             risk_reason: "extremely dangerous".into(),
+            policy_rationale: "Policy: destructive command".into(),
             status: "pending".into(),
             created_at: "2024-01-01T00:00:00Z".into(),
         };
@@ -632,6 +658,137 @@ mod tests {
         assert_eq!(loaded.run_id, "r_fresh");
         assert_eq!(loaded.status, "active");
         assert!(!loaded.plan.is_empty());
+    }
+
+    // ---- Milestone 5 policy-hardening tests ----
+
+    /// Verify focus_paths roundtrip through SQLite.
+    #[test]
+    fn focus_paths_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+
+        let mut state = make_run_state("r_focus", "active");
+        state.focus_paths = vec!["src/".into(), "tests/".into()];
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_focus").unwrap().unwrap();
+        assert_eq!(loaded.focus_paths, vec!["src/", "tests/"]);
+    }
+
+    /// Verify policy_rationale is persisted in approval records.
+    #[test]
+    fn approval_policy_rationale_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r1", "awaiting_approval");
+        store.save_run(&state).unwrap();
+
+        let approval = PendingApproval {
+            approval_id: "a_pol".into(),
+            run_id: "r1".into(),
+            action_description: "Delete src/main.rs".into(),
+            risk_reason: "File deletion is destructive".into(),
+            policy_rationale: "Policy: file deletion requires approval".into(),
+            status: "pending".into(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+        };
+        store.save_approval(&approval).unwrap();
+
+        let loaded = store.get_approval("a_pol").unwrap().unwrap();
+        assert_eq!(loaded.policy_rationale, "Policy: file deletion requires approval");
+        assert_eq!(loaded.action_description, "Delete src/main.rs");
+    }
+
+    /// Verify that multiple pending approvals can be tracked for a single run.
+    #[test]
+    fn multiple_pending_approvals() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r1", "awaiting_approval");
+        store.save_run(&state).unwrap();
+
+        for i in 0..3 {
+            let approval = PendingApproval {
+                approval_id: format!("a{i}"),
+                run_id: "r1".into(),
+                action_description: format!("Action {i}"),
+                risk_reason: "risky".into(),
+                policy_rationale: "Policy: test".into(),
+                status: "pending".into(),
+                created_at: "2024-01-01T00:00:00Z".into(),
+            };
+            store.save_approval(&approval).unwrap();
+        }
+
+        let pending = store.get_pending_approvals("r1").unwrap();
+        assert_eq!(pending.len(), 3);
+
+        // Resolve one, check remaining.
+        store.resolve_approval("a0", "approve", None).unwrap();
+        let pending = store.get_pending_approvals("r1").unwrap();
+        assert_eq!(pending.len(), 2);
+
+        // Deny another.
+        store.resolve_approval("a1", "deny", Some("no")).unwrap();
+        let pending = store.get_pending_approvals("r1").unwrap();
+        assert_eq!(pending.len(), 1);
+    }
+
+    /// Verify that Milestone 3 → Milestone 5 migration adds focus_paths and policy_rationale.
+    #[test]
+    fn migration_from_milestone3_adds_m5_columns() {
+        use rusqlite::Connection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("runs.db");
+
+        // Create old M3 schema.
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    run_id          TEXT PRIMARY KEY,
+                    workspace_id    TEXT NOT NULL,
+                    user_goal       TEXT NOT NULL,
+                    status          TEXT NOT NULL,
+                    plan            TEXT NOT NULL,
+                    current_step    INTEGER NOT NULL DEFAULT 0,
+                    created_at      TEXT NOT NULL,
+                    updated_at      TEXT NOT NULL
+                );
+                CREATE TABLE approvals (
+                    approval_id         TEXT PRIMARY KEY,
+                    run_id              TEXT NOT NULL,
+                    action_description  TEXT NOT NULL,
+                    risk_reason         TEXT NOT NULL,
+                    status              TEXT NOT NULL DEFAULT 'pending',
+                    decision            TEXT,
+                    decision_reason     TEXT,
+                    created_at          TEXT NOT NULL,
+                    resolved_at         TEXT,
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+                );",
+            )
+            .unwrap();
+
+            conn.execute(
+                "INSERT INTO runs (run_id, workspace_id, user_goal, status, plan, current_step, created_at, updated_at)
+                 VALUES ('r_m3', '/tmp/ws', 'fix', 'active', '[\"step 1\"]', 0, '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                [],
+            ).unwrap();
+        }
+
+        // Open with Store — should migrate.
+        let store = Store::open(dir.path()).unwrap();
+        let loaded = store.get_run("r_m3").unwrap().unwrap();
+        // focus_paths should default to empty array.
+        assert!(loaded.focus_paths.is_empty());
+
+        // Should be able to save a run with focus_paths now.
+        let mut updated = loaded;
+        updated.focus_paths = vec!["src/".into()];
+        store.save_run(&updated).unwrap();
+
+        let reloaded = store.get_run("r_m3").unwrap().unwrap();
+        assert_eq!(reloaded.focus_paths, vec!["src/"]);
     }
 }
 

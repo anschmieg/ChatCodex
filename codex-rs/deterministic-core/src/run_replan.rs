@@ -143,6 +143,7 @@ mod tests {
             recommended_tool: Some("read_file".into()),
             latest_diff_summary: None,
             latest_test_result: None,
+            focus_paths: vec![],
             warnings: vec![],
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),

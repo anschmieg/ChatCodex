@@ -5,6 +5,7 @@
 //! **must not** contain autonomous agent logic.
 
 pub mod approval;
+pub mod approval_policy;
 pub mod file_read;
 pub mod git_diff;
 pub mod git_status;
