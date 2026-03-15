@@ -197,11 +197,20 @@ operation: it does not trigger actions or perform LLM reasoning.
 - `pendingApprovals` — list of pending approval objects
 - `latestDiffSummary`
 - `latestTestResult`
+- `retryableAction?` — retryable action metadata (Milestone 6), including:
+  - `kind` — `"patch.apply"` or `"tests.run"`
+  - `summary` — human-readable description
+  - `isValid` — whether retry is still valid
+  - `isRecommended` — whether retry is the recommended next step
+  - `invalidationReason?` — why the action is no longer valid
+  - `recommendedTool` — MCP tool to invoke for retry
 - `warnings`
 
 ### Behavior
 
 - Merges persisted state with live workspace facts (e.g. current git diff)
+- Surfaces retryable action metadata for resumption guidance
+- Warns if a retryable action is stale or invalidated
 - Does not mutate state or trigger any actions
 - Does not call any LLM
 
@@ -225,12 +234,17 @@ Deterministically replan the run based on new evidence or failure context.
 - `recommendedNextAction`
 - `recommendedTool`
 - `replanSummary`
+- `retryableAction?` — retryable action state after replanning (Milestone 6)
+- `replanDelta?` — concise description of what changed during replanning (Milestone 6)
 
 ### Behavior
 
 - Rule-based replanning only — no LLM calls
-- If failure context is provided, inserts a recovery step
+- If failure context is provided, inserts a recovery step and invalidates
+  any stale retryable action
+- If no failure context, preserves valid retryable actions
 - Updates recommended next action and tool based on pending steps
+- Emits a concise `replanDelta` describing what changed
 - Persists updated state to SQLite
 
 ## approve_action
@@ -253,12 +267,17 @@ Resolve a pending approval (approve or deny a risky action).
 - `summary`
 - `recommendedNextAction?` — suggested next step after resolution
 - `recommendedTool?` — suggested MCP tool after resolution
+- `retryableAction?` — retryable action state after the decision (Milestone 6)
 
 ### Behavior
 
 - `"approve"` unblocks the run if no more pending approvals remain
-  - Recommends retrying the previously gated action
+  - If a valid retryable action exists, marks it recommended and points
+    `recommendedTool` at the action's tool (e.g. `apply_patch`, `run_tests`)
+  - If the retryable action is stale, recommends replanning instead
+  - The action is never auto-retried — ChatGPT must invoke the next tool
 - `"deny"` blocks the run
+  - Invalidates the retryable action so it is no longer recommended
   - Recommends replanning via `replan_run`
 - Multiple pending approvals are handled predictably: each is resolved independently
 - Persists decision to SQLite

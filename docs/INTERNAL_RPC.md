@@ -80,7 +80,10 @@ not trigger actions or perform LLM reasoning.
 Params: `{ runId: string }`
 
 Returns: full run-state snapshot including `pendingApprovals`,
-`latestDiffSummary`, `latestTestResult`, `warnings`.
+`latestDiffSummary`, `latestTestResult`, `retryableAction`, `warnings`.
+
+Milestone 6: if a retryable action is persisted and invalid/stale,
+`warnings` will include a staleness note.
 
 ### run.replan
 
@@ -91,7 +94,13 @@ backend applies rule-based logic to update `pendingSteps`,
 
 Params: `{ runId, reason, newEvidence?, failureContext? }`
 
-Returns: updated plan fields + `replanSummary`.
+Returns: updated plan fields + `replanSummary` + `retryableAction` +
+`replanDelta`.
+
+Milestone 6: if failure context is provided, any valid retryable
+action is invalidated.  If no failure context, valid retryable
+actions are preserved (but may be un-recommended).  `replanDelta`
+describes what changed.
 
 ### approval.resolve
 
@@ -102,10 +111,13 @@ denying any approval blocks the run.
 Params: `{ runId, approvalId, decision, reason? }`
 
 Returns: resolution summary + resulting run status +
-`recommendedNextAction` and `recommendedTool` guidance.
+`recommendedNextAction` + `recommendedTool` + `retryableAction`.
 
-After approve (last pending): recommends retrying the gated action.
-After deny: recommends replanning via `replan_run`.
+After approve (last pending): if a valid retryable action exists,
+marks it recommended and points `recommendedTool` at the action's
+tool.  If the retryable action is stale, recommends replanning.
+After deny: invalidates the retryable action and recommends replanning
+via `replan_run`.
 
 ### workspace.summary
 
@@ -133,6 +145,10 @@ large patch, sensitive file path, outside focus paths), the handler
 creates a pending approval and returns the result with
 `approvalRequired` set instead of applying the patch.
 
+Milestone 6: when a patch is blocked by policy, a `retryableAction`
+record is persisted in the run state so ChatGPT can later identify
+what to retry after approval.
+
 ### tests.run
 
 Resolve and run a canonical test command.
@@ -141,6 +157,10 @@ Before executing the test, a deterministic approval policy is evaluated.
 If the policy determines the command is risky (e.g. non-standard make
 target), the handler creates a pending approval and returns the result
 with `approvalRequired` set instead of running the test.
+
+Milestone 6: when a test run is blocked by policy, a `retryableAction`
+record is persisted in the run state so ChatGPT can later identify
+what to retry after approval.
 
 ### git.diff
 

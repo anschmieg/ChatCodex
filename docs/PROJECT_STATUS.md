@@ -72,6 +72,21 @@ ChatGPT-hosted model
 - Added `focus_paths` and `policy_rationale` fields to support policy decisions
 - Updated SQLite schema and migration for Milestone 5 columns
 
+### Milestone 6: Deterministic Action Resumption and Retry Guidance
+- Added `RetryableAction` model to protocol types with kind, summary, payload, validity, recommendation
+- Extended `RunState` with `retryableAction` for persisted retry metadata
+- Extended `RunRefreshResult`, `RunReplanResult`, `ApprovalResolveResult` with retryable action state
+- When `patch.apply` or `tests.run` is blocked by approval policy, a retryable action is recorded
+- On approval: retryable action is marked recommended; `recommendedTool` points to the blocked action's tool
+- On denial: retryable action is invalidated; recommended next tool shifts to `replan_run`
+- On replan with failure context: stale retryable actions are invalidated deterministically
+- On replan without failure: valid retryable actions are preserved
+- `replanDelta` field emitted by `run.replan` for concise change description
+- Refresh surfaces retryable action metadata and warns on staleness
+- SQLite migration adds `retryable_action` column with backward compatibility
+- No new public MCP tools; no new internal daemon methods
+- No autonomous continuation—ChatGPT must still invoke the next tool explicitly
+
 ## Current Implementation Surface
 
 ### Public MCP Tools (11)
@@ -117,6 +132,7 @@ ChatGPT-hosted model
 - `recommendedNextAction`, `recommendedTool`
 - `focusPaths` (Milestone 5)
 - `latestDiffSummary`, `latestTestResult`
+- `retryableAction` (Milestone 6) — structured metadata for the last gated/failed action
 - `warnings`
 - `createdAt`, `updatedAt`
 
@@ -133,7 +149,7 @@ ChatGPT-hosted model
 
 ## Verified
 
-- ✅ 98 Rust tests pass (deterministic-protocol, deterministic-core, deterministic-daemon)
+- ✅ 123 Rust tests pass (deterministic-protocol, deterministic-core, deterministic-daemon)
 - ✅ 3 TypeScript tests pass (MCP gateway invariants)
 - ✅ Clippy clean
 - ✅ No forbidden methods or tools registered
