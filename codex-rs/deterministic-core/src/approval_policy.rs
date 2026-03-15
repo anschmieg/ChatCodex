@@ -126,7 +126,7 @@ fn matches_sensitive_pattern(path: &str) -> Option<&'static str> {
 fn is_within_focus_paths(path: &str, focus_paths: &[String]) -> bool {
     focus_paths
         .iter()
-        .any(|fp| path.starts_with(fp.as_str()) || fp.starts_with(path))
+        .any(|fp| path.starts_with(fp.as_str()))
 }
 
 /// Count unique paths in edits.
