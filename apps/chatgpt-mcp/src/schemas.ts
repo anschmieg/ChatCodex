@@ -250,3 +250,29 @@ export const GetRunHistoryInput = {
     .optional()
     .describe("Maximum number of entries to return (default: 50, max: 200)"),
 };
+
+// ---------------------------------------------------------------
+// preview_patch_policy  (Milestone 9)
+//
+// Mirrors apply_patch inputs but is strictly read-only.
+// ---------------------------------------------------------------
+export const PreviewPatchPolicyInput = {
+  runId: z.string().describe("Run ID from codex_prepare_run"),
+  edits: z.array(PatchEditSchema).describe("Proposed edits to evaluate (not applied)"),
+};
+
+// ---------------------------------------------------------------
+// preview_test_policy  (Milestone 9)
+//
+// Mirrors run_tests inputs but is strictly read-only.
+// ---------------------------------------------------------------
+export const PreviewTestPolicyInput = {
+  runId: z.string().describe("Run ID from codex_prepare_run"),
+  scope: z
+    .string()
+    .describe(
+      "Test scope — a framework name (cargo, npm, pytest, make) or a semantic label",
+    ),
+  target: z.string().optional().describe("Specific test target within scope"),
+  reason: z.string().optional().describe("Why this test run is being evaluated"),
+};

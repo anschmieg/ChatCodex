@@ -26,6 +26,8 @@ import {
   ListRunsInput,
   GetRunStateInput,
   GetRunHistoryInput,
+  PreviewPatchPolicyInput,
+  PreviewTestPolicyInput,
 } from "./schemas.js";
 
 /**
@@ -63,6 +65,9 @@ export const REGISTERED_TOOL_NAMES = [
   "list_runs",
   "get_run_state",
   "get_run_history",
+  // Milestone 9: deterministic preflight / preview (read-only)
+  "preview_patch_policy",
+  "preview_test_policy",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -296,6 +301,40 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
       const result = await client.call("run.history", {
         runId: params.runId,
         limit: params.limit,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- preview_patch_policy (Milestone 9) ----
+  server.tool(
+    "preview_patch_policy",
+    "Preview the policy decision for a proposed patch without applying any changes (read-only)",
+    PreviewPatchPolicyInput,
+    async (params) => {
+      const result = await client.call("patch.preflight", {
+        runId: params.runId,
+        edits: params.edits,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- preview_test_policy (Milestone 9) ----
+  server.tool(
+    "preview_test_policy",
+    "Preview the policy decision for a proposed test run without executing tests (read-only)",
+    PreviewTestPolicyInput,
+    async (params) => {
+      const result = await client.call("tests.preflight", {
+        runId: params.runId,
+        scope: params.scope,
+        target: params.target,
+        reason: params.reason,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

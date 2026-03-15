@@ -31,6 +31,9 @@ pub fn dispatch(
         Method::RunsList => handle_runs_list(params, store),
         Method::RunGet => handle_run_get(params, store),
         Method::RunHistory => handle_run_history(params, store),
+        // Milestone 9: read-only preflight evaluation
+        Method::PatchPreflight => handle_patch_preflight(params, store),
+        Method::TestsPreflight => handle_tests_preflight(params, store),
     }
 }
 
@@ -462,4 +465,335 @@ fn handle_run_history(
         count,
     };
     Ok((serde_json::to_value(result)?, None))
+}
+
+// ---- Milestone 9: deterministic preflight / preview (read-only) ----
+
+/// Evaluate patch policy without applying any changes.
+///
+/// This handler is strictly read-only: it loads the run's effective policy,
+/// calls the same `evaluate_patch` logic used by `patch.apply`, and returns
+/// the decision.  It never modifies files, run state, approvals, or the
+/// audit trail.
+fn handle_patch_preflight(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: PatchPreflightParams = serde_json::from_value(params)?;
+
+    let state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    // Reuse the same PatchApplyParams layout for evaluation.
+    let apply_params = PatchApplyParams {
+        run_id: p.run_id,
+        edits: p.edits,
+    };
+
+    let decision =
+        deterministic_core::approval_policy::evaluate_patch(&apply_params, &state.policy_profile);
+
+    let result = map_policy_decision(decision, state.policy_profile);
+    Ok((serde_json::to_value(result)?, None))
+}
+
+/// Evaluate test-run policy without executing any tests.
+///
+/// This handler is strictly read-only: it loads the run's effective policy,
+/// calls the same `evaluate_test_run` logic used by `tests.run`, and returns
+/// the decision.  It never executes commands, mutates run state, or writes
+/// to the audit trail.
+fn handle_tests_preflight(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: TestsPreflightParams = serde_json::from_value(params)?;
+
+    let state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    // Reuse the same TestsRunParams layout for evaluation.
+    let run_params = TestsRunParams {
+        run_id: p.run_id,
+        scope: p.scope,
+        target: p.target,
+        reason: p.reason.unwrap_or_default(),
+    };
+
+    let decision =
+        deterministic_core::approval_policy::evaluate_test_run(&run_params, &state.policy_profile);
+
+    let result = map_policy_decision(decision, state.policy_profile);
+    Ok((serde_json::to_value(result)?, None))
+}
+
+/// Map a `PolicyDecision` from approval_policy into a `PreflightResult`.
+fn map_policy_decision(
+    decision: deterministic_core::approval_policy::PolicyDecision,
+    effective_policy: deterministic_protocol::RunPolicy,
+) -> PreflightResult {
+    match decision {
+        deterministic_core::approval_policy::PolicyDecision::Proceed => PreflightResult {
+            decision: deterministic_protocol::PreflightDecision::Proceed,
+            action_summary: None,
+            risk_reason: None,
+            policy_rationale: None,
+            effective_policy,
+        },
+        deterministic_core::approval_policy::PolicyDecision::RequiresApproval {
+            action_summary,
+            risk_reason,
+            policy_rationale,
+        } => PreflightResult {
+            decision: deterministic_protocol::PreflightDecision::RequiresApproval,
+            action_summary: Some(action_summary),
+            risk_reason: Some(risk_reason),
+            policy_rationale: Some(policy_rationale),
+            effective_policy,
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persistence::Store;
+    use deterministic_protocol::RunPolicy;
+
+    fn make_run_state(run_id: &str) -> RunState {
+        RunState {
+            run_id: run_id.into(),
+            workspace_id: "/tmp/ws".into(),
+            user_goal: "fix".into(),
+            status: "active".into(),
+            plan: vec!["step 1".into()],
+            current_step: 0,
+            completed_steps: vec![],
+            pending_steps: vec!["step 1".into()],
+            last_action: None,
+            last_observation: None,
+            recommended_next_action: None,
+            recommended_tool: None,
+            latest_diff_summary: None,
+            latest_test_result: None,
+            focus_paths: vec![],
+            warnings: vec![],
+            retryable_action: None,
+            policy_profile: RunPolicy::default(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+            updated_at: "2024-01-01T00:00:00Z".into(),
+        }
+    }
+
+    // -- patch.preflight tests -----------------------------------------------
+
+    #[test]
+    fn patch_preflight_proceed() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_pf_1");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_pf_1",
+            "edits": [{ "path": "src/main.rs", "operation": "replace", "newText": "fn main(){}" }]
+        });
+        let (val, run_state) = dispatch(Method::PatchPreflight, params, &store).unwrap();
+        let result: PreflightResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.decision, PreflightDecision::Proceed);
+        assert!(result.action_summary.is_none());
+        assert!(result.risk_reason.is_none());
+        assert!(result.policy_rationale.is_none());
+        // Preflight must not attach run_state (read-only, no side effect)
+        assert!(run_state.is_none());
+    }
+
+    #[test]
+    fn patch_preflight_requires_approval_for_delete() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_pf_2");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_pf_2",
+            "edits": [{ "path": "src/lib.rs", "operation": "delete", "newText": "" }]
+        });
+        let (val, run_state) = dispatch(Method::PatchPreflight, params, &store).unwrap();
+        let result: PreflightResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.decision, PreflightDecision::RequiresApproval);
+        assert!(result.action_summary.is_some());
+        assert!(result.risk_reason.is_some());
+        assert!(result.policy_rationale.is_some());
+        // No state mutation
+        assert!(run_state.is_none());
+        // Verify the run state was NOT modified (no retryable_action set)
+        let loaded = store.get_run("r_pf_2").unwrap().unwrap();
+        assert!(loaded.retryable_action.is_none());
+    }
+
+    #[test]
+    fn patch_preflight_requires_approval_large_patch() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_pf_3");
+        store.save_run(&state).unwrap();
+
+        // Default threshold is 5; send 6 edits.
+        let edits: Vec<serde_json::Value> = (0..6)
+            .map(|i| {
+                serde_json::json!({
+                    "path": format!("src/file{i}.rs"),
+                    "operation": "replace",
+                    "newText": "x"
+                })
+            })
+            .collect();
+        let params = serde_json::json!({ "runId": "r_pf_3", "edits": edits });
+        let (val, _) = dispatch(Method::PatchPreflight, params, &store).unwrap();
+        let result: PreflightResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.decision, PreflightDecision::RequiresApproval);
+        // No state mutation
+        let loaded = store.get_run("r_pf_3").unwrap().unwrap();
+        assert!(loaded.retryable_action.is_none());
+    }
+
+    #[test]
+    fn patch_preflight_no_state_mutation() {
+        // Confirm the store still reflects original state after preflight.
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_pf_nm");
+        state.status = "active".into();
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_pf_nm",
+            "edits": [{ "path": "x.rs", "operation": "delete", "newText": "" }]
+        });
+        let _ = dispatch(Method::PatchPreflight, params, &store).unwrap();
+
+        let loaded = store.get_run("r_pf_nm").unwrap().unwrap();
+        // status unchanged
+        assert_eq!(loaded.status, "active");
+        // no retryable_action set
+        assert!(loaded.retryable_action.is_none());
+        // no approvals created
+        let approvals = store.get_pending_approvals("r_pf_nm").unwrap();
+        assert!(approvals.is_empty());
+    }
+
+    // -- tests.preflight tests -----------------------------------------------
+
+    #[test]
+    fn tests_preflight_proceed_cargo() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_tf_1");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_tf_1",
+            "scope": "cargo",
+            "reason": "check correctness"
+        });
+        let (val, run_state) = dispatch(Method::TestsPreflight, params, &store).unwrap();
+        let result: PreflightResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.decision, PreflightDecision::Proceed);
+        assert!(result.action_summary.is_none());
+        assert!(run_state.is_none());
+    }
+
+    #[test]
+    fn tests_preflight_requires_approval_nonstandard_make_target() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_tf_2");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_tf_2",
+            "scope": "make",
+            "target": "deploy-prod",
+            "reason": "deploy"
+        });
+        let (val, run_state) = dispatch(Method::TestsPreflight, params, &store).unwrap();
+        let result: PreflightResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.decision, PreflightDecision::RequiresApproval);
+        assert!(result.policy_rationale.is_some());
+        assert!(run_state.is_none());
+        // No state mutation
+        let loaded = store.get_run("r_tf_2").unwrap().unwrap();
+        assert!(loaded.retryable_action.is_none());
+    }
+
+    #[test]
+    fn tests_preflight_proceed_safe_make_target() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_tf_3");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_tf_3",
+            "scope": "make",
+            "target": "test",
+            "reason": "run tests"
+        });
+        let (val, _) = dispatch(Method::TestsPreflight, params, &store).unwrap();
+        let result: PreflightResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.decision, PreflightDecision::Proceed);
+    }
+
+    #[test]
+    fn tests_preflight_no_state_mutation() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_tf_nm");
+        state.status = "active".into();
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_tf_nm",
+            "scope": "make",
+            "target": "deploy-prod",
+            "reason": "deploy"
+        });
+        let _ = dispatch(Method::TestsPreflight, params, &store).unwrap();
+
+        let loaded = store.get_run("r_tf_nm").unwrap().unwrap();
+        assert_eq!(loaded.status, "active");
+        assert!(loaded.retryable_action.is_none());
+        let approvals = store.get_pending_approvals("r_tf_nm").unwrap();
+        assert!(approvals.is_empty());
+    }
+
+    // -- method registry test ------------------------------------------------
+
+    #[test]
+    fn method_registry_includes_preflight_methods() {
+        use deterministic_protocol::Method;
+        let all = Method::all();
+        assert!(all.contains(&Method::PatchPreflight));
+        assert!(all.contains(&Method::TestsPreflight));
+    }
+
+    #[test]
+    fn forbidden_methods_not_registered() {
+        use deterministic_protocol::Method;
+        let forbidden_names = [
+            "turn.start",
+            "turn.steer",
+            "review.start",
+            "codex",
+            "codex.reply",
+            "resume_thread",
+            "continue_run",
+            "agent_step",
+        ];
+        for name in &forbidden_names {
+            assert!(
+                Method::parse_method(name).is_none(),
+                "Forbidden method '{name}' must not be registered"
+            );
+        }
+    }
 }

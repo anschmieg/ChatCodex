@@ -368,6 +368,48 @@ Get the audit trail of key events for a run.
 - Read-only; does not modify any run state
 - Events include: `run_prepared`, `refresh_performed`, `replan_performed`, `approval_created`, `approval_resolved`, `patch_applied`, `tests_run`
 
+## preview_patch_policy (Milestone 9)
+
+Preview the policy decision for a proposed patch without applying any changes.
+
+### Input
+
+- `runId`: string — Run ID from `codex_prepare_run`
+- `edits`: `PatchEdit[]` — Proposed edits to evaluate (identical structure to `apply_patch`)
+
+### Returns
+
+- `decision`: `"proceed"` | `"requires_approval"` — what would happen
+- `actionSummary?`: string — human-readable summary (when gated)
+- `riskReason?`: string — why the operation is considered risky (when gated)
+- `policyRationale?`: string — which policy rule would trigger (when gated)
+- `effectivePolicy`: `RunPolicy` — the policy profile used for evaluation
+
+### Behavior
+
+- Strictly read-only: no files modified, no approvals created, no audit entries written
+- Reuses the same deterministic `evaluate_patch` logic as `apply_patch`
+
+## preview_test_policy (Milestone 9)
+
+Preview the policy decision for a proposed test run without executing tests.
+
+### Input
+
+- `runId`: string — Run ID from `codex_prepare_run`
+- `scope`: string — test scope (e.g. `cargo`, `npm`, `make`)
+- `target?`: string — specific test target within scope
+- `reason?`: string — why the test run is being evaluated
+
+### Returns
+
+Same shape as `preview_patch_policy`.
+
+### Behavior
+
+- Strictly read-only: no tests executed, no state modified
+- Reuses the same deterministic `evaluate_test_run` logic as `run_tests`
+
 ## Forbidden public tools
 
 Do not expose:

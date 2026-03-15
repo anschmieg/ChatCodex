@@ -674,3 +674,73 @@ pub struct RunHistoryResult {
     /// Number of entries returned (may be less than total if limit was applied).
     pub count: usize,
 }
+
+// ---------------------------------------------------------------------------
+// Preflight / preview  (Milestone 9)
+// ---------------------------------------------------------------------------
+
+/// Outcome of a deterministic preflight evaluation.
+///
+/// Returned by `patch.preflight` and `tests.preflight`.  The value is
+/// read-only — no state is modified when computing it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightDecision {
+    /// The operation would proceed immediately under the current policy.
+    Proceed,
+    /// The operation would be gated and require explicit approval.
+    RequiresApproval,
+}
+
+/// Shared result model for a preflight policy evaluation.
+///
+/// Compact, explicit, and reusable for both `patch.preflight` and
+/// `tests.preflight`.  All optional fields are `None` when
+/// `decision == Proceed`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreflightResult {
+    /// Whether the operation would proceed or require approval.
+    pub decision: PreflightDecision,
+    /// Human-readable summary of the proposed action (present when gated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_summary: Option<String>,
+    /// Why the operation is considered risky (present when gated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_reason: Option<String>,
+    /// Which policy rule would trigger the gate (present when gated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_rationale: Option<String>,
+    /// The effective policy profile used for this evaluation.
+    pub effective_policy: RunPolicy,
+}
+
+// ---------------------------------------------------------------------------
+// patch.preflight  (Milestone 9)
+// ---------------------------------------------------------------------------
+
+/// Parameters for `patch.preflight` — mirrors `PatchApplyParams` but is
+/// strictly read-only: no files are modified.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchPreflightParams {
+    pub run_id: String,
+    pub edits: Vec<PatchEdit>,
+}
+
+// ---------------------------------------------------------------------------
+// tests.preflight  (Milestone 9)
+// ---------------------------------------------------------------------------
+
+/// Parameters for `tests.preflight` — mirrors `TestsRunParams` but is
+/// strictly read-only: no tests are executed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestsPreflightParams {
+    pub run_id: String,
+    pub scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
