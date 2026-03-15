@@ -40,6 +40,8 @@ pub fn dispatch(
         Method::RunReopen => handle_run_reopen(params, store),
         // Milestone 12: deterministic run supersession
         Method::RunSupersede => handle_run_supersede(params, store),
+        // Milestone 13: deterministic run archiving
+        Method::RunArchive => handle_run_archive(params, store),
     }
 }
 
@@ -411,10 +413,14 @@ fn handle_runs_list(
 ) -> Result<(serde_json::Value, Option<RunState>)> {
     let p: RunsListParams = serde_json::from_value(params)?;
     let limit = p.limit.unwrap_or(20).min(100);
+    let include_archived = p.include_archived.unwrap_or(false);
+    let archived_only = p.archived_only.unwrap_or(false);
     let runs = store.list_runs(
         limit,
         p.workspace_id.as_deref(),
         p.status.as_deref(),
+        include_archived,
+        archived_only,
     )?;
     let count = runs.len();
     let result = RunsListResult { runs, count };
@@ -444,6 +450,7 @@ fn handle_run_get(
     let superseded_by_run_id = state.superseded_by_run_id.clone();
     let supersession_reason = state.supersession_reason.clone();
     let superseded_at = state.superseded_at.clone();
+    let archive_metadata = state.archive_metadata.clone();
 
     let result = RunGetResult {
         run_state: state.clone(),
@@ -461,6 +468,7 @@ fn handle_run_get(
         superseded_by_run_id,
         supersession_reason,
         superseded_at,
+        archive_metadata,
     };
     Ok((serde_json::to_value(result)?, Some(state)))
 }
@@ -706,6 +714,42 @@ fn handle_run_supersede(
     Ok((serde_json::to_value(result)?, Some(successor_state)))
 }
 
+// ---- Milestone 13: deterministic run archiving ----
+
+/// Archive an explicitly finalized run.
+///
+/// Deterministic lifecycle rules (enforced in `deterministic_core::run_archive`):
+/// - Only finalized runs (`status` starts with `"finalized:"`) may be archived.
+/// - Active, prepared, or awaiting-approval runs are rejected.
+/// - Already-archived runs are rejected.
+/// - Archiving does not execute work or trigger autonomous follow-up.
+/// - The run's plan, completed steps, and audit history are preserved.
+/// - Archive metadata is appended to the run state and persisted.
+fn handle_run_archive(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunArchiveParams = serde_json::from_value(params)?;
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let result = deterministic_core::run_archive::archive(&p, &mut state)?;
+
+    // Persist the updated run state with archive metadata.
+    store.save_run(&state)?;
+
+    // Audit trail: run archived.
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "run_archived",
+        &format!("Run archived: reason={}", p.reason),
+        Some(&format!("{{\"reason\":\"{}\"}}", p.reason)),
+    );
+
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -738,6 +782,7 @@ mod tests {
             superseded_by_run_id: None,
             supersession_reason: None,
             superseded_at: None,
+            archive_metadata: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -1415,5 +1460,188 @@ mod tests {
         let (succ_val, _) = dispatch(Method::RunGet, get_succ, &store).unwrap();
         let succ_get: RunGetResult = serde_json::from_value(succ_val).unwrap();
         assert_eq!(succ_get.supersedes_run_id.as_deref(), Some("r_sup_get_orig"));
+    }
+
+    // ---- Milestone 13: run.archive handler tests ----
+
+    #[test]
+    fn run_archive_completed_run_succeeds() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_arch_h");
+        store.save_run(&state).unwrap();
+        finalize_run_in_store(&store, "r_arch_h", "completed");
+
+        let params = serde_json::json!({
+            "runId": "r_arch_h",
+            "reason": "archiving completed run"
+        });
+        let (val, run_state) = dispatch(Method::RunArchive, params, &store).unwrap();
+        let result: RunArchiveResult = serde_json::from_value(val).unwrap();
+
+        assert_eq!(result.run_id, "r_arch_h");
+        assert!(result.status.starts_with("finalized:"));
+        assert!(!result.archived_at.is_empty());
+        assert_eq!(result.reason, "archiving completed run");
+        assert!(!result.message.is_empty());
+
+        // run_state returned should carry archive_metadata.
+        let rs = run_state.unwrap();
+        assert!(rs.archive_metadata.is_some());
+
+        // Persisted state should also carry archive_metadata.
+        let loaded = store.get_run("r_arch_h").unwrap().unwrap();
+        let meta = loaded.archive_metadata.expect("archive_metadata must be persisted");
+        assert_eq!(meta.reason, "archiving completed run");
+    }
+
+    #[test]
+    fn run_archive_failed_run_succeeds() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_arch_fail");
+        store.save_run(&state).unwrap();
+        finalize_run_in_store(&store, "r_arch_fail", "failed");
+
+        let params = serde_json::json!({ "runId": "r_arch_fail", "reason": "failed build" });
+        let (val, _) = dispatch(Method::RunArchive, params, &store).unwrap();
+        let result: RunArchiveResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.run_id, "r_arch_fail");
+    }
+
+    #[test]
+    fn run_archive_rejected_for_active_run() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_arch_act");
+        store.save_run(&state).unwrap();
+        // Status is "active" — not eligible.
+        let params = serde_json::json!({ "runId": "r_arch_act", "reason": "should fail" });
+        let err = dispatch(Method::RunArchive, params, &store).unwrap_err();
+        assert!(err.to_string().contains("cannot be archived"));
+    }
+
+    #[test]
+    fn run_archive_rejected_for_prepared_run() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_arch_prep");
+        state.status = "prepared".into();
+        store.save_run(&state).unwrap();
+        let params = serde_json::json!({ "runId": "r_arch_prep", "reason": "should fail" });
+        let err = dispatch(Method::RunArchive, params, &store).unwrap_err();
+        assert!(err.to_string().contains("cannot be archived"));
+    }
+
+    #[test]
+    fn run_archive_unknown_run_returns_error() {
+        let store = Store::open_in_memory().unwrap();
+        let params = serde_json::json!({ "runId": "no-such-run", "reason": "reason" });
+        let err = dispatch(Method::RunArchive, params, &store).unwrap_err();
+        assert!(err.to_string().contains("unknown run"));
+    }
+
+    #[test]
+    fn run_archive_audit_trail_appended() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_arch_audit");
+        store.save_run(&state).unwrap();
+        finalize_run_in_store(&store, "r_arch_audit", "completed");
+
+        let params = serde_json::json!({ "runId": "r_arch_audit", "reason": "audit trail test" });
+        dispatch(Method::RunArchive, params, &store).unwrap();
+
+        let audit = store.get_audit_entries("r_arch_audit", 50).unwrap();
+        let archived_event = audit.iter().find(|e| e.event_kind == "run_archived");
+        assert!(archived_event.is_some(), "run_archived audit entry must be present");
+    }
+
+    #[test]
+    fn run_archive_visible_in_run_get() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_arch_get");
+        store.save_run(&state).unwrap();
+        finalize_run_in_store(&store, "r_arch_get", "completed");
+
+        let params = serde_json::json!({ "runId": "r_arch_get", "reason": "get test" });
+        dispatch(Method::RunArchive, params, &store).unwrap();
+
+        // run.get should expose archive_metadata.
+        let get_params = serde_json::json!({ "runId": "r_arch_get" });
+        let (val, _) = dispatch(Method::RunGet, get_params, &store).unwrap();
+        let get_result: RunGetResult = serde_json::from_value(val).unwrap();
+        assert!(get_result.archive_metadata.is_some(), "archive_metadata must be visible in run.get");
+        let meta = get_result.archive_metadata.unwrap();
+        assert_eq!(meta.reason, "get test");
+    }
+
+    #[test]
+    fn run_archive_excluded_from_default_list() {
+        let store = Store::open_in_memory().unwrap();
+
+        let active_state = make_run_state("r_list_active");
+        store.save_run(&active_state).unwrap();
+
+        let archived_state = make_run_state("r_list_arch");
+        store.save_run(&archived_state).unwrap();
+        finalize_run_in_store(&store, "r_list_arch", "completed");
+        let arch_params = serde_json::json!({ "runId": "r_list_arch", "reason": "list test" });
+        dispatch(Method::RunArchive, arch_params, &store).unwrap();
+
+        // Default list_runs excludes archived.
+        let list_params = serde_json::json!({});
+        let (val, _) = dispatch(Method::RunsList, list_params, &store).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        assert!(
+            result.runs.iter().any(|r| r.run_id == "r_list_active"),
+            "active run must be in default list"
+        );
+        assert!(
+            !result.runs.iter().any(|r| r.run_id == "r_list_arch"),
+            "archived run must NOT be in default list"
+        );
+    }
+
+    #[test]
+    fn run_archive_visible_with_include_archived_flag() {
+        let store = Store::open_in_memory().unwrap();
+
+        let archived_state = make_run_state("r_incl_arch");
+        store.save_run(&archived_state).unwrap();
+        finalize_run_in_store(&store, "r_incl_arch", "completed");
+        let arch_params = serde_json::json!({ "runId": "r_incl_arch", "reason": "include test" });
+        dispatch(Method::RunArchive, arch_params, &store).unwrap();
+
+        // include_archived=true should show archived run.
+        let list_params = serde_json::json!({ "includeArchived": true });
+        let (val, _) = dispatch(Method::RunsList, list_params, &store).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        assert!(
+            result.runs.iter().any(|r| r.run_id == "r_incl_arch"),
+            "archived run must appear when includeArchived=true"
+        );
+    }
+
+    #[test]
+    fn run_archive_archived_only_filter() {
+        let store = Store::open_in_memory().unwrap();
+
+        let active_state = make_run_state("r_ao_active");
+        store.save_run(&active_state).unwrap();
+
+        let archived_state = make_run_state("r_ao_arch");
+        store.save_run(&archived_state).unwrap();
+        finalize_run_in_store(&store, "r_ao_arch", "completed");
+        let arch_params = serde_json::json!({ "runId": "r_ao_arch", "reason": "archived_only test" });
+        dispatch(Method::RunArchive, arch_params, &store).unwrap();
+
+        // archived_only=true should return only archived run.
+        let list_params = serde_json::json!({ "archivedOnly": true });
+        let (val, _) = dispatch(Method::RunsList, list_params, &store).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        assert!(
+            !result.runs.iter().any(|r| r.run_id == "r_ao_active"),
+            "active run must NOT appear when archivedOnly=true"
+        );
+        assert!(
+            result.runs.iter().any(|r| r.run_id == "r_ao_arch"),
+            "archived run must appear when archivedOnly=true"
+        );
     }
 }

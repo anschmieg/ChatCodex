@@ -78,6 +78,7 @@ pub fn supersede(
         superseded_by_run_id: None,
         supersession_reason: Some(params.reason.clone()),
         superseded_at: Some(now.clone()),
+        archive_metadata: None,
         created_at: now.clone(),
         updated_at: now.clone(),
     };
@@ -135,6 +136,7 @@ mod tests {
             superseded_by_run_id: None,
             supersession_reason: None,
             superseded_at: None,
+            archive_metadata: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

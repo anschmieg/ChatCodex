@@ -450,6 +450,47 @@ Acceptance:
 - ✅ TypeScript remains thin
 - ✅ no autonomous continuation; no coarse autonomous tools
 
+## Milestone 13: deterministic run archiving and retention controls ✅
+
+**Goal:** Let ChatGPT explicitly archive eligible runs so they remain preserved and inspectable while being distinguishable from the active working set.
+
+**Rust (deterministic-protocol / deterministic-core / deterministic-daemon):**
+
+- ✅ `ArchiveMetadata` struct added to protocol types (`reason`, `archived_at`)
+- ✅ `archive_metadata: Option<ArchiveMetadata>` field on `RunState`
+- ✅ `RunArchiveParams` / `RunArchiveResult` added to protocol types
+- ✅ `include_archived` / `archived_only` added to `RunsListParams`
+- ✅ `is_archived`, `archive_reason`, `archived_at` fields on `RunSummary`
+- ✅ `archive_metadata` field on `RunGetResult`
+- ✅ `Method::RunArchive` (`run.archive`) added to methods enum
+- ✅ `deterministic_core::run_archive` module implements eligibility rules and archive logic
+- ✅ Only finalized runs may be archived; active/prepared/awaiting-approval runs and already-archived runs are rejected
+- ✅ Archiving does not execute work, reopen, supersede, or continue the run
+- ✅ Archive metadata is appended to run state and persisted
+- ✅ `run_archived` audit entry is appended with archive reason
+- ✅ `handle_run_archive` in daemon handlers dispatches archive operation
+- ✅ `handle_runs_list` passes `include_archived` / `archived_only` through to persistence
+- ✅ `handle_run_get` exposes `archive_metadata` in `RunGetResult`
+- ✅ SQLite persistence: `is_archived` and `archive_metadata` columns added with safe migration
+- ✅ `list_runs` in persistence supports archive filtering: default excludes archived, `include_archived=true` includes all, `archived_only=true` returns only archived
+- ✅ `RunSummary` carries archive fields from persistence query
+
+**TypeScript (MCP gateway):**
+
+- ✅ `ArchiveRunInput` Zod schema added to `schemas.ts` (`runId`, `reason` 1–500 chars)
+- ✅ `ListRunsInput` extended with `includeArchived` and `archivedOnly` optional booleans
+- ✅ `archive_run` added to `REGISTERED_TOOL_NAMES`
+- ✅ `archive_run` tool registered: validates inputs, calls `run.archive`, returns result
+- ✅ `list_runs` tool updated to pass `includeArchived` and `archivedOnly` to daemon
+- ✅ TypeScript remains thin: validation + mapping + daemon calls only
+
+**Tests:**
+
+- ✅ Core: archiving completed/failed runs, eligibility rejection for active/prepared/awaiting-approval, already-archived, archive metadata roundtrip
+- ✅ Daemon handlers: M13 tests for all archive scenarios including audit trail, run.get visibility, list filtering
+- ✅ Persistence: archive metadata roundtrip, defaults to None, list filtering (default excludes, include_archived, archived_only), summary fields, migration from M12 schema
+- ✅ TypeScript: `ArchiveRunInput` schema validation, `ListRunsInput` archive filter schema, no-hidden-agent regression, exact registry test updated
+
 ## Out of scope
 
 These are intentionally not implemented:

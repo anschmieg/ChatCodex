@@ -192,9 +192,41 @@ ChatGPT-hosted model
 - 12 new TypeScript tests (9 schema validation + 3 no-hidden-agent regression)
 - No backend model calls; no autonomous continuation; no coarse tools introduced
 
+### Milestone 13: Deterministic Run Archiving and Retention Controls
+- Added `ArchiveMetadata` struct to `deterministic-protocol` (`reason`, `archived_at`)
+- Added `archive_metadata: Option<ArchiveMetadata>` field to `RunState`
+- Added `RunArchiveParams` and `RunArchiveResult` to `deterministic-protocol`
+- Added `include_archived` and `archived_only` fields to `RunsListParams`
+- Added `is_archived`, `archive_reason`, `archived_at` fields to `RunSummary`
+- Added `archive_metadata` field to `RunGetResult`
+- Added `Method::RunArchive` (`run.archive`) to the daemon method enum
+- Added `deterministic_core::run_archive` module with deterministic eligibility rules:
+  - Only finalized runs (`finalized:completed`, `finalized:failed`, `finalized:abandoned`) may be archived
+  - Active, prepared, or awaiting-approval runs are rejected deterministically
+  - Already-archived runs are rejected idempotently (not silently)
+  - Archiving does not execute work, reopen, supersede, or continue the run
+  - Archive metadata is applied to run state and persisted
+- Added `handle_run_archive` in daemon handlers
+- Updated `handle_runs_list` to pass `include_archived` / `archived_only` through to persistence
+- Updated `handle_run_get` to expose `archive_metadata` in `RunGetResult`
+- SQLite: added `is_archived INTEGER DEFAULT 0` and `archive_metadata TEXT` columns with backward-compatible migration (M13)
+- `list_runs` persistence function updated: default excludes archived; `include_archived=true` includes all; `archived_only=true` returns only archived
+- `RunSummary` populated with `is_archived`, `archive_reason`, `archived_at` from persistence query
+- `run_archived` audit entry appended with archive reason on successful archive
+- Added `ArchiveRunInput` Zod schema in TypeScript (`runId`, `reason` 1–500 chars)
+- Extended `ListRunsInput` Zod schema with `includeArchived` and `archivedOnly` optional booleans
+- Added `archive_run` to `REGISTERED_TOOL_NAMES` and registered the MCP tool
+- Updated `list_runs` tool to pass archive filtering params to daemon
+- TypeScript remains thin: validation + mapping + daemon calls only
+- 11 new Rust core tests (archive completed/failed/abandoned, eligibility rejection, already-archived, metadata roundtrip, audit entry)
+- 11 new Rust handler tests (archive completed/failed, rejections for active/prepared/unknown, audit trail, run.get visibility, list filtering: default/includeArchived/archivedOnly)
+- 10 new Rust persistence tests (metadata roundtrip, default None, list filtering, summary fields, M13 migration)
+- 14 new TypeScript tests (6 schema validation + 5 list filtering + 3 no-hidden-agent regression)
+- No backend model calls; no autonomous continuation; no coarse tools introduced
+
 ## Current Implementation Surface
 
-### Public MCP Tools (19)
+### Public MCP Tools (20)
 
 | Tool | Description |
 |------|-------------|
@@ -209,7 +241,7 @@ ChatGPT-hosted model
 | `refresh_run_state` | Read-only run state snapshot |
 | `replan_run` | Deterministic rule-based replanning |
 | `approve_action` | Resolve pending approvals |
-| `list_runs` | List known runs with status and metadata (read-only) |
+| `list_runs` | List known runs with status and metadata; supports `includeArchived` / `archivedOnly` filtering (read-only) |
 | `get_run_state` | Get authoritative current state of a run (read-only) |
 | `get_run_history` | Get audit trail of key events for a run (read-only) |
 | `preview_patch_policy` | Preview patch policy decision without applying changes (read-only, Milestone 9) |
@@ -217,8 +249,9 @@ ChatGPT-hosted model
 | `finalize_run` | Explicitly close a run with a structured outcome record (Milestone 10) |
 | `reopen_run` | Reopen a finalized run for deterministic continuation (Milestone 11) |
 | `supersede_run` | Create a successor run that explicitly replaces a finalized run with preserved lineage (Milestone 12) |
+| `archive_run` | Explicitly archive a finalized run so it remains preserved but out of the active working set (Milestone 13) |
 
-### Internal Daemon Methods (19)
+### Internal Daemon Methods (20)
 
 | Method | Description |
 |--------|-------------|
@@ -233,14 +266,15 @@ ChatGPT-hosted model
 | `tests.run` | Run tests with policy checks |
 | `git.diff` | Diff summary/patch |
 | `approval.resolve` | Resolve pending approvals |
-| `runs.list` | List runs (read-only) |
-| `run.get` | Get full run state with approvals and retryable action (read-only) |
+| `runs.list` | List runs; supports `include_archived` / `archived_only` filtering (read-only) |
+| `run.get` | Get full run state with approvals, retryable action, and archive metadata (read-only) |
 | `run.history` | Get audit trail entries for a run (read-only) |
 | `patch.preflight` | Evaluate patch policy without applying changes (read-only, Milestone 9) |
 | `tests.preflight` | Evaluate test-run policy without executing tests (read-only, Milestone 9) |
 | `run.finalize` | Close a run with structured outcome record (Milestone 10) |
 | `run.reopen` | Reopen a finalized run for deterministic continuation (Milestone 11) |
 | `run.supersede` | Create a successor run that supersedes a finalized run with preserved lineage (Milestone 12) |
+| `run.archive` | Archive a finalized run for retention with audit trail (Milestone 13) |
 
 ### Run State Model
 
@@ -258,6 +292,7 @@ ChatGPT-hosted model
 - `finalizedOutcome` (Milestone 10) — structured outcome record for closed runs
 - `reopenMetadata` (Milestone 11) — compact reopen lineage metadata for reopened runs
 - `supersedes_run_id` / `superseded_by_run_id` / `supersession_reason` / `superseded_at` (Milestone 12) — supersession lineage
+- `archiveMetadata` (Milestone 13) — compact archive metadata (`reason`, `archivedAt`) for archived runs
 - `warnings`
 - `createdAt`, `updatedAt`
 

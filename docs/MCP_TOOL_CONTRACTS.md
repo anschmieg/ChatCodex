@@ -505,6 +505,43 @@ Create a new successor run that explicitly replaces a finalized run with preserv
 - Does **not** execute work or trigger any autonomous follow-up
 - Lineage is visible in `get_run_state` and `list_runs`
 
+## archive_run (Milestone 13)
+
+Explicitly archive a finalized run so it remains preserved and inspectable, but is excluded from the default active run listing.
+
+### Input
+
+- `runId`: string — Run ID of the finalized run to archive (must be `finalized:completed`, `finalized:failed`, or `finalized:abandoned`)
+- `reason`: string — human-readable reason for archiving (required, 1–500 chars)
+
+### Returns
+
+- `runId` — the archived run ID
+- `status` — the run status at the time of archiving (unchanged)
+- `archivedAt` — ISO 8601 timestamp of archiving
+- `reason` — the reason provided
+- `message` — human-readable confirmation
+
+### Behavior
+
+- Only finalized runs may be archived; active, prepared, or awaiting-approval runs are rejected deterministically
+- Already-archived runs are also rejected
+- Archiving does **not** execute work, trigger any autonomous follow-up, or reopen the run
+- The run's plan, completed steps, audit history, and outcome are fully preserved
+- `archiveMetadata` is added to the run state and persisted in SQLite
+- Appends `run_archived` audit entry with the archive reason
+- Archived runs remain fully inspectable via `get_run_state` and `get_run_history`
+- `list_runs` excludes archived runs by default; use `includeArchived=true` or `archivedOnly=true` to include them
+
+### `list_runs` archive filtering (Milestone 13 extension)
+
+The `list_runs` tool now accepts two optional boolean parameters:
+
+- `includeArchived` (boolean, default: false) — when `true`, include archived runs alongside non-archived runs
+- `archivedOnly` (boolean, default: false) — when `true`, return only archived runs (takes precedence over `includeArchived`)
+
+When both are omitted, archived runs are excluded by default.
+
 ## Forbidden public tools
 
 Do not expose:

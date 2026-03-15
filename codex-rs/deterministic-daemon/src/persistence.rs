@@ -5,7 +5,7 @@
 //! access — unlike the previous JSON-file approach.
 
 use anyhow::{Context, Result};
-use deterministic_protocol::{PendingApproval, ReopenMetadata, RetryableAction, RunHistoryEntry, RunOutcome, RunPolicy, RunState, RunSummary};
+use deterministic_protocol::{ArchiveMetadata, PendingApproval, ReopenMetadata, RetryableAction, RunHistoryEntry, RunOutcome, RunPolicy, RunState, RunSummary};
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
@@ -122,6 +122,9 @@ impl Store {
             ("runs", "superseded_by_run_id", "TEXT"),
             ("runs", "supersession_reason", "TEXT"),
             ("runs", "superseded_at", "TEXT"),
+            // Milestone 13 columns
+            ("runs", "is_archived", "INTEGER DEFAULT 0"),
+            ("runs", "archive_metadata", "TEXT"),
         ];
 
         for (table, column, def) in migrations {
@@ -195,6 +198,14 @@ impl Store {
             .map(serde_json::to_string)
             .transpose()
             .context("failed to serialise reopen_metadata")?;
+        // Milestone 13: persist archive_metadata as JSON; also extract is_archived for filtering.
+        let is_archived: i64 = if state.archive_metadata.is_some() { 1 } else { 0 };
+        let archive_metadata_json: Option<String> = state
+            .archive_metadata
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .context("failed to serialise archive_metadata")?;
         conn.execute(
             "INSERT OR REPLACE INTO runs
                 (run_id, workspace_id, user_goal, status, plan, current_step,
@@ -203,8 +214,9 @@ impl Store {
                  latest_diff_summary, latest_test_result, focus_paths, warnings,
                  retryable_action, policy_profile, outcome_kind, finalized_outcome,
                  reopen_metadata, supersedes_run_id, superseded_by_run_id,
-                 supersession_reason, superseded_at, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+                 supersession_reason, superseded_at, is_archived, archive_metadata,
+                 created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -231,6 +243,8 @@ impl Store {
                 state.superseded_by_run_id,
                 state.supersession_reason,
                 state.superseded_at,
+                is_archived,
+                archive_metadata_json,
                 state.created_at,
                 state.updated_at,
             ],
@@ -251,7 +265,8 @@ impl Store {
                         latest_diff_summary, latest_test_result, focus_paths, warnings,
                         retryable_action, policy_profile, finalized_outcome,
                         reopen_metadata, supersedes_run_id, superseded_by_run_id,
-                        supersession_reason, superseded_at, created_at, updated_at
+                        supersession_reason, superseded_at, archive_metadata,
+                        created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
             .context("failed to prepare statement")?;
@@ -369,6 +384,20 @@ impl Store {
                 let supersession_reason: Option<String> = row.get(22)?;
                 let superseded_at: Option<String> = row.get(23)?;
 
+                // Milestone 13: archive metadata.
+                let archive_metadata_json: Option<String> = row.get(24)?;
+                let archive_metadata: Option<ArchiveMetadata> = archive_metadata_json
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            24,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+
                 Ok(RunState {
                     run_id: row.get(0)?,
                     workspace_id: row.get(1)?,
@@ -394,8 +423,9 @@ impl Store {
                     superseded_by_run_id,
                     supersession_reason,
                     superseded_at,
-                    created_at: row.get(24)?,
-                    updated_at: row.get(25)?,
+                    archive_metadata,
+                    created_at: row.get(25)?,
+                    updated_at: row.get(26)?,
                 })
             })
             .context("failed to query run")?;
@@ -534,21 +564,41 @@ impl Store {
         limit: usize,
         workspace_id: Option<&str>,
         status_filter: Option<&str>,
+        include_archived: bool,
+        archived_only: bool,
     ) -> Result<Vec<RunSummary>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
 
-        // Build query dynamically based on optional filters.
-        let mut conditions = Vec::new();
+        // Build WHERE conditions and bind parameters dynamically.
+        // Parameter ?1 is always `limit` (i64).  Additional parameters start at ?2.
+        let mut conditions: Vec<String> = Vec::new();
+        let mut next_param: usize = 2; // ?1 is limit
+
+        // Track which positional index each optional param maps to.
+        let mut workspace_idx: Option<usize> = None;
+        let mut status_idx: Option<usize> = None;
+
         if workspace_id.is_some() {
-            conditions.push("workspace_id = ?2");
+            workspace_idx = Some(next_param);
+            conditions.push(format!("workspace_id = ?{next_param}"));
+            next_param += 1;
         }
         if status_filter.is_some() {
-            let idx = if workspace_id.is_some() { 3 } else { 2 };
-            conditions.push(match idx {
-                2 => "status = ?2",
-                _ => "status = ?3",
-            });
+            status_idx = Some(next_param);
+            conditions.push(format!("status = ?{next_param}"));
+            // next_param would be incremented here if additional dynamic params were added.
+            let _ = next_param;
         }
+
+        // Milestone 13: archive filtering.
+        // archived_only takes precedence over include_archived.
+        if archived_only {
+            conditions.push("is_archived = 1".to_string());
+        } else if !include_archived {
+            // Default: exclude archived runs.
+            conditions.push("is_archived = 0".to_string());
+        }
+        // If include_archived=true and archived_only=false, no condition is added (show all).
 
         let where_clause = if conditions.is_empty() {
             String::new()
@@ -559,7 +609,7 @@ impl Store {
         let sql = format!(
             "SELECT run_id, workspace_id, user_goal, status, current_step, plan,
                     created_at, updated_at, outcome_kind, reopen_metadata,
-                    supersedes_run_id, superseded_by_run_id
+                    supersedes_run_id, superseded_by_run_id, is_archived, archive_metadata
              FROM runs {where_clause}
              ORDER BY updated_at DESC
              LIMIT ?1"
@@ -573,6 +623,7 @@ impl Store {
             //  4: current_step  5: plan  6: created_at  7: updated_at
             //  8: outcome_kind  9: reopen_metadata
             // 10: supersedes_run_id  11: superseded_by_run_id
+            // 12: is_archived  13: archive_metadata
             let plan_json: String = row.get(5)?;
             let total_steps: usize = serde_json::from_str::<Vec<String>>(&plan_json)
                 .map(|v| v.len())
@@ -583,6 +634,15 @@ impl Store {
                 .as_deref()
                 .and_then(|s| serde_json::from_str::<ReopenMetadata>(s).ok())
                 .map(|m| m.reopen_count);
+            // Milestone 13: archive summary fields.
+            let is_archived_int: i64 = row.get(12)?;
+            let is_archived = if is_archived_int != 0 { Some(true) } else { None };
+            let archive_metadata_json: Option<String> = row.get(13)?;
+            let (archive_reason, archived_at) = archive_metadata_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<ArchiveMetadata>(s).ok())
+                .map(|m| (Some(m.reason), Some(m.archived_at)))
+                .unwrap_or((None, None));
             Ok(RunSummary {
                 run_id: row.get(0)?,
                 workspace_id: row.get(1)?,
@@ -594,23 +654,27 @@ impl Store {
                 reopen_count,
                 supersedes_run_id: row.get(10)?,
                 superseded_by_run_id: row.get(11)?,
+                is_archived,
+                archive_reason,
+                archived_at,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
         };
 
-        let rows = match (workspace_id, status_filter) {
+        // Execute with the appropriate parameter combination.
+        let rows = match (workspace_idx, status_idx) {
             (None, None) => stmt
                 .query_map(rusqlite::params![limit as i64], mapper)
                 .context("failed to query runs")?,
-            (Some(ws), None) => stmt
-                .query_map(rusqlite::params![limit as i64, ws], mapper)
+            (Some(_), None) => stmt
+                .query_map(rusqlite::params![limit as i64, workspace_id], mapper)
                 .context("failed to query runs")?,
-            (None, Some(st)) => stmt
-                .query_map(rusqlite::params![limit as i64, st], mapper)
+            (None, Some(_)) => stmt
+                .query_map(rusqlite::params![limit as i64, status_filter], mapper)
                 .context("failed to query runs")?,
-            (Some(ws), Some(st)) => stmt
-                .query_map(rusqlite::params![limit as i64, ws, st], mapper)
+            (Some(_), Some(_)) => stmt
+                .query_map(rusqlite::params![limit as i64, workspace_id, status_filter], mapper)
                 .context("failed to query runs")?,
         };
 
@@ -711,6 +775,7 @@ mod tests {
             superseded_by_run_id: None,
             supersession_reason: None,
             superseded_at: None,
+            archive_metadata: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -1287,7 +1352,7 @@ mod tests {
     #[test]
     fn list_runs_empty() {
         let store = Store::open_in_memory().unwrap();
-        let runs = store.list_runs(20, None, None).unwrap();
+        let runs = store.list_runs(20, None, None, false, false).unwrap();
         assert!(runs.is_empty());
     }
 
@@ -1298,7 +1363,7 @@ mod tests {
         store.save_run(&make_run_state("r_b", "prepared")).unwrap();
         store.save_run(&make_run_state("r_c", "done")).unwrap();
 
-        let runs = store.list_runs(20, None, None).unwrap();
+        let runs = store.list_runs(20, None, None, false, false).unwrap();
         assert_eq!(runs.len(), 3);
         // Each summary should have basic fields.
         for r in &runs {
@@ -1316,7 +1381,7 @@ mod tests {
                 .save_run(&make_run_state(&format!("r_{i}"), "active"))
                 .unwrap();
         }
-        let runs = store.list_runs(3, None, None).unwrap();
+        let runs = store.list_runs(3, None, None, false, false).unwrap();
         assert_eq!(runs.len(), 3);
     }
 
@@ -1327,10 +1392,10 @@ mod tests {
         store.save_run(&make_run_state("r_b", "active")).unwrap();
         store.save_run(&make_run_state("r_c", "done")).unwrap();
 
-        let active = store.list_runs(20, None, Some("active")).unwrap();
+        let active = store.list_runs(20, None, Some("active"), false, false).unwrap();
         assert_eq!(active.len(), 2);
 
-        let done = store.list_runs(20, None, Some("done")).unwrap();
+        let done = store.list_runs(20, None, Some("done"), false, false).unwrap();
         assert_eq!(done.len(), 1);
     }
 
@@ -1347,10 +1412,10 @@ mod tests {
         store.save_run(&s2).unwrap();
         store.save_run(&s3).unwrap();
 
-        let ws1 = store.list_runs(20, Some("/ws/one"), None).unwrap();
+        let ws1 = store.list_runs(20, Some("/ws/one"), None, false, false).unwrap();
         assert_eq!(ws1.len(), 2);
 
-        let ws2 = store.list_runs(20, Some("/ws/two"), None).unwrap();
+        let ws2 = store.list_runs(20, Some("/ws/two"), None, false, false).unwrap();
         assert_eq!(ws2.len(), 1);
     }
 
@@ -1360,7 +1425,7 @@ mod tests {
         let state = make_run_state("r_steps", "active"); // plan has 2 steps
         store.save_run(&state).unwrap();
 
-        let runs = store.list_runs(20, None, None).unwrap();
+        let runs = store.list_runs(20, None, None, false, false).unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].total_steps, 2);
     }
@@ -1746,7 +1811,7 @@ mod tests {
         });
         store.save_run(&finalized).unwrap();
 
-        let runs = store.list_runs(20, None, None).unwrap();
+        let runs = store.list_runs(20, None, None, false, false).unwrap();
         assert_eq!(runs.len(), 2);
 
         let active = runs.iter().find(|r| r.run_id == "r_lk_a").unwrap();
@@ -1947,7 +2012,7 @@ mod tests {
         });
         store.save_run(&state_reopened).unwrap();
 
-        let summaries = store.list_runs(10, None, None).unwrap();
+        let summaries = store.list_runs(10, None, None, false, false).unwrap();
         let s1 = summaries.iter().find(|s| s.run_id == "r_list_1").unwrap();
         let s2 = summaries.iter().find(|s| s.run_id == "r_list_2").unwrap();
         assert!(s1.reopen_count.is_none());
@@ -2020,7 +2085,7 @@ mod tests {
         state_successor.supersedes_run_id = Some("r_superseded".into());
         store.save_run(&state_successor).unwrap();
 
-        let summaries = store.list_runs(10, None, None).unwrap();
+        let summaries = store.list_runs(10, None, None, false, false).unwrap();
         let plain = summaries.iter().find(|s| s.run_id == "r_plain").unwrap();
         let superseded = summaries.iter().find(|s| s.run_id == "r_superseded").unwrap();
         let successor = summaries.iter().find(|s| s.run_id == "r_new").unwrap();
@@ -2090,6 +2155,203 @@ mod tests {
         assert!(loaded.superseded_by_run_id.is_none());
         assert!(loaded.supersession_reason.is_none());
         assert!(loaded.superseded_at.is_none());
+        // M13 columns must also have safe defaults.
+        assert!(loaded.archive_metadata.is_none());
+    }
+
+    // ---- Milestone 13: archive metadata persistence tests ----
+
+    /// Verify that archive_metadata is correctly persisted and retrieved.
+    #[test]
+    fn archive_metadata_roundtrip() {
+        use deterministic_protocol::ArchiveMetadata;
+
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_arch", "finalized:completed");
+        state.archive_metadata = Some(ArchiveMetadata {
+            reason: "Archiving completed run".into(),
+            archived_at: "2024-09-01T10:00:00Z".into(),
+        });
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_arch").unwrap().unwrap();
+        let meta = loaded.archive_metadata.expect("archive_metadata must be present");
+        assert_eq!(meta.reason, "Archiving completed run");
+        assert_eq!(meta.archived_at, "2024-09-01T10:00:00Z");
+    }
+
+    /// Verify that archive_metadata defaults to None for unarchived runs.
+    #[test]
+    fn archive_metadata_defaults_to_none() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_noarch", "active");
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_noarch").unwrap().unwrap();
+        assert!(loaded.archive_metadata.is_none());
+    }
+
+    /// Verify list_runs excludes archived runs by default.
+    #[test]
+    fn list_runs_excludes_archived_by_default() {
+        use deterministic_protocol::ArchiveMetadata;
+
+        let store = Store::open_in_memory().unwrap();
+
+        let active = make_run_state("r_active", "active");
+        store.save_run(&active).unwrap();
+
+        let mut archived = make_run_state("r_archived", "finalized:completed");
+        archived.archive_metadata = Some(ArchiveMetadata {
+            reason: "hygiene".into(),
+            archived_at: "2024-09-01T10:00:00Z".into(),
+        });
+        store.save_run(&archived).unwrap();
+
+        // Default: exclude archived.
+        let runs = store.list_runs(20, None, None, false, false).unwrap();
+        assert!(
+            runs.iter().any(|r| r.run_id == "r_active"),
+            "active run must be included"
+        );
+        assert!(
+            !runs.iter().any(|r| r.run_id == "r_archived"),
+            "archived run must be excluded by default"
+        );
+    }
+
+    /// Verify list_runs includes archived runs when include_archived=true.
+    #[test]
+    fn list_runs_include_archived_shows_all() {
+        use deterministic_protocol::ArchiveMetadata;
+
+        let store = Store::open_in_memory().unwrap();
+
+        let active = make_run_state("r_active2", "active");
+        store.save_run(&active).unwrap();
+
+        let mut archived = make_run_state("r_archived2", "finalized:completed");
+        archived.archive_metadata = Some(ArchiveMetadata {
+            reason: "include test".into(),
+            archived_at: "2024-09-01T10:00:00Z".into(),
+        });
+        store.save_run(&archived).unwrap();
+
+        let runs = store.list_runs(20, None, None, true, false).unwrap();
+        assert!(
+            runs.iter().any(|r| r.run_id == "r_active2"),
+            "active run must be included"
+        );
+        assert!(
+            runs.iter().any(|r| r.run_id == "r_archived2"),
+            "archived run must be included when include_archived=true"
+        );
+    }
+
+    /// Verify list_runs returns only archived runs when archived_only=true.
+    #[test]
+    fn list_runs_archived_only() {
+        use deterministic_protocol::ArchiveMetadata;
+
+        let store = Store::open_in_memory().unwrap();
+
+        let active = make_run_state("r_active3", "active");
+        store.save_run(&active).unwrap();
+
+        let mut archived = make_run_state("r_archived3", "finalized:completed");
+        archived.archive_metadata = Some(ArchiveMetadata {
+            reason: "only test".into(),
+            archived_at: "2024-09-01T10:00:00Z".into(),
+        });
+        store.save_run(&archived).unwrap();
+
+        let runs = store.list_runs(20, None, None, false, true).unwrap();
+        assert!(
+            !runs.iter().any(|r| r.run_id == "r_active3"),
+            "active run must NOT be included"
+        );
+        assert!(
+            runs.iter().any(|r| r.run_id == "r_archived3"),
+            "archived run must be included when archived_only=true"
+        );
+    }
+
+    /// Verify list_runs RunSummary carries archive fields when present.
+    #[test]
+    fn list_runs_summary_carries_archive_fields() {
+        use deterministic_protocol::ArchiveMetadata;
+
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_arch_sum", "finalized:completed");
+        state.archive_metadata = Some(ArchiveMetadata {
+            reason: "summary field test".into(),
+            archived_at: "2024-09-02T12:00:00Z".into(),
+        });
+        store.save_run(&state).unwrap();
+
+        let runs = store.list_runs(20, None, None, true, false).unwrap();
+        let summary = runs.iter().find(|r| r.run_id == "r_arch_sum").unwrap();
+        assert_eq!(summary.is_archived, Some(true));
+        assert_eq!(summary.archive_reason.as_deref(), Some("summary field test"));
+        assert_eq!(summary.archived_at.as_deref(), Some("2024-09-02T12:00:00Z"));
+    }
+
+    /// Verify that migration from an older schema (pre-M13) correctly handles
+    /// the new archive columns being absent (safe defaults).
+    #[test]
+    fn migration_m13_columns_default_safely() {
+        use rusqlite::Connection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("runs.db");
+
+        // Simulate a Milestone 12 schema (no M13 columns).
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    run_id               TEXT PRIMARY KEY,
+                    workspace_id         TEXT NOT NULL,
+                    user_goal            TEXT NOT NULL,
+                    status               TEXT NOT NULL,
+                    plan                 TEXT NOT NULL DEFAULT '[]',
+                    current_step         INTEGER NOT NULL DEFAULT 0,
+                    completed_steps      TEXT NOT NULL DEFAULT '[]',
+                    pending_steps        TEXT NOT NULL DEFAULT '[]',
+                    last_action          TEXT,
+                    last_observation     TEXT,
+                    recommended_next_action TEXT,
+                    recommended_tool     TEXT,
+                    latest_diff_summary  TEXT,
+                    latest_test_result   TEXT,
+                    focus_paths          TEXT NOT NULL DEFAULT '[]',
+                    warnings             TEXT NOT NULL DEFAULT '[]',
+                    retryable_action     TEXT,
+                    policy_profile       TEXT NOT NULL DEFAULT '{}',
+                    outcome_kind         TEXT,
+                    finalized_outcome    TEXT,
+                    reopen_metadata      TEXT,
+                    supersedes_run_id    TEXT,
+                    superseded_by_run_id TEXT,
+                    supersession_reason  TEXT,
+                    superseded_at        TEXT,
+                    created_at           TEXT NOT NULL,
+                    updated_at           TEXT NOT NULL
+                );",
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO runs (run_id, workspace_id, user_goal, status, plan, created_at, updated_at)
+                 VALUES ('r_m12', '/tmp/ws', 'old goal', 'finalized:completed', '[]', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                [],
+            ).unwrap();
+        }
+
+        // Open with migration — should add M13 columns.
+        let store = Store::open(dir.path()).unwrap();
+        let loaded = store.get_run("r_m12").unwrap().unwrap();
+
+        // M13 archive_metadata must default to None.
+        assert!(loaded.archive_metadata.is_none());
     }
 }
 

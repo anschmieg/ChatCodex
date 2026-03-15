@@ -33,6 +33,8 @@ pub enum Method {
     RunReopen,
     // Milestone 12: deterministic run supersession
     RunSupersede,
+    // Milestone 13: deterministic run archiving
+    RunArchive,
 }
 
 impl Method {
@@ -63,6 +65,8 @@ impl Method {
             Self::RunReopen => "run.reopen",
             // Milestone 12
             Self::RunSupersede => "run.supersede",
+            // Milestone 13
+            Self::RunArchive => "run.archive",
         }
     }
 
@@ -93,6 +97,8 @@ impl Method {
             "run.reopen" => Some(Self::RunReopen),
             // Milestone 12
             "run.supersede" => Some(Self::RunSupersede),
+            // Milestone 13
+            "run.archive" => Some(Self::RunArchive),
             _ => None,
         }
     }
@@ -124,6 +130,8 @@ impl Method {
             Self::RunReopen,
             // Milestone 12
             Self::RunSupersede,
+            // Milestone 13
+            Self::RunArchive,
         ]
     }
 }

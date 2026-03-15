@@ -602,6 +602,9 @@ pub struct RunState {
     /// ISO 8601 timestamp of when the supersession occurred (Milestone 12).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_at: Option<String>,
+    /// Archive metadata if this run has been explicitly archived (Milestone 13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_metadata: Option<ArchiveMetadata>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -632,6 +635,15 @@ pub struct RunSummary {
     /// Run ID that superseded this run, if any (Milestone 12).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by_run_id: Option<String>,
+    /// Whether this run has been explicitly archived (Milestone 13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_archived: Option<bool>,
+    /// Archive reason if the run has been archived (Milestone 13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_reason: Option<String>,
+    /// ISO 8601 timestamp of when this run was archived (Milestone 13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -648,6 +660,14 @@ pub struct RunsListParams {
     /// Filter by status (optional).
     #[serde(default)]
     pub status: Option<String>,
+    /// When true, archived runs are included alongside non-archived runs (Milestone 13).
+    /// Default: false (archived runs are excluded).
+    #[serde(default)]
+    pub include_archived: Option<bool>,
+    /// When true, return only archived runs (Milestone 13).
+    /// Takes precedence over `include_archived`.
+    #[serde(default)]
+    pub archived_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -711,6 +731,9 @@ pub struct RunGetResult {
     /// ISO 8601 timestamp of when supersession occurred (Milestone 12).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_at: Option<String>,
+    /// Archive metadata if this run has been explicitly archived (Milestone 13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_metadata: Option<ArchiveMetadata>,
 }
 
 // ---------------------------------------------------------------------------
@@ -951,4 +974,51 @@ pub struct RunSupersedeResult {
     pub recommended_next_action: String,
     /// Recommended MCP tool to invoke next.
     pub recommended_tool: String,
+}
+
+// ---------------------------------------------------------------------------
+// run.archive  (Milestone 13)
+// ---------------------------------------------------------------------------
+
+/// Compact archive metadata recorded when a run is explicitly archived.
+///
+/// Persisted in SQLite alongside run state.  Provides an auditable record
+/// of archival without duplicating the full run state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveMetadata {
+    /// Human-readable reason supplied by ChatGPT for archiving.
+    pub reason: String,
+    /// ISO 8601 timestamp of when the run was archived.
+    pub archived_at: String,
+}
+
+/// Parameters for `run.archive` — explicit deterministic run archiving.
+///
+/// Only finalized runs (`completed`, `failed`, `abandoned`) may be archived.
+/// Active, prepared, or awaiting-approval runs are rejected.
+/// Archiving is deterministic and audited; it does not execute work.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunArchiveParams {
+    /// ID of the run to archive.
+    pub run_id: String,
+    /// Human-readable reason for archiving (required for auditability).
+    pub reason: String,
+}
+
+/// Result of `run.archive`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunArchiveResult {
+    /// ID of the run that was archived.
+    pub run_id: String,
+    /// Current status of the run (e.g. `"finalized:completed"`).
+    pub status: String,
+    /// ISO 8601 timestamp of when the run was archived.
+    pub archived_at: String,
+    /// Human-readable reason supplied for archiving.
+    pub reason: String,
+    /// Confirmation message.
+    pub message: String,
 }

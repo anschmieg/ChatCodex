@@ -31,6 +31,7 @@ import {
   FinalizeRunInput,
   ReopenRunInput,
   SupersedeRunInput,
+  ArchiveRunInput,
 } from "./schemas.js";
 
 /**
@@ -77,6 +78,8 @@ export const REGISTERED_TOOL_NAMES = [
   "reopen_run",
   // Milestone 12: deterministic run supersession
   "supersede_run",
+  // Milestone 13: deterministic run archiving
+  "archive_run",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -269,16 +272,18 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
     },
   );
 
-  // ---- list_runs (Milestone 7) ----
+  // ---- list_runs (Milestone 7; extended in Milestone 13) ----
   server.tool(
     "list_runs",
-    "List known runs with their status and metadata (read-only)",
+    "List known runs with status and metadata (read-only). Supports archive filtering via optional parameters: set includeArchived=true to include archived runs, or archivedOnly=true to return only archived runs.",
     ListRunsInput,
     async (params) => {
       const result = await client.call("runs.list", {
         limit: params.limit,
         workspaceId: params.workspaceId,
         status: params.status,
+        includeArchived: params.includeArchived,
+        archivedOnly: params.archivedOnly,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -394,6 +399,22 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
       const result = await client.call("run.supersede", {
         runId: params.runId,
         newUserGoal: params.newUserGoal,
+        reason: params.reason,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- archive_run (Milestone 13) ----
+  server.tool(
+    "archive_run",
+    "Explicitly archive a finalized run so it remains preserved and inspectable but is excluded from the default active run listing. Only finalized runs (completed, failed, or abandoned) may be archived. Archiving is deterministic and audited; it does not execute work or reopen the run. Archived runs can still be read via get_run_state, get_run_history, and list_runs (with includeArchived=true or archivedOnly=true).",
+    ArchiveRunInput,
+    async (params) => {
+      const result = await client.call("run.archive", {
+        runId: params.runId,
         reason: params.reason,
       });
       return {

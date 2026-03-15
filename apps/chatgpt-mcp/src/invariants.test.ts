@@ -19,6 +19,8 @@ import {
   FinalizeRunInput,
   ReopenRunInput,
   SupersedeRunInput,
+  ArchiveRunInput,
+  ListRunsInput,
 } from "./schemas.js";
 
 describe("MCP tool registry invariants", () => {
@@ -57,6 +59,8 @@ describe("MCP tool registry invariants", () => {
       "reopen_run",
       // Milestone 12: deterministic run supersession
       "supersede_run",
+      // Milestone 13: deterministic run archiving
+      "archive_run",
     ]);
     const actual = new Set(REGISTERED_TOOL_NAMES);
     assert.deepStrictEqual(actual, expected);
@@ -524,6 +528,128 @@ describe("No-hidden-agent regression (Milestone 12)", () => {
       assert.ok(
         method !== "run.supersede",
         `run.supersede must not be a forbidden agent-runtime method`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 13: ArchiveRunInput schema validation
+// ---------------------------------------------------------------
+describe("ArchiveRunInput schema (Milestone 13)", () => {
+  it("should accept a valid archive request", () => {
+    const schema = z.object(ArchiveRunInput);
+    const result = schema.safeParse({ runId: "run-abc", reason: "Archiving completed run" });
+    assert.ok(result.success, "Valid archive request should pass validation");
+  });
+
+  it("should reject missing runId", () => {
+    const schema = z.object(ArchiveRunInput);
+    const result = schema.safeParse({ reason: "reason" });
+    assert.ok(!result.success, "Missing runId should fail validation");
+  });
+
+  it("should reject missing reason", () => {
+    const schema = z.object(ArchiveRunInput);
+    const result = schema.safeParse({ runId: "run-abc" });
+    assert.ok(!result.success, "Missing reason should fail validation");
+  });
+
+  it("should reject an empty reason", () => {
+    const schema = z.object(ArchiveRunInput);
+    const result = schema.safeParse({ runId: "run-abc", reason: "" });
+    assert.ok(!result.success, "Empty reason should fail validation (min 1)");
+  });
+
+  it("should reject a reason exceeding 500 characters", () => {
+    const schema = z.object(ArchiveRunInput);
+    const result = schema.safeParse({ runId: "run-abc", reason: "x".repeat(501) });
+    assert.ok(!result.success, "Reason exceeding 500 chars should fail validation");
+  });
+
+  it("should accept a reason of exactly 500 characters", () => {
+    const schema = z.object(ArchiveRunInput);
+    const result = schema.safeParse({ runId: "run-abc", reason: "x".repeat(500) });
+    assert.ok(result.success, "Reason of exactly 500 chars should be valid");
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 13: ListRunsInput archive filtering schema
+// ---------------------------------------------------------------
+describe("ListRunsInput archive filtering (Milestone 13)", () => {
+  it("should accept includeArchived=true", () => {
+    const schema = z.object(ListRunsInput);
+    const result = schema.safeParse({ includeArchived: true });
+    assert.ok(result.success, "includeArchived=true should be valid");
+    assert.strictEqual(result.data?.includeArchived, true);
+  });
+
+  it("should accept archivedOnly=true", () => {
+    const schema = z.object(ListRunsInput);
+    const result = schema.safeParse({ archivedOnly: true });
+    assert.ok(result.success, "archivedOnly=true should be valid");
+    assert.strictEqual(result.data?.archivedOnly, true);
+  });
+
+  it("should accept both flags together", () => {
+    const schema = z.object(ListRunsInput);
+    const result = schema.safeParse({ includeArchived: true, archivedOnly: true });
+    assert.ok(result.success, "Both flags together should be valid schema-wise");
+  });
+
+  it("should default both flags to undefined when omitted", () => {
+    const schema = z.object(ListRunsInput);
+    const result = schema.safeParse({});
+    assert.ok(result.success, "Empty input should be valid");
+    assert.strictEqual(result.data?.includeArchived, undefined);
+    assert.strictEqual(result.data?.archivedOnly, undefined);
+  });
+
+  it("should reject non-boolean includeArchived", () => {
+    const schema = z.object(ListRunsInput);
+    const result = schema.safeParse({ includeArchived: "yes" });
+    assert.ok(!result.success, "Non-boolean includeArchived should fail validation");
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 13: No-hidden-agent regression for archive_run
+// ---------------------------------------------------------------
+describe("No-hidden-agent regression (Milestone 13)", () => {
+  it("archive_run should be registered as a lifecycle tool", () => {
+    assert.ok(
+      REGISTERED_TOOL_NAMES.includes("archive_run" as (typeof REGISTERED_TOOL_NAMES)[number]),
+      "archive_run must be in the tool registry",
+    );
+  });
+
+  it("archive_run is not an autonomous continuation tool", () => {
+    const coarsePatterns = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end"];
+    for (const pattern of coarsePatterns) {
+      assert.ok(
+        !"archive_run".includes(pattern),
+        `"archive_run" must not contain autonomous pattern "${pattern}"`,
+      );
+    }
+  });
+
+  it("daemon method run.archive is not a forbidden agent-runtime method", () => {
+    const forbiddenMethods = [
+      "turn/start",
+      "turn/steer",
+      "review/start",
+      "codex",
+      "codex-reply",
+      "continue_run",
+      "resume_thread",
+      "agent_step",
+      "fix_end_to_end",
+    ];
+    for (const method of forbiddenMethods) {
+      assert.ok(
+        method !== "run.archive",
+        `run.archive must not be a forbidden agent-runtime method`,
       );
     }
   });

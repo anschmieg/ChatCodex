@@ -163,6 +163,49 @@ Lifecycle rules enforced by the daemon:
 - `run_superseded` audit entry appended to the original run
 - `run_created_from_supersession` audit entry appended to the successor run
 
+### Milestone 13 methods
+
+* `run.archive` — explicitly archive a finalized run so it remains preserved and inspectable but is excluded from the default active run listing
+
+Only finalized runs (`finalized:completed`, `finalized:failed`, `finalized:abandoned`) may be archived.
+Active, prepared, or awaiting-approval runs cannot be archived. Already-archived runs are also rejected.
+Archiving does not execute work or trigger autonomous follow-up; it appends `archiveMetadata` to the run state and an audit entry.
+
+#### `run.archive` params
+
+```json
+{
+  "runId": "run_abc",
+  "reason": "Archiving completed run for historical reference"
+}
+```
+
+`reason` is required (min 1 character, max 500 characters) for auditability.
+
+Returns `RunArchiveResult`:
+- `runId` — the archived run ID
+- `status` — the run status at the time of archiving (unchanged)
+- `archivedAt` — ISO 8601 timestamp
+- `reason` — the reason provided
+- `message` — human-readable confirmation
+
+Lifecycle rules enforced by the daemon:
+- Only finalized runs may be archived; all other status values are rejected
+- Already-archived runs are rejected idempotently (not silently)
+- The run's plan, steps, outcome, and prior audit history are fully preserved
+- `archiveMetadata` is persisted in SQLite in a single transaction
+- `run_archived` audit entry appended with the archive reason
+
+#### Archive filtering in `runs.list`
+
+`runs.list` now supports two optional boolean parameters:
+- `includeArchived` — when `true`, include archived runs alongside non-archived runs (default: `false`)
+- `archivedOnly` — when `true`, return only archived runs (takes precedence over `includeArchived`)
+
+When both are omitted, archived runs are excluded by default.
+
+`RunSummary` now carries `isArchived`, `archiveReason`, and `archivedAt` fields (all optional).
+
 ## Forbidden internal methods
 
 Do not implement or surface:

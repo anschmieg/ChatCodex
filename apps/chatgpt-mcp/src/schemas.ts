@@ -210,7 +210,7 @@ export const ApproveActionInput = {
 };
 
 // ---------------------------------------------------------------
-// list_runs  (Milestone 7)
+// list_runs  (Milestone 7; extended in Milestone 13)
 // ---------------------------------------------------------------
 export const ListRunsInput = {
   limit: z
@@ -228,6 +228,19 @@ export const ListRunsInput = {
     .string()
     .optional()
     .describe("Filter by run status (e.g. active, done, blocked)"),
+  // Milestone 13: archive filtering
+  includeArchived: z
+    .boolean()
+    .optional()
+    .describe(
+      "When true, include archived runs alongside non-archived runs in the results. Default: false (archived runs are excluded).",
+    ),
+  archivedOnly: z
+    .boolean()
+    .optional()
+    .describe(
+      "When true, return only archived runs. Takes precedence over includeArchived.",
+    ),
 };
 
 // ---------------------------------------------------------------
@@ -349,5 +362,28 @@ export const SupersedeRunInput = {
     .max(500)
     .describe(
       "Human-readable reason for supersession (required for auditability)",
+    ),
+};
+
+// ---------------------------------------------------------------
+// archive_run  (Milestone 13)
+//
+// Explicitly archives a finalized run so it remains preserved and
+// inspectable but is excluded from the default active run listing.
+// Only finalized runs (completed, failed, abandoned) may be archived.
+// Archiving is deterministic and audited; it does not execute work.
+// ---------------------------------------------------------------
+export const ArchiveRunInput = {
+  runId: z
+    .string()
+    .describe(
+      "Run ID of the finalized run to archive (must be finalized: completed, failed, or abandoned)",
+    ),
+  reason: z
+    .string()
+    .min(1)
+    .max(500)
+    .describe(
+      "Human-readable reason for archiving (required for auditability)",
     ),
 };
