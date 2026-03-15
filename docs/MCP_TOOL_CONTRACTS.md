@@ -542,6 +542,38 @@ The `list_runs` tool now accepts two optional boolean parameters:
 
 When both are omitted, archived runs are excluded by default.
 
+---
+
+## unarchive_run (Milestone 14)
+
+Explicitly unarchive (restore) an archived run so it returns to the default active run listing.
+
+### Input
+
+- `runId`: string — Run ID of the archived run to unarchive (must be archived)
+- `reason`: string — human-readable reason for unarchiving (required, 1–500 chars)
+
+### Returns
+
+- `runId` — the unarchived run ID
+- `status` — the run status (unchanged, e.g. `finalized:completed`)
+- `unarchivedAt` — ISO 8601 timestamp of unarchiving
+- `reason` — the reason provided
+- `message` — human-readable confirmation
+
+### Behavior
+
+- Only archived runs (with `archiveMetadata`) may be unarchived; non-archived runs are rejected deterministically
+- Already-unarchived runs are also rejected
+- Unarchiving does **not** execute work, trigger any autonomous follow-up, reopen the run, or change its finalized outcome
+- The run's plan, completed steps, audit history, finalized outcome, and lineage metadata are fully preserved
+- The original `archiveMetadata` remains intact for historical inspection after unarchiving
+- `unarchiveMetadata` is added to the run state and persisted in SQLite
+- Appends `run_unarchived` audit entry with the unarchive reason
+- After unarchiving, the run returns to the default `list_runs` visible set
+- `archivedOnly=true` excludes restored (unarchived) runs
+- Unarchived runs remain fully inspectable via `get_run_state` and `get_run_history`
+
 ## Forbidden public tools
 
 Do not expose:

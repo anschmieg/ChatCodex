@@ -605,6 +605,9 @@ pub struct RunState {
     /// Archive metadata if this run has been explicitly archived (Milestone 13).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_metadata: Option<ArchiveMetadata>,
+    /// Unarchive (restoration) metadata if this run has been explicitly unarchived (Milestone 14).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unarchive_metadata: Option<UnarchiveMetadata>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -644,6 +647,12 @@ pub struct RunSummary {
     /// ISO 8601 timestamp of when this run was archived (Milestone 13).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
+    /// Unarchive reason if this run has been explicitly unarchived (Milestone 14).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unarchive_reason: Option<String>,
+    /// ISO 8601 timestamp of when this run was unarchived (Milestone 14).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unarchived_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -734,6 +743,9 @@ pub struct RunGetResult {
     /// Archive metadata if this run has been explicitly archived (Milestone 13).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_metadata: Option<ArchiveMetadata>,
+    /// Unarchive (restoration) metadata if this run has been explicitly unarchived (Milestone 14).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unarchive_metadata: Option<UnarchiveMetadata>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1018,6 +1030,55 @@ pub struct RunArchiveResult {
     /// ISO 8601 timestamp of when the run was archived.
     pub archived_at: String,
     /// Human-readable reason supplied for archiving.
+    pub reason: String,
+    /// Confirmation message.
+    pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// run.unarchive  (Milestone 14)
+// ---------------------------------------------------------------------------
+
+/// Compact unarchive (restoration) metadata recorded when a run is explicitly unarchived.
+///
+/// Persisted in SQLite alongside run state.  Provides an auditable record of
+/// restoration without duplicating the full run state.  The original
+/// `archive_metadata` remains intact for historical inspection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UnarchiveMetadata {
+    /// Human-readable reason supplied by ChatGPT for unarchiving.
+    pub reason: String,
+    /// ISO 8601 timestamp of when the run was unarchived.
+    pub unarchived_at: String,
+}
+
+/// Parameters for `run.unarchive` — explicit deterministic run unarchiving.
+///
+/// Only archived runs may be unarchived.
+/// Non-archived runs are rejected.
+/// Unarchiving is deterministic and audited; it does not execute work.
+/// Unarchiving does not reopen the run or change its finalized outcome.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunUnarchiveParams {
+    /// ID of the archived run to unarchive.
+    pub run_id: String,
+    /// Human-readable reason for unarchiving (required for auditability).
+    pub reason: String,
+}
+
+/// Result of `run.unarchive`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunUnarchiveResult {
+    /// ID of the run that was unarchived.
+    pub run_id: String,
+    /// Current status of the run (unchanged, e.g. `"finalized:completed"`).
+    pub status: String,
+    /// ISO 8601 timestamp of when the run was unarchived.
+    pub unarchived_at: String,
+    /// Human-readable reason supplied for unarchiving.
     pub reason: String,
     /// Confirmation message.
     pub message: String,

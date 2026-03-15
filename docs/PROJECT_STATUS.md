@@ -224,9 +224,39 @@ ChatGPT-hosted model
 - 14 new TypeScript tests (6 schema validation + 5 list filtering + 3 no-hidden-agent regression)
 - No backend model calls; no autonomous continuation; no coarse tools introduced
 
+### Milestone 14: Deterministic Run Unarchiving and Archive Restoration Controls
+- Added `UnarchiveMetadata` struct to `deterministic-protocol` (`reason`, `unarchived_at`)
+- Added `unarchive_metadata: Option<UnarchiveMetadata>` field to `RunState`
+- Added `RunUnarchiveParams` and `RunUnarchiveResult` to `deterministic-protocol`
+- Added `unarchive_reason`, `unarchived_at` fields to `RunSummary`
+- Added `unarchive_metadata` field to `RunGetResult`
+- Added `Method::RunUnarchive` (`run.unarchive`) to the daemon method enum
+- Added `deterministic_core::run_unarchive` module with deterministic eligibility rules:
+  - Only archived runs (with `archive_metadata`) may be unarchived
+  - Non-archived runs are rejected deterministically
+  - Already-unarchived runs are rejected
+  - Unarchiving does not execute work, reopen, or change the finalized outcome
+  - Original `archive_metadata` remains intact; `unarchive_metadata` is set on the run state
+- Added `handle_run_unarchive` in daemon handlers
+- Updated `handle_run_get` to expose `unarchive_metadata` in `RunGetResult`
+- SQLite: added `unarchive_metadata TEXT` column with backward-compatible migration (M14)
+- `is_archived` flag: a run is archived only if `archive_metadata` is set AND `unarchive_metadata` is not set
+- After unarchiving, the run returns to the default `list_runs` visible set
+- `archived_only=true` excludes unarchived (restored) runs
+- `RunSummary` populated with `unarchive_reason`, `unarchived_at` from persistence query
+- `run_unarchived` audit entry appended with unarchive reason on successful unarchive
+- Added `UnarchiveRunInput` Zod schema in TypeScript (`runId`, `reason` 1–500 chars)
+- Added `unarchive_run` to `REGISTERED_TOOL_NAMES` and registered the MCP tool
+- TypeScript remains thin: validation + mapping + daemon calls only
+- 7 new Rust core tests (unarchive completed/failed/abandoned, non-archived rejection, already-unarchived rejection, status unchanged, finalized outcome preserved)
+- 9 new Rust handler tests (unarchive completed/failed, rejection for non-archived/unknown, audit trail, default list restoration, archived_only exclusion, run.get visibility, persistence roundtrip)
+- 6 new Rust persistence tests (unarchive metadata roundtrip, default None, restored run in default list, excluded from archived_only, summary fields, M14 migration)
+- 9 new TypeScript tests (6 schema validation + 3 no-hidden-agent regression)
+- No backend model calls; no autonomous continuation; no coarse tools introduced
+
 ## Current Implementation Surface
 
-### Public MCP Tools (20)
+### Public MCP Tools (21)
 
 | Tool | Description |
 |------|-------------|
@@ -250,8 +280,9 @@ ChatGPT-hosted model
 | `reopen_run` | Reopen a finalized run for deterministic continuation (Milestone 11) |
 | `supersede_run` | Create a successor run that explicitly replaces a finalized run with preserved lineage (Milestone 12) |
 | `archive_run` | Explicitly archive a finalized run so it remains preserved but out of the active working set (Milestone 13) |
+| `unarchive_run` | Explicitly unarchive (restore) an archived run back to the default active working set (Milestone 14) |
 
-### Internal Daemon Methods (20)
+### Internal Daemon Methods (21)
 
 | Method | Description |
 |--------|-------------|
@@ -267,7 +298,7 @@ ChatGPT-hosted model
 | `git.diff` | Diff summary/patch |
 | `approval.resolve` | Resolve pending approvals |
 | `runs.list` | List runs; supports `include_archived` / `archived_only` filtering (read-only) |
-| `run.get` | Get full run state with approvals, retryable action, and archive metadata (read-only) |
+| `run.get` | Get full run state with approvals, retryable action, and archive/unarchive metadata (read-only) |
 | `run.history` | Get audit trail entries for a run (read-only) |
 | `patch.preflight` | Evaluate patch policy without applying changes (read-only, Milestone 9) |
 | `tests.preflight` | Evaluate test-run policy without executing tests (read-only, Milestone 9) |
@@ -275,6 +306,7 @@ ChatGPT-hosted model
 | `run.reopen` | Reopen a finalized run for deterministic continuation (Milestone 11) |
 | `run.supersede` | Create a successor run that supersedes a finalized run with preserved lineage (Milestone 12) |
 | `run.archive` | Archive a finalized run for retention with audit trail (Milestone 13) |
+| `run.unarchive` | Unarchive (restore) an archived run back to the default active working set (Milestone 14) |
 
 ### Run State Model
 

@@ -93,6 +93,7 @@ mod tests {
             supersession_reason: None,
             superseded_at: None,
             archive_metadata: None,
+            unarchive_metadata: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

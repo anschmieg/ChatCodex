@@ -35,6 +35,8 @@ pub enum Method {
     RunSupersede,
     // Milestone 13: deterministic run archiving
     RunArchive,
+    // Milestone 14: deterministic run unarchiving
+    RunUnarchive,
 }
 
 impl Method {
@@ -67,6 +69,8 @@ impl Method {
             Self::RunSupersede => "run.supersede",
             // Milestone 13
             Self::RunArchive => "run.archive",
+            // Milestone 14
+            Self::RunUnarchive => "run.unarchive",
         }
     }
 
@@ -99,6 +103,8 @@ impl Method {
             "run.supersede" => Some(Self::RunSupersede),
             // Milestone 13
             "run.archive" => Some(Self::RunArchive),
+            // Milestone 14
+            "run.unarchive" => Some(Self::RunUnarchive),
             _ => None,
         }
     }
@@ -132,6 +138,8 @@ impl Method {
             Self::RunSupersede,
             // Milestone 13
             Self::RunArchive,
+            // Milestone 14
+            Self::RunUnarchive,
         ]
     }
 }

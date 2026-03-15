@@ -491,6 +491,56 @@ Acceptance:
 - ✅ Persistence: archive metadata roundtrip, defaults to None, list filtering (default excludes, include_archived, archived_only), summary fields, migration from M12 schema
 - ✅ TypeScript: `ArchiveRunInput` schema validation, `ListRunsInput` archive filter schema, no-hidden-agent regression, exact registry test updated
 
+---
+
+## Milestone 14: Deterministic Run Unarchiving and Archive Restoration Controls
+
+**Protocol (`deterministic-protocol`):**
+
+- ✅ `UnarchiveMetadata` struct: `reason`, `unarchived_at`
+- ✅ `RunUnarchiveParams` struct: `run_id`, `reason`
+- ✅ `RunUnarchiveResult` struct: `run_id`, `status`, `unarchived_at`, `reason`, `message`
+- ✅ `unarchive_metadata: Option<UnarchiveMetadata>` field added to `RunState`
+- ✅ `unarchive_reason`, `unarchived_at` fields added to `RunSummary`
+- ✅ `unarchive_metadata` field added to `RunGetResult`
+- ✅ `Method::RunUnarchive` (`run.unarchive`) added to methods enum
+
+**Core (`deterministic-core`):**
+
+- ✅ `deterministic_core::run_unarchive` module: `unarchive()` function enforces all lifecycle rules
+- ✅ Only archived runs (with `archive_metadata`) may be unarchived
+- ✅ Non-archived runs are rejected with a clear error
+- ✅ Already-unarchived runs are rejected (idempotent-safe)
+- ✅ Unarchiving does not execute work, does not reopen, does not change status
+- ✅ Finalized outcome, plan, completed steps, and lineage metadata are preserved
+- ✅ Original `archive_metadata` remains intact after unarchiving
+- ✅ `unarchive_metadata` is set on the run state after unarchiving
+
+**Daemon (`deterministic-daemon`):**
+
+- ✅ `handle_run_unarchive` handler added and dispatched from `Method::RunUnarchive`
+- ✅ Audit entry `run_unarchived` appended with unarchive reason
+- ✅ `handle_run_get` exposes `unarchive_metadata` in `RunGetResult`
+- ✅ SQLite persistence: `unarchive_metadata` column added with safe migration
+- ✅ `is_archived` flag: a run is considered archived only if `archive_metadata` is set AND `unarchive_metadata` is not set
+- ✅ Unarchived runs return to default list visibility (is_archived = 0)
+- ✅ `archived_only=true` excludes unarchived runs
+- ✅ `RunSummary` carries `unarchive_reason` and `unarchived_at` fields from persistence query
+
+**TypeScript (MCP gateway):**
+
+- ✅ `UnarchiveRunInput` Zod schema added to `schemas.ts` (`runId`, `reason` 1–500 chars)
+- ✅ `unarchive_run` added to `REGISTERED_TOOL_NAMES`
+- ✅ `unarchive_run` tool registered: validates inputs, calls `run.unarchive`, returns result
+- ✅ TypeScript remains thin: validation + mapping + daemon calls only
+
+**Tests:**
+
+- ✅ Core: unarchiving completed/failed/abandoned runs, rejecting non-archived and already-unarchived runs, preserving history and lineage, status unchanged, no reopen
+- ✅ Daemon handlers: M14 tests for unarchive completed/failed, rejection for non-archived/unknown, audit trail, list restoration, archived_only exclusion, run.get visibility, persistence roundtrip
+- ✅ Persistence: unarchive metadata roundtrip, defaults to None, restored run in default list, excluded from archived_only, summary fields, migration from M13 schema
+- ✅ TypeScript: `UnarchiveRunInput` schema validation, no-hidden-agent regression, exact registry test updated
+
 ## Out of scope
 
 These are intentionally not implemented:

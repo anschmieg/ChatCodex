@@ -206,6 +206,48 @@ When both are omitted, archived runs are excluded by default.
 
 `RunSummary` now carries `isArchived`, `archiveReason`, and `archivedAt` fields (all optional).
 
+---
+
+### Milestone 14 methods
+
+* `run.unarchive` — explicitly unarchive (restore) an archived run so it returns to the default active run listing
+
+Only archived runs (with `archiveMetadata` set and no existing `unarchiveMetadata`) may be unarchived.
+Non-archived runs are rejected. Already-unarchived runs are also rejected.
+Unarchiving does not execute work, does not reopen the run, and does not change its finalized outcome.
+
+#### `run.unarchive` params
+
+```json
+{
+  "runId": "run_abc",
+  "reason": "Restoring for follow-up inspection"
+}
+```
+
+`reason` is required (min 1 character, max 500 characters) for auditability.
+
+Returns `RunUnarchiveResult`:
+- `runId` — the unarchived run ID
+- `status` — the run status (unchanged, e.g. `finalized:completed`)
+- `unarchivedAt` — ISO 8601 timestamp
+- `reason` — the reason provided
+- `message` — human-readable confirmation
+
+Lifecycle rules enforced by the daemon:
+- Only archived runs may be unarchived; non-archived runs are rejected
+- Already-unarchived runs are rejected
+- The run's plan, steps, outcome, lineage, and prior audit history are fully preserved
+- The original `archiveMetadata` remains intact after unarchiving
+- `unarchiveMetadata` is persisted in SQLite
+- A run is considered archived only if `archiveMetadata` is set AND `unarchiveMetadata` is not set
+- After unarchiving, the run returns to the default `runs.list` visible set
+- `archivedOnly=true` excludes unarchived runs
+- `run_unarchived` audit entry appended with the unarchive reason
+
+`RunSummary` now also carries `unarchiveReason` and `unarchivedAt` fields (both optional).
+`RunGetResult` now carries `unarchiveMetadata` (optional `UnarchiveMetadata` struct).
+
 ## Forbidden internal methods
 
 Do not implement or surface:

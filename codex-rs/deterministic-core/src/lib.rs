@@ -18,5 +18,6 @@ pub mod run_refresh;
 pub mod run_reopen;
 pub mod run_replan;
 pub mod run_supersede;
+pub mod run_unarchive;
 pub mod tests_run;
 pub mod workspace_summary;

@@ -20,6 +20,7 @@ import {
   ReopenRunInput,
   SupersedeRunInput,
   ArchiveRunInput,
+  UnarchiveRunInput,
   ListRunsInput,
 } from "./schemas.js";
 
@@ -61,6 +62,8 @@ describe("MCP tool registry invariants", () => {
       "supersede_run",
       // Milestone 13: deterministic run archiving
       "archive_run",
+      // Milestone 14: deterministic run unarchiving
+      "unarchive_run",
     ]);
     const actual = new Set(REGISTERED_TOOL_NAMES);
     assert.deepStrictEqual(actual, expected);
@@ -650,6 +653,89 @@ describe("No-hidden-agent regression (Milestone 13)", () => {
       assert.ok(
         method !== "run.archive",
         `run.archive must not be a forbidden agent-runtime method`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 14: UnarchiveRunInput schema validation
+// ---------------------------------------------------------------
+describe("UnarchiveRunInput schema (Milestone 14)", () => {
+  it("should accept a valid unarchive request", () => {
+    const schema = z.object(UnarchiveRunInput);
+    const result = schema.safeParse({ runId: "run-xyz", reason: "Restoring for follow-up inspection" });
+    assert.ok(result.success, "Valid unarchive request should pass validation");
+  });
+
+  it("should reject missing runId", () => {
+    const schema = z.object(UnarchiveRunInput);
+    const result = schema.safeParse({ reason: "reason" });
+    assert.ok(!result.success, "Missing runId should fail validation");
+  });
+
+  it("should reject missing reason", () => {
+    const schema = z.object(UnarchiveRunInput);
+    const result = schema.safeParse({ runId: "run-xyz" });
+    assert.ok(!result.success, "Missing reason should fail validation");
+  });
+
+  it("should reject an empty reason", () => {
+    const schema = z.object(UnarchiveRunInput);
+    const result = schema.safeParse({ runId: "run-xyz", reason: "" });
+    assert.ok(!result.success, "Empty reason should fail validation (min 1)");
+  });
+
+  it("should reject a reason exceeding 500 characters", () => {
+    const schema = z.object(UnarchiveRunInput);
+    const result = schema.safeParse({ runId: "run-xyz", reason: "x".repeat(501) });
+    assert.ok(!result.success, "Reason exceeding 500 chars should fail validation");
+  });
+
+  it("should accept a reason of exactly 500 characters", () => {
+    const schema = z.object(UnarchiveRunInput);
+    const result = schema.safeParse({ runId: "run-xyz", reason: "x".repeat(500) });
+    assert.ok(result.success, "Reason of exactly 500 chars should be valid");
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 14: No-hidden-agent regression for unarchive_run
+// ---------------------------------------------------------------
+describe("No-hidden-agent regression (Milestone 14)", () => {
+  it("unarchive_run should be registered as a lifecycle tool", () => {
+    assert.ok(
+      REGISTERED_TOOL_NAMES.includes("unarchive_run" as (typeof REGISTERED_TOOL_NAMES)[number]),
+      "unarchive_run must be in the tool registry",
+    );
+  });
+
+  it("unarchive_run is not an autonomous continuation tool", () => {
+    const coarsePatterns = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end"];
+    for (const pattern of coarsePatterns) {
+      assert.ok(
+        !"unarchive_run".includes(pattern),
+        `"unarchive_run" must not contain autonomous pattern "${pattern}"`,
+      );
+    }
+  });
+
+  it("daemon method run.unarchive is not a forbidden agent-runtime method", () => {
+    const forbiddenMethods = [
+      "turn/start",
+      "turn/steer",
+      "review/start",
+      "codex",
+      "codex-reply",
+      "continue_run",
+      "resume_thread",
+      "agent_step",
+      "fix_end_to_end",
+    ];
+    for (const method of forbiddenMethods) {
+      assert.ok(
+        method !== "run.unarchive",
+        `run.unarchive must not be a forbidden agent-runtime method`,
       );
     }
   });

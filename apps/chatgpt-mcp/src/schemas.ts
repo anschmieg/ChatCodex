@@ -387,3 +387,19 @@ export const ArchiveRunInput = {
       "Human-readable reason for archiving (required for auditability)",
     ),
 };
+
+// Milestone 14: unarchive_run
+export const UnarchiveRunInput = {
+  runId: z
+    .string()
+    .describe(
+      "Run ID of the archived run to unarchive (must be archived)",
+    ),
+  reason: z
+    .string()
+    .min(1)
+    .max(500)
+    .describe(
+      "Human-readable reason for unarchiving (required for auditability)",
+    ),
+};

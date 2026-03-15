@@ -87,6 +87,7 @@ pub fn prepare(params: &RunPrepareParams) -> Result<(RunPrepareResult, RunState)
         supersession_reason: None,
         superseded_at: None,
         archive_metadata: None,
+        unarchive_metadata: None,
         created_at: now.clone(),
         updated_at: now,
     };

@@ -32,6 +32,7 @@ import {
   ReopenRunInput,
   SupersedeRunInput,
   ArchiveRunInput,
+  UnarchiveRunInput,
 } from "./schemas.js";
 
 /**
@@ -80,6 +81,8 @@ export const REGISTERED_TOOL_NAMES = [
   "supersede_run",
   // Milestone 13: deterministic run archiving
   "archive_run",
+  // Milestone 14: deterministic run unarchiving
+  "unarchive_run",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -414,6 +417,22 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
     ArchiveRunInput,
     async (params) => {
       const result = await client.call("run.archive", {
+        runId: params.runId,
+        reason: params.reason,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- unarchive_run (Milestone 14) ----
+  server.tool(
+    "unarchive_run",
+    "Explicitly unarchive (restore) an archived run so it returns to the default active run listing. Only archived runs may be unarchived; non-archived runs are rejected. Unarchiving is deterministic and audited; it does not execute work, reopen the run, or change the finalized outcome. The original archive metadata remains intact for historical inspection alongside the new unarchive metadata.",
+    UnarchiveRunInput,
+    async (params) => {
+      const result = await client.call("run.unarchive", {
         runId: params.runId,
         reason: params.reason,
       });

@@ -5,7 +5,7 @@
 //! access — unlike the previous JSON-file approach.
 
 use anyhow::{Context, Result};
-use deterministic_protocol::{ArchiveMetadata, PendingApproval, ReopenMetadata, RetryableAction, RunHistoryEntry, RunOutcome, RunPolicy, RunState, RunSummary};
+use deterministic_protocol::{ArchiveMetadata, PendingApproval, ReopenMetadata, RetryableAction, RunHistoryEntry, RunOutcome, RunPolicy, RunState, RunSummary, UnarchiveMetadata};
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
@@ -125,6 +125,8 @@ impl Store {
             // Milestone 13 columns
             ("runs", "is_archived", "INTEGER DEFAULT 0"),
             ("runs", "archive_metadata", "TEXT"),
+            // Milestone 14 columns
+            ("runs", "unarchive_metadata", "TEXT"),
         ];
 
         for (table, column, def) in migrations {
@@ -199,13 +201,21 @@ impl Store {
             .transpose()
             .context("failed to serialise reopen_metadata")?;
         // Milestone 13: persist archive_metadata as JSON; also extract is_archived for filtering.
-        let is_archived: i64 = if state.archive_metadata.is_some() { 1 } else { 0 };
+        // Milestone 14: a run is archived only if archive_metadata is set AND unarchive_metadata is not set.
+        let is_archived: i64 = if state.archive_metadata.is_some() && state.unarchive_metadata.is_none() { 1 } else { 0 };
         let archive_metadata_json: Option<String> = state
             .archive_metadata
             .as_ref()
             .map(serde_json::to_string)
             .transpose()
             .context("failed to serialise archive_metadata")?;
+        // Milestone 14: persist unarchive_metadata as JSON.
+        let unarchive_metadata_json: Option<String> = state
+            .unarchive_metadata
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .context("failed to serialise unarchive_metadata")?;
         conn.execute(
             "INSERT OR REPLACE INTO runs
                 (run_id, workspace_id, user_goal, status, plan, current_step,
@@ -215,8 +225,9 @@ impl Store {
                  retryable_action, policy_profile, outcome_kind, finalized_outcome,
                  reopen_metadata, supersedes_run_id, superseded_by_run_id,
                  supersession_reason, superseded_at, is_archived, archive_metadata,
+                 unarchive_metadata,
                  created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -245,6 +256,7 @@ impl Store {
                 state.superseded_at,
                 is_archived,
                 archive_metadata_json,
+                unarchive_metadata_json,
                 state.created_at,
                 state.updated_at,
             ],
@@ -266,6 +278,7 @@ impl Store {
                         retryable_action, policy_profile, finalized_outcome,
                         reopen_metadata, supersedes_run_id, superseded_by_run_id,
                         supersession_reason, superseded_at, archive_metadata,
+                        unarchive_metadata,
                         created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
@@ -398,6 +411,20 @@ impl Store {
                         )
                     })?;
 
+                // Milestone 14: unarchive metadata.
+                let unarchive_metadata_json: Option<String> = row.get(25)?;
+                let unarchive_metadata: Option<UnarchiveMetadata> = unarchive_metadata_json
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            25,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+
                 Ok(RunState {
                     run_id: row.get(0)?,
                     workspace_id: row.get(1)?,
@@ -424,8 +451,9 @@ impl Store {
                     supersession_reason,
                     superseded_at,
                     archive_metadata,
-                    created_at: row.get(25)?,
-                    updated_at: row.get(26)?,
+                    unarchive_metadata,
+                    created_at: row.get(26)?,
+                    updated_at: row.get(27)?,
                 })
             })
             .context("failed to query run")?;
@@ -609,7 +637,8 @@ impl Store {
         let sql = format!(
             "SELECT run_id, workspace_id, user_goal, status, current_step, plan,
                     created_at, updated_at, outcome_kind, reopen_metadata,
-                    supersedes_run_id, superseded_by_run_id, is_archived, archive_metadata
+                    supersedes_run_id, superseded_by_run_id, is_archived, archive_metadata,
+                    unarchive_metadata
              FROM runs {where_clause}
              ORDER BY updated_at DESC
              LIMIT ?1"
@@ -623,7 +652,7 @@ impl Store {
             //  4: current_step  5: plan  6: created_at  7: updated_at
             //  8: outcome_kind  9: reopen_metadata
             // 10: supersedes_run_id  11: superseded_by_run_id
-            // 12: is_archived  13: archive_metadata
+            // 12: is_archived  13: archive_metadata  14: unarchive_metadata
             let plan_json: String = row.get(5)?;
             let total_steps: usize = serde_json::from_str::<Vec<String>>(&plan_json)
                 .map(|v| v.len())
@@ -643,6 +672,13 @@ impl Store {
                 .and_then(|s| serde_json::from_str::<ArchiveMetadata>(s).ok())
                 .map(|m| (Some(m.reason), Some(m.archived_at)))
                 .unwrap_or((None, None));
+            // Milestone 14: unarchive summary fields.
+            let unarchive_metadata_json: Option<String> = row.get(14)?;
+            let (unarchive_reason, unarchived_at) = unarchive_metadata_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<UnarchiveMetadata>(s).ok())
+                .map(|m| (Some(m.reason), Some(m.unarchived_at)))
+                .unwrap_or((None, None));
             Ok(RunSummary {
                 run_id: row.get(0)?,
                 workspace_id: row.get(1)?,
@@ -657,6 +693,8 @@ impl Store {
                 is_archived,
                 archive_reason,
                 archived_at,
+                unarchive_reason,
+                unarchived_at,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
@@ -776,6 +814,7 @@ mod tests {
             supersession_reason: None,
             superseded_at: None,
             archive_metadata: None,
+            unarchive_metadata: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -2352,6 +2391,160 @@ mod tests {
 
         // M13 archive_metadata must default to None.
         assert!(loaded.archive_metadata.is_none());
+    }
+
+    // ---- Milestone 14: unarchive metadata persistence tests ----
+
+    /// Verify that unarchive_metadata is correctly persisted and retrieved.
+    #[test]
+    fn unarchive_metadata_roundtrip() {
+        use deterministic_protocol::{ArchiveMetadata, UnarchiveMetadata};
+
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_unarch_rt", "finalized:completed");
+        state.archive_metadata = Some(ArchiveMetadata {
+            reason: "archived".into(),
+            archived_at: "2024-09-01T10:00:00Z".into(),
+        });
+        state.unarchive_metadata = Some(UnarchiveMetadata {
+            reason: "restoring".into(),
+            unarchived_at: "2024-09-02T10:00:00Z".into(),
+        });
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_unarch_rt").unwrap().unwrap();
+        let meta = loaded.unarchive_metadata.expect("unarchive_metadata must be present");
+        assert_eq!(meta.reason, "restoring");
+        assert_eq!(meta.unarchived_at, "2024-09-02T10:00:00Z");
+        // Archive metadata must remain intact.
+        assert!(loaded.archive_metadata.is_some());
+    }
+
+    /// Verify that unarchive_metadata defaults to None for runs never unarchived.
+    #[test]
+    fn unarchive_metadata_defaults_to_none() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_no_unarch", "active");
+        store.save_run(&state).unwrap();
+        let loaded = store.get_run("r_no_unarch").unwrap().unwrap();
+        assert!(loaded.unarchive_metadata.is_none());
+    }
+
+    /// Verify that is_archived = 0 after a run is unarchived (restored run returns to default list).
+    #[test]
+    fn list_runs_restored_run_returns_to_default_list() {
+        use deterministic_protocol::{ArchiveMetadata, UnarchiveMetadata};
+
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_restored", "finalized:completed");
+        state.archive_metadata = Some(ArchiveMetadata {
+            reason: "archived".into(),
+            archived_at: "2024-09-01T10:00:00Z".into(),
+        });
+        state.unarchive_metadata = Some(UnarchiveMetadata {
+            reason: "restoring".into(),
+            unarchived_at: "2024-09-02T10:00:00Z".into(),
+        });
+        store.save_run(&state).unwrap();
+
+        // Default list should include the restored run (is_archived=0 since unarchive_metadata is set).
+        let runs = store.list_runs(20, None, None, false, false).unwrap();
+        assert!(
+            runs.iter().any(|r| r.run_id == "r_restored"),
+            "restored run must appear in default list"
+        );
+
+        // archived_only=true must NOT include the restored run.
+        let runs_ao = store.list_runs(20, None, None, false, true).unwrap();
+        assert!(
+            !runs_ao.iter().any(|r| r.run_id == "r_restored"),
+            "restored run must NOT appear when archived_only=true"
+        );
+    }
+
+    /// Verify list_runs RunSummary carries unarchive fields when present.
+    #[test]
+    fn list_runs_summary_carries_unarchive_fields() {
+        use deterministic_protocol::{ArchiveMetadata, UnarchiveMetadata};
+
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_unarch_sum", "finalized:completed");
+        state.archive_metadata = Some(ArchiveMetadata {
+            reason: "summary test archive".into(),
+            archived_at: "2024-09-01T10:00:00Z".into(),
+        });
+        state.unarchive_metadata = Some(UnarchiveMetadata {
+            reason: "summary test unarchive".into(),
+            unarchived_at: "2024-09-03T12:00:00Z".into(),
+        });
+        store.save_run(&state).unwrap();
+
+        // include_archived=true to include runs with archive_metadata (even if unarchived).
+        let runs = store.list_runs(20, None, None, true, false).unwrap();
+        let summary = runs.iter().find(|r| r.run_id == "r_unarch_sum").unwrap();
+        // is_archived must be None/false since the run is unarchived.
+        assert_eq!(summary.is_archived, None, "is_archived must be None for unarchived run");
+        assert_eq!(summary.unarchive_reason.as_deref(), Some("summary test unarchive"));
+        assert_eq!(summary.unarchived_at.as_deref(), Some("2024-09-03T12:00:00Z"));
+    }
+
+    /// Verify that migration from M13 schema (no M14 unarchive_metadata column) works safely.
+    #[test]
+    fn migration_m14_unarchive_metadata_defaults_safely() {
+        use rusqlite::Connection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("runs.db");
+
+        // Simulate a Milestone 13 schema (no M14 unarchive_metadata column).
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    run_id               TEXT PRIMARY KEY,
+                    workspace_id         TEXT NOT NULL,
+                    user_goal            TEXT NOT NULL,
+                    status               TEXT NOT NULL,
+                    plan                 TEXT NOT NULL DEFAULT '[]',
+                    current_step         INTEGER NOT NULL DEFAULT 0,
+                    completed_steps      TEXT NOT NULL DEFAULT '[]',
+                    pending_steps        TEXT NOT NULL DEFAULT '[]',
+                    last_action          TEXT,
+                    last_observation     TEXT,
+                    recommended_next_action TEXT,
+                    recommended_tool     TEXT,
+                    latest_diff_summary  TEXT,
+                    latest_test_result   TEXT,
+                    focus_paths          TEXT NOT NULL DEFAULT '[]',
+                    warnings             TEXT NOT NULL DEFAULT '[]',
+                    retryable_action     TEXT,
+                    policy_profile       TEXT NOT NULL DEFAULT '{}',
+                    outcome_kind         TEXT,
+                    finalized_outcome    TEXT,
+                    reopen_metadata      TEXT,
+                    supersedes_run_id    TEXT,
+                    superseded_by_run_id TEXT,
+                    supersession_reason  TEXT,
+                    superseded_at        TEXT,
+                    is_archived          INTEGER DEFAULT 0,
+                    archive_metadata     TEXT,
+                    created_at           TEXT NOT NULL,
+                    updated_at           TEXT NOT NULL
+                );",
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO runs (run_id, workspace_id, user_goal, status, plan, created_at, updated_at)
+                 VALUES ('r_m13', '/tmp/ws', 'old goal', 'finalized:completed', '[]', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                [],
+            ).unwrap();
+        }
+
+        // Open with migration — should add M14 unarchive_metadata column.
+        let store = Store::open(dir.path()).unwrap();
+        let loaded = store.get_run("r_m13").unwrap().unwrap();
+
+        // M14 unarchive_metadata must default to None.
+        assert!(loaded.unarchive_metadata.is_none());
     }
 }
 
