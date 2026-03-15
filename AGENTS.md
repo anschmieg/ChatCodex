@@ -51,7 +51,6 @@ ChatGPT-hosted model
    - `read_file`
    - `apply_patch`
    - `run_tests`
-   - `run_command`
    - `show_diff`
    - `git_status`
 
@@ -60,13 +59,11 @@ ChatGPT-hosted model
    - `run.refresh`
    - `run.replan`
    - `workspace.summary`
-   - `workspace.register`
    - `approval.resolve`
    - `code.search`
    - `file.read`
    - `patch.apply`
    - `tests.run`
-   - `command.exec`
    - `git.diff`
    - `git.status`
 

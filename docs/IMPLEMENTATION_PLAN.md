@@ -77,7 +77,7 @@ Acceptance:
 - no hidden-agent violations
 - TypeScript remains thin
 
-## Milestone 4: deterministic control-plane statefulness
+## Milestone 4: deterministic control-plane statefulness ✅
 
 Implement stateful deterministic orchestration:
 
@@ -110,19 +110,84 @@ Extend `RunState` with:
 - Policy hooks for risky operations
 
 Acceptance:
-- expanded state persists in SQLite
-- refresh returns consistent snapshots
-- replan deterministically updates plan
-- approval resolution works end to end
-- no hidden agent loop
-- TypeScript remains thin
+- ✅ expanded state persists in SQLite
+- ✅ refresh returns consistent snapshots
+- ✅ replan deterministically updates plan
+- ✅ approval resolution works end to end
+- ✅ no hidden agent loop
+- ✅ TypeScript remains thin
 
-## Out of scope for this first task
+## Milestone 4.1: SQLite schema migration compatibility ✅
 
-- approvals UI
+Add automatic schema migration for backward compatibility:
+
+- `ALTER TABLE ADD COLUMN` migration for older databases
+- Safe deterministic defaults for new columns
+- Idempotent migration (safe to run multiple times)
+
+Acceptance:
+- ✅ daemon starts with Milestone 3-era databases
+- ✅ `run.prepare` succeeds against upgraded old DB
+- ✅ migration is deterministic and idempotent
+
+## Milestone 5: approval policy hardening ✅
+
+Implement deterministic approval policy layer:
+
+### Patch policy
+
+Gate patches requiring approval if:
+- Any edit has `operation: "delete"` (file deletion)
+- More than 5 edits in a single request (large patch)
+- Any path matches sensitive pattern (`.env`, `.ssh/`, `.git/`, `id_rsa`, etc.)
+- Any path is outside the run's declared `focusPaths`
+
+### Test-run policy
+
+Gate test runs requiring approval if:
+- `scope` is `"make"` and `target` is not a standard safe target
+
+### Implementation
+
+- `approval_policy.rs` with rule-based evaluation
+- `focus_paths` field in run state
+- `policy_rationale` field in pending approvals
+- SQLite schema migration for Milestone 5 columns
+
+Acceptance:
+- ✅ patch policy gates risky operations
+- ✅ test-run policy gates non-standard make targets
+- ✅ policy decisions are deterministic
+- ✅ policy rationale is captured and returned
+
+## Out of scope
+
+These are intentionally not implemented:
+
+- approvals UI (backend plumbing only)
 - widgets
 - OAuth
-- advanced replanning
+- advanced replanning with LLM assistance
 - worktrees
 - background orchestration
 - any agent-owned runtime
+- `run_command` / `command.exec` (not implemented, not needed)
+
+## Potential future milestones
+
+If extending the project, likely next steps:
+
+### Milestone 6: enhanced policy
+- User-configurable approval thresholds
+- More granular policy rules
+- Policy configuration persistence
+
+### Milestone 7: run history
+- Persistence of completed runs
+- Searchable run history
+- Run comparison and diff
+
+### Milestone 8: workspace templates
+- Predefined workspace configurations
+- Template sharing
+- Project scaffolding

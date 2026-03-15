@@ -85,39 +85,47 @@ Thin gateway:
 
 No repo logic belongs here.
 
-## Public MCP tools
+## Public MCP tools (11 total)
 
 Deterministic control tools:
-- `codex_prepare_run`
-- `refresh_run_state`
-- `replan_run`
-- `approve_action`
-- `get_workspace_summary`
+- `codex_prepare_run` — Initialize a coding run with goal and plan
+- `refresh_run_state` — Read-only run state snapshot
+- `replan_run` — Deterministic rule-based replanning
+- `approve_action` — Resolve pending approvals
 
-Fine-grained execution tools:
-- `search_code`
-- `read_file`
-- `apply_patch`
-- `run_tests`
-- `run_command`
-- `show_diff`
-- `git_status`
+Workspace and file tools:
+- `get_workspace_summary` — Workspace overview and detected tooling
+- `read_file` — Read file contents with optional line ranges
+- `search_code` — Text/symbol search with snippets
 
-## Internal daemon methods
+Execution tools (policy-gated):
+- `apply_patch` — Apply patches (gates: delete, >5 edits, sensitive paths, out-of-focus)
+- `run_tests` — Execute whitelisted test commands (gates: non-standard make targets)
 
-- `run.prepare`
-- `run.refresh`
-- `run.replan`
-- `workspace.summary`
-- `workspace.register`
-- `approval.resolve`
-- `code.search`
-- `file.read`
-- `patch.apply`
-- `tests.run`
-- `command.exec`
-- `git.diff`
-- `git.status`
+Git tools:
+- `show_diff` — Diff summary or patch text
+- `git_status` — Working tree status
+
+## Internal daemon methods (11 total)
+
+Run lifecycle:
+- `run.prepare` — Initialize run state
+- `run.refresh` — Return updated run-state snapshot
+- `run.replan` — Deterministic replanning
+- `approval.resolve` — Resolve pending approvals
+
+Workspace and file:
+- `workspace.summary` — Workspace overview
+- `file.read` — Read file contents
+- `code.search` — Text/symbol search
+
+Execution (policy-gated):
+- `patch.apply` — Apply patches
+- `tests.run` — Run tests
+
+Git:
+- `git.status` — Working tree status
+- `git.diff` — Diff summary/patch
 
 ## First implementation slice
 

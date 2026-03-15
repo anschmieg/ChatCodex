@@ -12,12 +12,14 @@ These invariants are mandatory.
 6. The Rust daemon must not expose any method that implies agent-owned iteration.
 7. Accidental model-runtime code paths must fail hard.
 
-## CI checks to add
+## CI checks
 
-* fail build if deterministic crates depend on model SDKs
-* fail build if MCP tool registry contains forbidden tool names
-* fail build if daemon method registry contains forbidden method names
-* test that public tools map only to deterministic daemon methods
+The following checks run in CI (`.github/workflows/milestone-deterministic.yml`):
+
+- ✅ fail build if deterministic crates depend on model SDKs
+- ✅ fail build if MCP tool registry contains forbidden tool names
+- ✅ fail build if daemon method registry contains forbidden method names
+- ✅ test that public tools map only to deterministic daemon methods
 
 ## Forbidden strings to grep for in new public surfaces
 
