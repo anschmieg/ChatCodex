@@ -408,6 +408,9 @@ pub struct RunRefreshResult {
     /// Structured final outcome if this run has been explicitly finalized (Milestone 10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finalized_outcome: Option<RunOutcome>,
+    /// Reopen lineage metadata if this run has been reopened (Milestone 11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reopen_metadata: Option<ReopenMetadata>,
 }
 
 // ---------------------------------------------------------------------------
@@ -584,6 +587,9 @@ pub struct RunState {
     /// Structured final outcome if this run has been explicitly finalized (Milestone 10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finalized_outcome: Option<RunOutcome>,
+    /// Reopen lineage metadata if this run has been reopened one or more times (Milestone 11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reopen_metadata: Option<ReopenMetadata>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -605,6 +611,9 @@ pub struct RunSummary {
     /// Final disposition if the run has been explicitly finalized (Milestone 10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome_kind: Option<String>,
+    /// Number of times this run has been reopened (Milestone 11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reopen_count: Option<u32>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -669,6 +678,9 @@ pub struct RunGetResult {
     /// Structured final outcome if this run has been explicitly finalized (Milestone 10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finalized_outcome: Option<RunOutcome>,
+    /// Reopen lineage metadata if this run has been reopened (Milestone 11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reopen_metadata: Option<ReopenMetadata>,
 }
 
 // ---------------------------------------------------------------------------
@@ -777,6 +789,58 @@ pub struct TestsPreflightParams {
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// run.reopen  (Milestone 11)
+// ---------------------------------------------------------------------------
+
+/// Compact metadata recorded each time a finalized run is reopened.
+///
+/// Persisted in SQLite alongside run state.  Provides a compact audit
+/// trail of reopening lineage without duplicating the full outcome record.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReopenMetadata {
+    /// Human-readable reason ChatGPT supplied for reopening.
+    pub reason: String,
+    /// ISO 8601 timestamp of when the most recent reopen occurred.
+    pub reopened_at: String,
+    /// `outcome_kind` of the finalized outcome that was cleared by this reopen.
+    pub reopened_from_outcome_kind: String,
+    /// How many times this run has been reopened in total (starts at 1).
+    pub reopen_count: u32,
+}
+
+/// Parameters for `run.reopen` — explicit deterministic run continuation.
+///
+/// Only finalized runs (`completed`, `failed`, `abandoned`) may be reopened.
+/// Reopening is deterministic and audited; it does not itself execute work.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunReopenParams {
+    pub run_id: String,
+    /// Human-readable reason for reopening (required for auditability).
+    pub reason: String,
+}
+
+/// Result of `run.reopen`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunReopenResult {
+    pub run_id: String,
+    /// New run status after reopening (e.g. `"active"`).
+    pub status: String,
+    /// Outcome kind from which the run was reopened (e.g. `"completed"`).
+    pub reopened_from_outcome_kind: String,
+    /// Total number of times this run has been reopened.
+    pub reopen_count: u32,
+    /// ISO 8601 timestamp of when the reopen occurred.
+    pub reopened_at: String,
+    /// Deterministic guidance on what to do next.
+    pub recommended_next_action: String,
+    /// Recommended MCP tool to invoke next.
+    pub recommended_tool: String,
 }
 
 // ---------------------------------------------------------------------------

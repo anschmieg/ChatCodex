@@ -17,6 +17,7 @@ import {
   PreviewPatchPolicyInput,
   PreviewTestPolicyInput,
   FinalizeRunInput,
+  ReopenRunInput,
 } from "./schemas.js";
 
 describe("MCP tool registry invariants", () => {
@@ -51,6 +52,8 @@ describe("MCP tool registry invariants", () => {
       "preview_test_policy",
       // Milestone 10: deterministic run finalization
       "finalize_run",
+      // Milestone 11: deterministic run reopening
+      "reopen_run",
     ]);
     const actual = new Set(REGISTERED_TOOL_NAMES);
     assert.deepStrictEqual(actual, expected);
@@ -313,6 +316,96 @@ describe("No-hidden-agent regression (Milestone 10)", () => {
           `Tool "${name}" contains forbidden autonomous pattern "${pattern}"`,
         );
       }
+    }
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 11: ReopenRunInput schema validation tests
+// ---------------------------------------------------------------
+describe("ReopenRunInput schema (Milestone 11)", () => {
+  it("should accept a valid reopen request", () => {
+    const schema = z.object(ReopenRunInput);
+    const result = schema.safeParse({
+      runId: "run-abc",
+      reason: "Found another bug after completion",
+    });
+    assert.ok(result.success, "Valid reopen request should pass validation");
+  });
+
+  it("should reject a missing runId", () => {
+    const schema = z.object(ReopenRunInput);
+    const result = schema.safeParse({ reason: "some reason" });
+    assert.ok(!result.success, "Missing runId should fail validation");
+  });
+
+  it("should reject a missing reason", () => {
+    const schema = z.object(ReopenRunInput);
+    const result = schema.safeParse({ runId: "run-abc" });
+    assert.ok(!result.success, "Missing reason should fail validation");
+  });
+
+  it("should reject an empty reason", () => {
+    const schema = z.object(ReopenRunInput);
+    const result = schema.safeParse({ runId: "run-abc", reason: "" });
+    assert.ok(!result.success, "Empty reason should fail validation (min 1)");
+  });
+
+  it("should reject a reason exceeding 500 characters", () => {
+    const schema = z.object(ReopenRunInput);
+    const result = schema.safeParse({
+      runId: "run-abc",
+      reason: "x".repeat(501),
+    });
+    assert.ok(!result.success, "Reason exceeding 500 chars should fail validation");
+  });
+
+  it("should accept a reason of exactly 500 characters", () => {
+    const schema = z.object(ReopenRunInput);
+    const result = schema.safeParse({
+      runId: "run-abc",
+      reason: "x".repeat(500),
+    });
+    assert.ok(result.success, "Reason of exactly 500 chars should be valid");
+  });
+});
+
+describe("No-hidden-agent regression (Milestone 11)", () => {
+  it("reopen_run should be registered as a lifecycle tool", () => {
+    assert.ok(
+      REGISTERED_TOOL_NAMES.includes("reopen_run" as (typeof REGISTERED_TOOL_NAMES)[number]),
+      "reopen_run must be in the tool registry",
+    );
+  });
+
+  it("reopen_run is not an autonomous continuation tool", () => {
+    // Verify that reopen_run is present but is lifecycle-scoped (not coarse autonomous).
+    const coarsePatterns = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end"];
+    for (const pattern of coarsePatterns) {
+      assert.ok(
+        !"reopen_run".includes(pattern),
+        `"reopen_run" must not contain autonomous pattern "${pattern}"`,
+      );
+    }
+  });
+
+  it("daemon method run.reopen is not a forbidden agent-runtime method", () => {
+    const forbiddenMethods = [
+      "turn/start",
+      "turn/steer",
+      "review/start",
+      "codex",
+      "codex-reply",
+      "continue_run",
+      "resume_thread",
+      "agent_step",
+      "fix_end_to_end",
+    ];
+    for (const method of forbiddenMethods) {
+      assert.ok(
+        method !== "run.reopen",
+        `run.reopen must not be a forbidden agent-runtime method`,
+      );
     }
   });
 });

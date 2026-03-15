@@ -303,3 +303,22 @@ export const FinalizeRunInput = {
       "Optional reason, typically for 'failed' or 'abandoned' runs",
     ),
 };
+
+// ---------------------------------------------------------------
+// reopen_run  (Milestone 11)
+//
+// Reopens a previously finalized run for deterministic continuation.
+// Only finalized runs may be reopened.  No autonomous work is triggered.
+// ---------------------------------------------------------------
+export const ReopenRunInput = {
+  runId: z.string().describe("Run ID of the finalized run to reopen"),
+  reason: z
+    .string()
+    .min(1)
+    .max(500)
+    // 500-char limit matches `FinalizeRunInput.summary` for consistency
+    // and fits within a single SQLite TEXT field / audit log entry.
+    .describe(
+      "Human-readable reason for reopening the run (required for auditability)",
+    ),
+};

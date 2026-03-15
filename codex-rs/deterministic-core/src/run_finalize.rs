@@ -87,6 +87,7 @@ mod tests {
             retryable_action: None,
             policy_profile: RunPolicy::default(),
             finalized_outcome: None,
+            reopen_metadata: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

@@ -97,6 +97,35 @@ Returns `RunFinalizeResult`:
 - `status` — e.g. `"finalized:completed"`
 - `recommendedNextAction` — deterministic guidance string
 
+### Milestone 11 methods
+
+* `run.reopen` — reopen a previously finalized run for deterministic continuation
+
+Only finalized runs (`finalized:completed`, `finalized:failed`, `finalized:abandoned`) may be reopened.
+Active, prepared, or awaiting-approval runs cannot be reopened.
+Reopening does not execute work; it transitions the run back to `"active"` status,
+persists compact reopen metadata, and appends a `run_reopened` audit entry.
+
+#### `run.reopen` params
+
+```json
+{
+  "runId": "run_abc",
+  "reason": "Found another bug after the run was marked completed"
+}
+```
+
+`reason` is required (min 1 character) for auditability.
+
+Returns `RunReopenResult`:
+- `runId`
+- `status` — `"active"` after a successful reopen
+- `reopenedFromOutcomeKind` — the outcome kind that was cleared (e.g. `"completed"`)
+- `reopenCount` — total number of times this run has been reopened
+- `reopenedAt` — ISO 8601 timestamp
+- `recommendedNextAction` — deterministic guidance string
+- `recommendedTool` — `"refresh_run_state"` (always)
+
 ## Forbidden internal methods
 
 Do not implement or surface:

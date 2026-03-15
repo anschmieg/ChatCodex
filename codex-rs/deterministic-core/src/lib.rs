@@ -14,6 +14,7 @@ pub mod patch_apply;
 pub mod run_finalize;
 pub mod run_prepare;
 pub mod run_refresh;
+pub mod run_reopen;
 pub mod run_replan;
 pub mod tests_run;
 pub mod workspace_summary;

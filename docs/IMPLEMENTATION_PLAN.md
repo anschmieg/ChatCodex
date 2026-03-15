@@ -351,6 +351,53 @@ Acceptance:
 - ✅ SQLite migration is backward compatible
 - ✅ no autonomous continuation
 
+## Milestone 11: deterministic run reopening and post-finalization continuation controls ✅
+
+Add explicit and deterministic lifecycle continuation controls so ChatGPT can reopen
+previously finalized runs without introducing backend autonomy.
+
+### New protocol types
+
+- `ReopenMetadata` struct: `reason`, `reopenedAt`, `reopenedFromOutcomeKind`, `reopenCount`
+- `RunReopenParams`: `runId`, `reason`
+- `RunReopenResult`: `runId`, `status`, `reopenedFromOutcomeKind`, `reopenCount`, `reopenedAt`, `recommendedNextAction`, `recommendedTool`
+- `reopen_metadata: Option<ReopenMetadata>` field added to `RunState`, `RunRefreshResult`, `RunGetResult`
+- `reopen_count: Option<u32>` field added to `RunSummary`
+
+### New daemon method
+
+- `run.reopen` — reopen a finalized run for deterministic continuation
+  - Only finalized runs (`finalized:completed`, `finalized:failed`, `finalized:abandoned`) may be reopened
+  - Active, prepared, or awaiting-approval runs are rejected
+  - Transitions status back to `"active"`, clears `finalized_outcome`
+  - Persists `ReopenMetadata` in SQLite; increments `reopen_count` on successive reopens
+  - Appends `run_reopened` audit trail entry
+  - Returns deterministic guidance; no autonomous follow-up
+
+### New MCP tool
+
+- `reopen_run` — thin gateway to `run.reopen`; not a coarse autonomous tool
+
+### SQLite migration
+
+- Adds `reopen_metadata TEXT` column to `runs` table
+- Backward compatible (NULL for runs never reopened on older databases)
+
+### TypeScript gateway
+
+- `ReopenRunInput` Zod schema in `schemas.ts`
+- `tools.ts` registers `reopen_run`
+
+Acceptance:
+- ✅ finalized runs can be explicitly reopened with a structured reason
+- ✅ only finalized runs are reopenable; active/prepared runs are rejected
+- ✅ reopening is recorded in the audit trail as `run_reopened`
+- ✅ reopen metadata (reason, timestamp, source outcome kind, reopen count) persists in SQLite
+- ✅ reopen metadata is visible in `run.get`, `run.refresh`, `runs.list`
+- ✅ TypeScript remains thin
+- ✅ SQLite migration is backward compatible
+- ✅ no autonomous continuation
+
 ## Out of scope
 
 These are intentionally not implemented:

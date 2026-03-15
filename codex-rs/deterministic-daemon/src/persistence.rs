@@ -5,7 +5,7 @@
 //! access — unlike the previous JSON-file approach.
 
 use anyhow::{Context, Result};
-use deterministic_protocol::{PendingApproval, RetryableAction, RunHistoryEntry, RunOutcome, RunPolicy, RunState, RunSummary};
+use deterministic_protocol::{PendingApproval, ReopenMetadata, RetryableAction, RunHistoryEntry, RunOutcome, RunPolicy, RunState, RunSummary};
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
@@ -115,6 +115,8 @@ impl Store {
             // Milestone 10 columns
             ("runs", "outcome_kind", "TEXT"),
             ("runs", "finalized_outcome", "TEXT"),
+            // Milestone 11 columns
+            ("runs", "reopen_metadata", "TEXT"),
         ];
 
         for (table, column, def) in migrations {
@@ -181,6 +183,13 @@ impl Store {
             .map(serde_json::to_string)
             .transpose()
             .context("failed to serialise finalized_outcome")?;
+        // Milestone 11: persist reopen_metadata as JSON.
+        let reopen_metadata_json: Option<String> = state
+            .reopen_metadata
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .context("failed to serialise reopen_metadata")?;
         conn.execute(
             "INSERT OR REPLACE INTO runs
                 (run_id, workspace_id, user_goal, status, plan, current_step,
@@ -188,8 +197,8 @@ impl Store {
                  recommended_next_action, recommended_tool,
                  latest_diff_summary, latest_test_result, focus_paths, warnings,
                  retryable_action, policy_profile, outcome_kind, finalized_outcome,
-                 created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                 reopen_metadata, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -211,6 +220,7 @@ impl Store {
                 policy_profile_json,
                 outcome_kind,
                 finalized_outcome_json,
+                reopen_metadata_json,
                 state.created_at,
                 state.updated_at,
             ],
@@ -229,7 +239,8 @@ impl Store {
                         last_action, last_observation,
                         recommended_next_action, recommended_tool,
                         latest_diff_summary, latest_test_result, focus_paths, warnings,
-                        retryable_action, policy_profile, finalized_outcome, created_at, updated_at
+                        retryable_action, policy_profile, finalized_outcome,
+                        reopen_metadata, created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
             .context("failed to prepare statement")?;
@@ -327,6 +338,20 @@ impl Store {
                         )
                     })?;
 
+                // Milestone 11: reopen_metadata — NULL for runs never reopened.
+                let reopen_metadata_json: Option<String> = row.get(19)?;
+                let reopen_metadata: Option<ReopenMetadata> = reopen_metadata_json
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            19,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+
                 Ok(RunState {
                     run_id: row.get(0)?,
                     workspace_id: row.get(1)?,
@@ -347,8 +372,9 @@ impl Store {
                     retryable_action,
                     policy_profile,
                     finalized_outcome,
-                    created_at: row.get(19)?,
-                    updated_at: row.get(20)?,
+                    reopen_metadata,
+                    created_at: row.get(20)?,
+                    updated_at: row.get(21)?,
                 })
             })
             .context("failed to query run")?;
@@ -511,7 +537,7 @@ impl Store {
 
         let sql = format!(
             "SELECT run_id, workspace_id, user_goal, status, current_step, plan,
-                    created_at, updated_at, outcome_kind
+                    created_at, updated_at, outcome_kind, reopen_metadata
              FROM runs {where_clause}
              ORDER BY updated_at DESC
              LIMIT ?1"
@@ -520,10 +546,20 @@ impl Store {
         let mut stmt = conn.prepare(&sql).context("failed to prepare list_runs")?;
 
         let mapper = |row: &rusqlite::Row<'_>| -> rusqlite::Result<RunSummary> {
+            // Column index map (must stay in sync with SELECT above):
+            //  0: run_id  1: workspace_id  2: user_goal  3: status
+            //  4: current_step  5: plan  6: created_at  7: updated_at
+            //  8: outcome_kind  9: reopen_metadata
             let plan_json: String = row.get(5)?;
             let total_steps: usize = serde_json::from_str::<Vec<String>>(&plan_json)
                 .map(|v| v.len())
                 .unwrap_or(0);
+            // Extract reopen_count from reopen_metadata JSON if present.
+            let reopen_metadata_json: Option<String> = row.get(9)?;
+            let reopen_count: Option<u32> = reopen_metadata_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<ReopenMetadata>(s).ok())
+                .map(|m| m.reopen_count);
             Ok(RunSummary {
                 run_id: row.get(0)?,
                 workspace_id: row.get(1)?,
@@ -532,6 +568,7 @@ impl Store {
                 current_step: row.get::<_, i64>(4)? as usize,
                 total_steps,
                 outcome_kind: row.get(8)?,
+                reopen_count,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
@@ -644,6 +681,7 @@ mod tests {
             retryable_action: None,
             policy_profile: RunPolicy::default(),
             finalized_outcome: None,
+            reopen_metadata: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -1780,6 +1818,111 @@ mod tests {
         let reloaded = store.get_run("r_m9").unwrap().unwrap();
         let outcome = reloaded.finalized_outcome.as_ref().unwrap();
         assert_eq!(outcome.outcome_kind, "abandoned");
+    }
+
+    // -----------------------------------------------------------------------
+    // Milestone 11: reopen_metadata persistence
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reopen_metadata_null_for_fresh_run() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ro_1", "active");
+        store.save_run(&state).unwrap();
+        let loaded = store.get_run("r_ro_1").unwrap().unwrap();
+        assert!(loaded.reopen_metadata.is_none());
+    }
+
+    #[test]
+    fn reopen_metadata_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_ro_2", "finalized:completed");
+        state.reopen_metadata = Some(deterministic_protocol::ReopenMetadata {
+            reason: "found another issue".into(),
+            reopened_at: "2024-07-01T10:00:00Z".into(),
+            reopened_from_outcome_kind: "completed".into(),
+            reopen_count: 1,
+        });
+        state.status = "active".into();
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_ro_2").unwrap().unwrap();
+        let meta = loaded.reopen_metadata.as_ref().unwrap();
+        assert_eq!(meta.reason, "found another issue");
+        assert_eq!(meta.reopened_at, "2024-07-01T10:00:00Z");
+        assert_eq!(meta.reopened_from_outcome_kind, "completed");
+        assert_eq!(meta.reopen_count, 1);
+    }
+
+    #[test]
+    fn reopen_metadata_increments_reopen_count() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_ro_3", "active");
+
+        // First reopen.
+        state.reopen_metadata = Some(deterministic_protocol::ReopenMetadata {
+            reason: "first reopen".into(),
+            reopened_at: "2024-07-01T10:00:00Z".into(),
+            reopened_from_outcome_kind: "failed".into(),
+            reopen_count: 1,
+        });
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_ro_3").unwrap().unwrap();
+        assert_eq!(loaded.reopen_metadata.as_ref().unwrap().reopen_count, 1);
+
+        // Second reopen: overwrite with updated metadata.
+        let mut state2 = loaded;
+        state2.reopen_metadata = Some(deterministic_protocol::ReopenMetadata {
+            reason: "second reopen".into(),
+            reopened_at: "2024-08-01T10:00:00Z".into(),
+            reopened_from_outcome_kind: "completed".into(),
+            reopen_count: 2,
+        });
+        store.save_run(&state2).unwrap();
+
+        let loaded2 = store.get_run("r_ro_3").unwrap().unwrap();
+        let meta = loaded2.reopen_metadata.as_ref().unwrap();
+        assert_eq!(meta.reopen_count, 2);
+        assert_eq!(meta.reopened_from_outcome_kind, "completed");
+    }
+
+    #[test]
+    fn reopen_metadata_migration_safe_for_old_rows() {
+        // Simulate an older database without the reopen_metadata column:
+        // open a store, add a run, then re-query.  The migration should add
+        // the column with NULL default, so get_run should succeed and return
+        // reopen_metadata = None.
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ro_mig", "active");
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_ro_mig").unwrap().unwrap();
+        // Migration provided a NULL default — should not be present.
+        assert!(loaded.reopen_metadata.is_none());
+    }
+
+    #[test]
+    fn list_runs_includes_reopen_count() {
+        let store = Store::open_in_memory().unwrap();
+
+        let state_no_reopen = make_run_state("r_list_1", "active");
+        store.save_run(&state_no_reopen).unwrap();
+
+        let mut state_reopened = make_run_state("r_list_2", "active");
+        state_reopened.reopen_metadata = Some(deterministic_protocol::ReopenMetadata {
+            reason: "reopened".into(),
+            reopened_at: "2024-07-01T10:00:00Z".into(),
+            reopened_from_outcome_kind: "failed".into(),
+            reopen_count: 3,
+        });
+        store.save_run(&state_reopened).unwrap();
+
+        let summaries = store.list_runs(10, None, None).unwrap();
+        let s1 = summaries.iter().find(|s| s.run_id == "r_list_1").unwrap();
+        let s2 = summaries.iter().find(|s| s.run_id == "r_list_2").unwrap();
+        assert!(s1.reopen_count.is_none());
+        assert_eq!(s2.reopen_count, Some(3));
     }
 }
 

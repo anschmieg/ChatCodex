@@ -310,7 +310,7 @@ Read-only listing of known runs.
 ### Returns
 
 - `runs: RunSummary[]` — array of compact run summaries
-  - `runId`, `workspaceId`, `userGoal`, `status`, `currentStep`, `totalSteps`, `outcomeKind?` (Milestone 10), `createdAt`, `updatedAt`
+  - `runId`, `workspaceId`, `userGoal`, `status`, `currentStep`, `totalSteps`, `outcomeKind?` (Milestone 10), `reopenCount?` (Milestone 11), `createdAt`, `updatedAt`
 - `count: number` — number of runs returned
 
 ### Behavior
@@ -439,6 +439,37 @@ Explicitly close a run with a structured outcome record.
 - Returns deterministic `recommendedNextAction` guidance based on the outcome kind
 - Does **not** trigger any autonomous follow-up work
 - Closed runs expose `finalizedOutcome` in `get_run_state`, `refresh_run_state`, and `list_runs`
+
+## reopen_run (Milestone 11)
+
+Reopen a previously finalized run for deterministic continuation.
+
+### Input
+
+- `runId`: string — Run ID of the finalized run to reopen
+- `reason`: string — human-readable reason for reopening (required, 1–500 chars)
+
+### Returns
+
+- `runId`
+- `status` — `"active"` after a successful reopen
+- `reopenedFromOutcomeKind` — the outcome kind that was cleared (e.g. `"completed"`)
+- `reopenCount` — total number of times this run has been reopened
+- `reopenedAt` — ISO 8601 timestamp
+- `recommendedNextAction` — deterministic guidance string
+- `recommendedTool` — always `"refresh_run_state"`
+
+### Behavior
+
+- Only finalized runs (`finalized:completed`, `finalized:failed`, `finalized:abandoned`) may be reopened
+- Active, prepared, or awaiting-approval runs cannot be reopened — the call is rejected
+- Reopening transitions status back to `"active"` and clears `finalizedOutcome`
+- Persists compact `ReopenMetadata` in SQLite: `reason`, `reopenedAt`, `reopenedFromOutcomeKind`, `reopenCount`
+- `reopenCount` increments on each successive reopen
+- Appends a `run_reopened` audit trail entry
+- Does **not** execute work or trigger any autonomous follow-up
+- Prior plan, completed steps, and audit history are preserved
+- Reopen metadata is visible in `get_run_state`, `refresh_run_state`, and `list_runs`
 
 ## Forbidden public tools
 

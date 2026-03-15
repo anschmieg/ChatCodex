@@ -36,6 +36,8 @@ pub fn dispatch(
         Method::TestsPreflight => handle_tests_preflight(params, store),
         // Milestone 10: deterministic run finalization
         Method::RunFinalize => handle_run_finalize(params, store),
+        // Milestone 11: deterministic run reopening
+        Method::RunReopen => handle_run_reopen(params, store),
     }
 }
 
@@ -435,6 +437,7 @@ fn handle_run_get(
     let warnings = state.warnings.clone();
     let effective_policy = state.policy_profile.clone();
     let finalized_outcome = state.finalized_outcome.clone();
+    let reopen_metadata = state.reopen_metadata.clone();
 
     let result = RunGetResult {
         run_state: state.clone(),
@@ -447,6 +450,7 @@ fn handle_run_get(
         warnings,
         effective_policy,
         finalized_outcome,
+        reopen_metadata,
     };
     Ok((serde_json::to_value(result)?, Some(state)))
 }
@@ -594,6 +598,45 @@ fn handle_run_finalize(
     Ok((serde_json::to_value(result)?, Some(state)))
 }
 
+// ---- Milestone 11: deterministic run reopening ----
+
+/// Reopen a previously finalized run.
+///
+/// Deterministic lifecycle rules (enforced in `deterministic_core::run_reopen`):
+/// - Only finalized runs (`status` starts with `"finalized:"`) may be reopened.
+/// - Active, prepared, or awaiting-approval runs are rejected.
+/// - Reopening does not execute work; it transitions status to `"active"`.
+/// - Prior audit history and plan are preserved.
+/// - Reopen metadata is persisted; reopen_count increments on each reopen.
+fn handle_run_reopen(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunReopenParams = serde_json::from_value(params)?;
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let result = deterministic_core::run_reopen::reopen(&p, &mut state)?;
+    store.save_run(&state)?;
+
+    // Audit trail: run reopened.
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "run_reopened",
+        &format!(
+            "Run reopened from '{}': reason={}",
+            result.reopened_from_outcome_kind, p.reason
+        ),
+        Some(&format!(
+            "{{\"reopened_from\":\"{}\",\"reopen_count\":{}}}",
+            result.reopened_from_outcome_kind, result.reopen_count
+        )),
+    );
+
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,6 +664,7 @@ mod tests {
             retryable_action: None,
             policy_profile: RunPolicy::default(),
             finalized_outcome: None,
+            reopen_metadata: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -1000,5 +1044,153 @@ mod tests {
             .expect("run_finalized audit entry must be present");
         assert!(finalized_entry.summary.contains("completed"));
         assert_eq!(finalized_entry.run_id, "r_fin_aud");
+    }
+
+    // -----------------------------------------------------------------------
+    // Milestone 11: run.reopen handler tests
+    // -----------------------------------------------------------------------
+
+    fn finalize_run_in_store(store: &Store, run_id: &str, outcome_kind: &str) {
+        let params = serde_json::json!({
+            "runId": run_id,
+            "outcomeKind": outcome_kind,
+            "summary": format!("Finalized as {outcome_kind}")
+        });
+        dispatch(Method::RunFinalize, params, store).unwrap();
+    }
+
+    #[test]
+    fn run_reopen_completed_succeeds() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ro_h1");
+        store.save_run(&state).unwrap();
+        finalize_run_in_store(&store, "r_ro_h1", "completed");
+
+        let params = serde_json::json!({
+            "runId": "r_ro_h1",
+            "reason": "Found another bug"
+        });
+        let (val, run_state) = dispatch(Method::RunReopen, params, &store).unwrap();
+        let result: RunReopenResult = serde_json::from_value(val).unwrap();
+
+        assert_eq!(result.run_id, "r_ro_h1");
+        assert_eq!(result.status, "active");
+        assert_eq!(result.reopened_from_outcome_kind, "completed");
+        assert_eq!(result.reopen_count, 1);
+        assert!(!result.reopened_at.is_empty());
+        assert_eq!(result.recommended_tool, "refresh_run_state");
+
+        // Updated state should be active.
+        let s = run_state.unwrap();
+        assert_eq!(s.status, "active");
+        assert!(s.reopen_metadata.is_some());
+    }
+
+    #[test]
+    fn run_reopen_failed_succeeds() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ro_h2");
+        store.save_run(&state).unwrap();
+        finalize_run_in_store(&store, "r_ro_h2", "failed");
+
+        let params = serde_json::json!({ "runId": "r_ro_h2", "reason": "New clue" });
+        let (val, _) = dispatch(Method::RunReopen, params, &store).unwrap();
+        let result: RunReopenResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.reopened_from_outcome_kind, "failed");
+        assert_eq!(result.status, "active");
+    }
+
+    #[test]
+    fn run_reopen_abandoned_succeeds() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ro_h3");
+        store.save_run(&state).unwrap();
+        finalize_run_in_store(&store, "r_ro_h3", "abandoned");
+
+        let params = serde_json::json!({ "runId": "r_ro_h3", "reason": "Goal updated" });
+        let (val, _) = dispatch(Method::RunReopen, params, &store).unwrap();
+        let result: RunReopenResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.reopened_from_outcome_kind, "abandoned");
+        assert_eq!(result.status, "active");
+    }
+
+    #[test]
+    fn run_reopen_active_run_rejected() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ro_h4");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({ "runId": "r_ro_h4", "reason": "Should fail" });
+        let err = dispatch(Method::RunReopen, params, &store).unwrap_err();
+        assert!(err.to_string().contains("cannot be reopened"));
+
+        // State must not be mutated.
+        let loaded = store.get_run("r_ro_h4").unwrap().unwrap();
+        assert_eq!(loaded.status, "active");
+        assert!(loaded.reopen_metadata.is_none());
+    }
+
+    #[test]
+    fn run_reopen_unknown_run_rejected() {
+        let store = Store::open_in_memory().unwrap();
+        let params = serde_json::json!({ "runId": "nonexistent", "reason": "test" });
+        let err = dispatch(Method::RunReopen, params, &store).unwrap_err();
+        assert!(err.to_string().contains("unknown run"));
+    }
+
+    #[test]
+    fn run_reopen_audit_trail_entry_created() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ro_aud");
+        store.save_run(&state).unwrap();
+        finalize_run_in_store(&store, "r_ro_aud", "failed");
+
+        let params = serde_json::json!({ "runId": "r_ro_aud", "reason": "new evidence" });
+        dispatch(Method::RunReopen, params, &store).unwrap();
+
+        let entries = store.get_audit_entries("r_ro_aud", 10).unwrap();
+        let reopen_entry = entries
+            .iter()
+            .find(|e| e.event_kind == "run_reopened")
+            .expect("run_reopened audit entry must be present");
+        assert!(reopen_entry.summary.contains("failed"));
+        assert_eq!(reopen_entry.run_id, "r_ro_aud");
+    }
+
+    #[test]
+    fn run_reopen_persistence_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ro_rt");
+        store.save_run(&state).unwrap();
+        finalize_run_in_store(&store, "r_ro_rt", "completed");
+
+        let params = serde_json::json!({ "runId": "r_ro_rt", "reason": "roundtrip test" });
+        dispatch(Method::RunReopen, params, &store).unwrap();
+
+        let loaded = store.get_run("r_ro_rt").unwrap().unwrap();
+        let meta = loaded.reopen_metadata.as_ref().unwrap();
+        assert_eq!(meta.reason, "roundtrip test");
+        assert_eq!(meta.reopened_from_outcome_kind, "completed");
+        assert_eq!(meta.reopen_count, 1);
+        assert!(loaded.finalized_outcome.is_none());
+        assert_eq!(loaded.status, "active");
+    }
+
+    #[test]
+    fn run_reopen_exposes_metadata_in_run_get() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ro_get");
+        store.save_run(&state).unwrap();
+        finalize_run_in_store(&store, "r_ro_get", "completed");
+
+        let reopen_params = serde_json::json!({ "runId": "r_ro_get", "reason": "check metadata in get" });
+        dispatch(Method::RunReopen, reopen_params, &store).unwrap();
+
+        let get_params = serde_json::json!({ "runId": "r_ro_get" });
+        let (val, _) = dispatch(Method::RunGet, get_params, &store).unwrap();
+        let get_result: RunGetResult = serde_json::from_value(val).unwrap();
+        let meta = get_result.reopen_metadata.as_ref().unwrap();
+        assert_eq!(meta.reopen_count, 1);
+        assert_eq!(meta.reopened_from_outcome_kind, "completed");
     }
 }

@@ -29,6 +29,8 @@ pub enum Method {
     TestsPreflight,
     // Milestone 10: deterministic run finalization
     RunFinalize,
+    // Milestone 11: deterministic run reopening
+    RunReopen,
 }
 
 impl Method {
@@ -55,6 +57,8 @@ impl Method {
             Self::TestsPreflight => "tests.preflight",
             // Milestone 10
             Self::RunFinalize => "run.finalize",
+            // Milestone 11
+            Self::RunReopen => "run.reopen",
         }
     }
 
@@ -81,6 +85,8 @@ impl Method {
             "tests.preflight" => Some(Self::TestsPreflight),
             // Milestone 10
             "run.finalize" => Some(Self::RunFinalize),
+            // Milestone 11
+            "run.reopen" => Some(Self::RunReopen),
             _ => None,
         }
     }
@@ -108,6 +114,8 @@ impl Method {
             Self::TestsPreflight,
             // Milestone 10
             Self::RunFinalize,
+            // Milestone 11
+            Self::RunReopen,
         ]
     }
 }

@@ -127,7 +127,25 @@ ChatGPT-hosted model
 - 8 new TypeScript tests (schema validation + no-hidden-agent regression)
 - No backend model calls; no autonomous continuation; no state mutation from preview calls
 
-### Milestone 10: Deterministic Run Finalization, Outcome Recording, and Closure
+### Milestone 11: Deterministic Run Reopening and Post-Finalization Continuation Controls
+- Added `ReopenMetadata` struct to `deterministic-protocol`: `reason`, `reopenedAt`, `reopenedFromOutcomeKind`, `reopenCount`
+- Added `RunReopenParams` and `RunReopenResult` to `deterministic-protocol`
+- Added `reopen_metadata: Option<ReopenMetadata>` to `RunState`, `RunRefreshResult`, and `RunGetResult`
+- Added `reopen_count: Option<u32>` to `RunSummary` for concise run listings
+- Added `run.reopen` internal daemon method with deterministic lifecycle rules:
+  - Only finalized runs may be reopened; active/prepared/awaiting-approval runs are rejected
+  - Status is reset to `"active"` and `finalized_outcome` is cleared
+  - Reopen metadata persists; `reopen_count` increments on each successive reopen
+  - Reopening appends a `run_reopened` entry to the audit trail
+  - No autonomous follow-up work is triggered
+- Added `reopen_run` MCP tool in TypeScript (lifecycle tool, not a coarse autonomous tool)
+- TypeScript schema: `ReopenRunInput` (Zod validated) — `runId`, `reason` (required, 1–500 chars)
+- SQLite migration adds `reopen_metadata TEXT` column with backward compatibility (NULL default)
+- Reopened runs expose authoritative continuation metadata in `run.get`, `run.refresh`, `runs.list`
+- 9 new Rust handler tests (completed/failed/abandoned reopen, active rejection, unknown run, audit, persistence, run.get)
+- 5 new Rust persistence tests (null for fresh run, roundtrip, increment, migration safety, list_runs)
+- 9 new TypeScript tests (6 schema validation + 3 no-hidden-agent regression)
+- No backend model calls; no autonomous continuation; no coarse tools introduced
 - Added `RunOutcome` struct to `deterministic-protocol`: `outcomeKind`, `summary`, `reason?`, `finalizedAt`
 - Added `RunFinalizeParams` and `RunFinalizeResult` to `deterministic-protocol`
 - Added `VALID_OUTCOME_KINDS` constant: `["completed", "failed", "abandoned"]`
@@ -150,7 +168,7 @@ ChatGPT-hosted model
 
 ## Current Implementation Surface
 
-### Public MCP Tools (17)
+### Public MCP Tools (18)
 
 | Tool | Description |
 |------|-------------|
@@ -171,8 +189,9 @@ ChatGPT-hosted model
 | `preview_patch_policy` | Preview patch policy decision without applying changes (read-only, Milestone 9) |
 | `preview_test_policy` | Preview test-run policy decision without executing tests (read-only, Milestone 9) |
 | `finalize_run` | Explicitly close a run with a structured outcome record (Milestone 10) |
+| `reopen_run` | Reopen a finalized run for deterministic continuation (Milestone 11) |
 
-### Internal Daemon Methods (17)
+### Internal Daemon Methods (18)
 
 | Method | Description |
 |--------|-------------|
@@ -193,6 +212,7 @@ ChatGPT-hosted model
 | `patch.preflight` | Evaluate patch policy without applying changes (read-only, Milestone 9) |
 | `tests.preflight` | Evaluate test-run policy without executing tests (read-only, Milestone 9) |
 | `run.finalize` | Close a run with structured outcome record (Milestone 10) |
+| `run.reopen` | Reopen a finalized run for deterministic continuation (Milestone 11) |
 
 ### Run State Model
 
@@ -208,6 +228,7 @@ ChatGPT-hosted model
 - `retryableAction` (Milestone 6) — structured metadata for the last gated/failed action
 - `policyProfile` (Milestone 8) — effective `RunPolicy` governing the run
 - `finalizedOutcome` (Milestone 10) — structured outcome record for closed runs
+- `reopenMetadata` (Milestone 11) — compact reopen lineage metadata for reopened runs
 - `warnings`
 - `createdAt`, `updatedAt`
 
@@ -241,8 +262,8 @@ Policy knobs are now taken from the per-run `RunPolicy` profile (Milestone 8).
 
 ## Verified
 
-- ✅ 175 Rust tests pass (111 core + 62 daemon + 2 protocol)
-- ✅ 29 TypeScript tests pass (3 registry invariants + 6 policy schema + 10 Milestone 9 preflight + 10 Milestone 10 finalize)
+- ✅ 197 Rust tests pass (120 core + 75 daemon + 2 protocol)
+- ✅ 38 TypeScript tests pass (3 registry invariants + 6 policy schema + 4 Milestone 9 preflight + 2 Milestone 9 regression + 8 Milestone 10 finalize + 2 Milestone 10 regression + 6 Milestone 11 reopen schema + 3 Milestone 11 regression)
 - ✅ Clippy clean
 - ✅ No forbidden methods or tools registered
 - ✅ No model SDK dependencies in deterministic crates

@@ -29,6 +29,7 @@ import {
   PreviewPatchPolicyInput,
   PreviewTestPolicyInput,
   FinalizeRunInput,
+  ReopenRunInput,
 } from "./schemas.js";
 
 /**
@@ -71,6 +72,8 @@ export const REGISTERED_TOOL_NAMES = [
   "preview_test_policy",
   // Milestone 10: deterministic run finalization
   "finalize_run",
+  // Milestone 11: deterministic run reopening
+  "reopen_run",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -355,6 +358,22 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
         runId: params.runId,
         outcomeKind: params.outcomeKind,
         summary: params.summary,
+        reason: params.reason,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- reopen_run (Milestone 11) ----
+  server.tool(
+    "reopen_run",
+    "Reopen a previously finalized run (completed, failed, or abandoned) for deterministic continuation. Requires an explicit reason for auditability. Reopening does not execute work; it transitions the run back to active status and records reopen metadata. Active or prepared runs cannot be reopened.",
+    ReopenRunInput,
+    async (params) => {
+      const result = await client.call("run.reopen", {
+        runId: params.runId,
         reason: params.reason,
       });
       return {

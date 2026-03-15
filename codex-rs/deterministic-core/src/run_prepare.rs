@@ -81,6 +81,7 @@ pub fn prepare(params: &RunPrepareParams) -> Result<(RunPrepareResult, RunState)
         retryable_action: None,
         policy_profile: effective_policy,
         finalized_outcome: None,
+        reopen_metadata: None,
         created_at: now.clone(),
         updated_at: now,
     };
