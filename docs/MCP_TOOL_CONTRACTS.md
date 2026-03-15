@@ -95,21 +95,46 @@ Returns:
 
 ## run_tests
 
-Input:
-- `runId`: string
-- `scope`: string — semantic test scope. Well-known values:
-  - Framework names: `"cargo"`, `"npm"`, `"pytest"`, `"make"`
-  - Semantic labels: `"unit"`, `"integration"`, `"all"`
-  - The daemon resolves semantic labels to framework commands based on workspace detection
-- `target?`: string — specific test target (e.g., test name, file path)
-- `reason`: string — why tests are being run
+Execute a whitelisted test command in the workspace.
 
-Returns:
-- resolved command
-- exit code
-- summary counts
-- stdout/stderr (truncated in structured content)
-- updated run-state summary
+### Input
+
+- `runId`: string — Run ID from codex_prepare_run
+- `scope`: string — **Semantic test scope**. Accepted values:
+  - **Framework names** (explicit): `"cargo"`, `"npm"`, `"pytest"`, `"make"`
+  - **Semantic labels** (auto-resolved): `"unit"`, `"integration"`, `"all"`
+- `target?`: string — Specific test target (e.g., test name, file path)
+- `reason`: string — Why tests are being run (required for audit trail)
+
+### Scope Resolution
+
+1. If `scope` is a framework name, use it directly
+2. If `scope` is a semantic label, detect framework via workspace files:
+   - `Cargo.toml` exists → "cargo"
+   - `package.json` exists → "npm"
+   - `setup.py` or `pyproject.toml` exists → "pytest"
+   - `Makefile` exists → "make"
+3. If no framework detected, return error
+
+### Validation
+
+- `scope` must be non-empty and a supported value
+- `reason` must be non-empty (for audit trail)
+- Scope matching is case-insensitive
+
+### Returns
+
+- `resolvedCommand`: string — The actual command that was executed
+- `exitCode`: number — Exit code from the test command
+- `stdout`: string — Standard output (truncated to 4096 chars)
+- `stderr`: string — Standard error (truncated to 4096 chars)
+- `summary`: string — Human-readable summary of results
+
+### Errors
+
+- Returns error for unsupported scope values
+- Returns error if workspace framework cannot be auto-detected
+- Returns error if test command fails to execute
 
 ## show_diff
 

@@ -178,4 +178,233 @@ mod tests {
         assert_eq!(result.changed_files, vec!["del.txt"]);
         assert!(!dir.path().join("del.txt").exists());
     }
+
+    #[test]
+    fn reject_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let params = PatchApplyParams {
+            run_id: "r1".into(),
+            edits: vec![PatchEdit {
+                path: "../../etc/passwd".into(),
+                operation: "create".into(),
+                start_line: None,
+                end_line: None,
+                old_text: None,
+                new_text: "malicious".into(),
+                anchor_text: None,
+                reason: Some("attempt traversal".into()),
+            }],
+        };
+        let result = apply(&params, dir.path().to_str().unwrap());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn reject_replace_nonexistent_file() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let params = PatchApplyParams {
+            run_id: "r1".into(),
+            edits: vec![PatchEdit {
+                path: "does_not_exist.txt".into(),
+                operation: "replace".into(),
+                start_line: None,
+                end_line: None,
+                old_text: Some("old".into()),
+                new_text: "new".into(),
+                anchor_text: None,
+                reason: Some("replace nonexistent".into()),
+            }],
+        };
+        let result = apply(&params, dir.path().to_str().unwrap());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cannot resolve path"));
+    }
+
+    #[test]
+    fn reject_delete_nonexistent_file() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let params = PatchApplyParams {
+            run_id: "r1".into(),
+            edits: vec![PatchEdit {
+                path: "does_not_exist.txt".into(),
+                operation: "delete".into(),
+                start_line: None,
+                end_line: None,
+                old_text: None,
+                new_text: String::new(),
+                anchor_text: None,
+                reason: Some("delete nonexistent".into()),
+            }],
+        };
+        let result = apply(&params, dir.path().to_str().unwrap());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cannot resolve path"));
+    }
+
+    #[test]
+    fn reject_old_text_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test.txt"), "hello world").unwrap();
+
+        let params = PatchApplyParams {
+            run_id: "r1".into(),
+            edits: vec![PatchEdit {
+                path: "test.txt".into(),
+                operation: "replace".into(),
+                start_line: None,
+                end_line: None,
+                old_text: Some("nonexistent text".into()),
+                new_text: "replacement".into(),
+                anchor_text: None,
+                reason: Some("replace with wrong old_text".into()),
+            }],
+        };
+        let result = apply(&params, dir.path().to_str().unwrap());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("old_text not found"));
+    }
+
+    #[test]
+    fn reject_unsupported_operation() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let params = PatchApplyParams {
+            run_id: "r1".into(),
+            edits: vec![PatchEdit {
+                path: "test.txt".into(),
+                operation: "move".into(), // unsupported
+                start_line: None,
+                end_line: None,
+                old_text: None,
+                new_text: String::new(),
+                anchor_text: None,
+                reason: Some("unsupported op".into()),
+            }],
+        };
+        let result = apply(&params, dir.path().to_str().unwrap());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unsupported patch operation"));
+    }
+
+    #[test]
+    fn replace_by_line_range() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test.txt"), "line1\nline2\nline3\nline4\n").unwrap();
+
+        let params = PatchApplyParams {
+            run_id: "r1".into(),
+            edits: vec![PatchEdit {
+                path: "test.txt".into(),
+                operation: "replace".into(),
+                start_line: Some(2),
+                end_line: Some(3),
+                old_text: None,
+                new_text: "replaced\n".into(),
+                anchor_text: None,
+                reason: Some("replace lines 2-3".into()),
+            }],
+        };
+        let result = apply(&params, dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(result.changed_files, vec!["test.txt"]);
+        assert_eq!(result.diff_stats, "+1 -2"); // 1 line added, 2 lines deleted
+
+        let content = std::fs::read_to_string(dir.path().join("test.txt")).unwrap();
+        // Note: join("\n") doesn't add trailing newline, so result is "line1\nreplaced\nline4"
+        assert_eq!(content, "line1\nreplaced\nline4");
+    }
+
+    #[test]
+    fn replace_requires_old_text_or_range() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test.txt"), "content").unwrap();
+
+        let params = PatchApplyParams {
+            run_id: "r1".into(),
+            edits: vec![PatchEdit {
+                path: "test.txt".into(),
+                operation: "replace".into(),
+                start_line: None,
+                end_line: None,
+                old_text: None, // no old_text
+                new_text: "new".into(),
+                anchor_text: None,
+                reason: Some("replace without old_text or range".into()),
+            }],
+        };
+        let result = apply(&params, dir.path().to_str().unwrap());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("replace requires either old_text or start_line/end_line"));
+    }
+
+    #[test]
+    fn create_nested_directories() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let params = PatchApplyParams {
+            run_id: "r1".into(),
+            edits: vec![PatchEdit {
+                path: "deep/nested/dir/file.txt".into(),
+                operation: "create".into(),
+                start_line: None,
+                end_line: None,
+                old_text: None,
+                new_text: "nested content\n".into(),
+                anchor_text: None,
+                reason: Some("create nested file".into()),
+            }],
+        };
+        let result = apply(&params, dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(result.changed_files, vec!["deep/nested/dir/file.txt"]);
+
+        let content = std::fs::read_to_string(
+            dir.path().join("deep/nested/dir/file.txt")
+        ).unwrap();
+        assert_eq!(content, "nested content\n");
+    }
+
+    #[test]
+    fn multiple_edits_same_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test.txt"), "hello world\n").unwrap();
+
+        let params = PatchApplyParams {
+            run_id: "r1".into(),
+            edits: vec![
+                PatchEdit {
+                    path: "test.txt".into(),
+                    operation: "replace".into(),
+                    start_line: None,
+                    end_line: None,
+                    old_text: Some("hello".into()),
+                    new_text: "hi".into(),
+                    anchor_text: None,
+                    reason: Some("first edit".into()),
+                },
+                PatchEdit {
+                    path: "test.txt".into(),
+                    operation: "replace".into(),
+                    start_line: None,
+                    end_line: None,
+                    old_text: Some("world".into()),
+                    new_text: "earth".into(),
+                    anchor_text: None,
+                    reason: Some("second edit".into()),
+                },
+            ],
+        };
+        let result = apply(&params, dir.path().to_str().unwrap()).unwrap();
+        // File should only appear once in changed_files
+        assert_eq!(result.changed_files, vec!["test.txt"]);
+
+        let content = std::fs::read_to_string(dir.path().join("test.txt")).unwrap();
+        assert_eq!(content, "hi earth\n");
+    }
 }

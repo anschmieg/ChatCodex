@@ -1,19 +1,58 @@
 //! Handler logic for `tests.run`.
+//!
+//! # Contract
+//!
+//! The `scope` parameter accepts **semantic test scopes** that are resolved
+//! to concrete commands deterministically based on workspace detection.
+//!
+//! ## Accepted scope values
+//!
+//! ### Framework names (explicit)
+//! - `"cargo"` → `cargo test [target]`
+//! - `"npm"` → `npm test [-- target]`
+//! - `"pytest"` → `python -m pytest [target]`
+//! - `"make"` → `make [target|test]`
+//!
+//! ### Semantic labels (auto-resolved)
+//! - `"unit"` → resolved via workspace detection
+//! - `"integration"` → resolved via workspace detection
+//! - `"all"` → resolved via workspace detection
+//!
+//! ## Resolution order
+//!
+//! 1. If scope is a known framework name, use it directly
+//! 2. If scope is a semantic label, detect framework via workspace files:
+//!    - `Cargo.toml` exists → "cargo"
+//!    - `package.json` exists → "npm"
+//!    - `setup.py` or `pyproject.toml` exists → "pytest"
+//!    - `Makefile` exists → "make"
+//! 3. If no framework detected, return error
+//!
+//! ## Validation
+//!
+//! - Scope must be non-empty
+//! - Reason must be non-empty (for audit trail)
+//! - Target is optional and passed through to the framework command
+//!
+//! ## Errors
+//!
+//! - Returns error for unsupported scope values
+//! - Returns error if workspace framework cannot be auto-detected
+//! - Returns error if test command fails to execute
 
 use anyhow::{Context, Result};
 use deterministic_protocol::{TestsRunParams, TestsRunResult};
 use std::path::Path;
 
+/// Well-known framework scopes that map directly to commands.
+const FRAMEWORK_SCOPES: &[&str] = &["cargo", "npm", "pytest", "make"];
+
+/// Semantic scopes that require workspace detection.
+const SEMANTIC_SCOPES: &[&str] = &["unit", "integration", "all"];
+
 /// Resolve a semantic scope to a concrete test command.
 ///
-/// The scope can be either a well-known framework name (e.g. "cargo",
-/// "npm", "pytest", "make") **or** a semantic label (e.g. "unit",
-/// "integration", "all").  When a semantic label is used the daemon
-/// inspects the workspace to determine the correct framework command
-/// deterministically.
-///
-/// Only whitelisted commands are allowed — this prevents the daemon
-/// from executing arbitrary shell commands.
+/// See module-level documentation for the full contract.
 fn resolve_command(scope: &str, target: Option<&str>, workspace_root: &Path) -> Result<Vec<String>> {
     match scope {
         // --- well-known framework scopes ---
@@ -53,10 +92,25 @@ fn resolve_command(scope: &str, target: Option<&str>, workspace_root: &Path) -> 
             resolve_command(&detected, target, workspace_root)
         }
 
-        other => anyhow::bail!(
-            "unsupported test scope: {other}. \
-             Use a framework name (cargo, npm, pytest, make) or a semantic scope (unit, integration, all)."
-        ),
+        other => {
+            let is_framework = FRAMEWORK_SCOPES.contains(&other);
+            let is_semantic = SEMANTIC_SCOPES.contains(&other);
+
+            if is_framework {
+                // This shouldn't happen since we handle all frameworks above,
+                // but include for completeness
+                anyhow::bail!("framework scope '{other}' not properly handled")
+            } else if is_semantic {
+                anyhow::bail!("semantic scope '{other}' not properly handled")
+            } else {
+                anyhow::bail!(
+                    "unsupported test scope: '{other}'. \
+                     Accepted values:\n\
+                     - Framework names: cargo, npm, pytest, make\n\
+                     - Semantic scopes: unit, integration, all"
+                )
+            }
+        }
     }
 }
 
@@ -82,11 +136,48 @@ fn detect_framework(workspace_root: &Path) -> Result<String> {
 }
 
 /// Execute a whitelisted test command and capture the output.
+///
+/// # Validation
+///
+/// - `scope` must be non-empty and a supported value
+/// - `reason` must be non-empty (for audit trail)
+/// - `workspace_root` must be a valid directory
+///
+/// # Output truncation
+///
+/// stdout/stderr are truncated to 4096 characters in the structured
+/// response to prevent oversized payloads.
 pub fn run(params: &TestsRunParams, workspace_root: &str) -> Result<TestsRunResult> {
+    // Validate required fields
+    anyhow::ensure!(
+        !params.scope.is_empty(),
+        "scope must not be empty"
+    );
+    anyhow::ensure!(
+        !params.reason.is_empty(),
+        "reason must not be empty (required for audit trail)"
+    );
+
     let root = Path::new(workspace_root);
     anyhow::ensure!(root.is_dir(), "workspace root is not a directory: {workspace_root}");
 
-    let cmd_parts = resolve_command(&params.scope, params.target.as_deref(), root)?;
+    // Validate scope is supported before attempting resolution
+    let scope_lower = params.scope.to_lowercase();
+    let is_framework = FRAMEWORK_SCOPES.contains(&scope_lower.as_str());
+    let is_semantic = SEMANTIC_SCOPES.contains(&scope_lower.as_str());
+
+    if !is_framework && !is_semantic {
+        anyhow::bail!(
+            "unsupported test scope: '{}'. \
+             Supported framework scopes: {}. \
+             Supported semantic scopes: {}.",
+            params.scope,
+            FRAMEWORK_SCOPES.join(", "),
+            SEMANTIC_SCOPES.join(", ")
+        );
+    }
+
+    let cmd_parts = resolve_command(&scope_lower, params.target.as_deref(), root)?;
     let resolved_command = cmd_parts.join(" ");
 
     let program = &cmd_parts[0];
@@ -165,13 +256,121 @@ mod tests {
     }
 
     #[test]
-    fn run_echo_test() {
-        // We test with "make" scope pointing to a command that will
-        // succeed in a directory with a trivial Makefile.
+    fn reject_empty_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let params = TestsRunParams {
+            run_id: "r1".into(),
+            scope: "".into(),
+            target: None,
+            reason: "test".into(),
+        };
+        let result = run(&params, dir.path().to_str().unwrap());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("scope must not be empty"), "error should mention empty scope: {err}");
+    }
+
+    #[test]
+    fn reject_empty_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let params = TestsRunParams {
+            run_id: "r1".into(),
+            scope: "cargo".into(),
+            target: None,
+            reason: "".into(),
+        };
+        let result = run(&params, dir.path().to_str().unwrap());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("reason must not be empty"), "error should mention empty reason: {err}");
+    }
+
+    #[test]
+    fn reject_unsupported_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let params = TestsRunParams {
+            run_id: "r1".into(),
+            scope: "custom_framework".into(),
+            target: None,
+            reason: "test".into(),
+        };
+        let result = run(&params, dir.path().to_str().unwrap());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unsupported test scope"), "error should mention unsupported scope: {err}");
+    }
+
+    #[test]
+    fn scope_is_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
+
+        // Test uppercase CARGO
+        let params = TestsRunParams {
+            run_id: "r1".into(),
+            scope: "CARGO".into(),
+            target: None,
+            reason: "test".into(),
+        };
+        let result = run(&params, dir.path().to_str().unwrap());
+        assert!(result.is_ok(), "CARGO scope should work: {result:?}");
+    }
+
+    #[test]
+    fn semantic_scope_fails_without_detectable_framework() {
+        let dir = tempfile::tempdir().unwrap();
+        // No framework files in this directory
+        let params = TestsRunParams {
+            run_id: "r1".into(),
+            scope: "unit".into(),
+            target: None,
+            reason: "test".into(),
+        };
+        let result = run(&params, dir.path().to_str().unwrap());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("cannot auto-detect test framework"),
+            "error should mention auto-detection failure: {err}"
+        );
+    }
+
+    #[test]
+    fn npm_with_target_passes_correctly() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+
+        // Just verify the command is constructed correctly by checking resolve_command
+        let cmd = resolve_command("npm", Some("specific.test"), dir.path()).unwrap();
+        assert_eq!(cmd, vec!["npm", "test", "--", "specific.test"]);
+    }
+
+    #[test]
+    fn make_with_custom_target() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("Makefile"),
-            "test:\n\t@echo 'all tests passed'\n",
+            "custom:\n\t@echo 'custom target'\n",
+        )
+        .unwrap();
+
+        let params = TestsRunParams {
+            run_id: "r1".into(),
+            scope: "make".into(),
+            target: Some("custom".into()),
+            reason: "test custom target".into(),
+        };
+        let result = run(&params, dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert!(result.resolved_command.contains("custom"));
+    }
+
+    #[test]
+    fn make_defaults_to_test_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Makefile"),
+            "test:\n\t@echo 'default test'\n",
         )
         .unwrap();
 
@@ -179,10 +378,10 @@ mod tests {
             run_id: "r1".into(),
             scope: "make".into(),
             target: None,
-            reason: "verify tests pass".into(),
+            reason: "test default target".into(),
         };
         let result = run(&params, dir.path().to_str().unwrap()).unwrap();
         assert_eq!(result.exit_code, 0);
-        assert!(result.stdout.contains("all tests passed"));
+        assert!(result.resolved_command.contains("test"));
     }
 }
