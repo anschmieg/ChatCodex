@@ -40,7 +40,12 @@ impl Store {
     }
 
     /// Apply database migrations.
+    ///
+    /// Handles both fresh database creation and upgrades from older schemas.
+    /// Uses ALTER TABLE to add missing columns for backward compatibility.
     fn migrate(conn: &Connection) -> Result<()> {
+        // Create the base tables if they don't exist.
+        // Note: This creates tables with the full Milestone 4 schema for new databases.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS runs (
                 run_id                   TEXT PRIMARY KEY,
@@ -74,7 +79,37 @@ impl Store {
                 FOREIGN KEY (run_id) REFERENCES runs(run_id)
             );",
         )
-        .context("failed to run migrations")?;
+        .context("failed to create tables")?;
+
+        // Migrate older databases: add columns that may be missing from Milestone 3 era.
+        // SQLite supports ALTER TABLE ADD COLUMN; we ignore errors if columns already exist.
+        let migrations = [
+            ("runs", "completed_steps", "TEXT NOT NULL DEFAULT '[]'"),
+            ("runs", "pending_steps", "TEXT NOT NULL DEFAULT '[]'"),
+            ("runs", "last_action", "TEXT"),
+            ("runs", "last_observation", "TEXT"),
+            ("runs", "recommended_next_action", "TEXT"),
+            ("runs", "recommended_tool", "TEXT"),
+            ("runs", "latest_diff_summary", "TEXT"),
+            ("runs", "latest_test_result", "TEXT"),
+            ("runs", "warnings", "TEXT NOT NULL DEFAULT '[]'"),
+        ];
+
+        for (table, column, def) in migrations {
+            let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {def}");
+            match conn.execute(&sql, []) {
+                Ok(_) => {}
+                Err(rusqlite::Error::SqliteFailure(_code, Some(msg)))
+                    if msg.contains("duplicate column") =>
+                {
+                    // Column already exists — this is fine.
+                }
+                Err(e) => return Err(e).with_context(|| {
+                    format!("failed to add column {column} to {table}")
+                }),
+            }
+        }
+
         Ok(())
     }
 
@@ -505,6 +540,98 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let result = store.resolve_approval("nope", "approve", None);
         assert!(result.is_err());
+    }
+
+    /// Simulate an old Milestone 3 database schema and verify it upgrades correctly.
+    #[test]
+    fn migration_from_milestone3_schema() {
+        use rusqlite::Connection;
+
+        // Create a temporary directory for the test database.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("runs.db");
+
+        // Create an old Milestone 3 schema (missing Milestone 4 columns).
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    run_id          TEXT PRIMARY KEY,
+                    workspace_id    TEXT NOT NULL,
+                    user_goal       TEXT NOT NULL,
+                    status          TEXT NOT NULL,
+                    plan            TEXT NOT NULL,
+                    current_step    INTEGER NOT NULL DEFAULT 0,
+                    created_at      TEXT NOT NULL,
+                    updated_at      TEXT NOT NULL
+                );
+                CREATE TABLE approvals (
+                    approval_id         TEXT PRIMARY KEY,
+                    run_id              TEXT NOT NULL,
+                    action_description  TEXT NOT NULL,
+                    risk_reason         TEXT NOT NULL,
+                    status              TEXT NOT NULL DEFAULT 'pending',
+                    decision            TEXT,
+                    decision_reason     TEXT,
+                    created_at          TEXT NOT NULL,
+                    resolved_at         TEXT,
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+                );",
+            )
+            .unwrap();
+
+            // Insert a run using the old schema.
+            conn.execute(
+                "INSERT INTO runs (run_id, workspace_id, user_goal, status, plan, current_step, created_at, updated_at)
+                 VALUES ('r_old', '/tmp/ws', 'fix bug', 'prepared', '[\"step 1\"]', 0, '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Now open with our Store — this should migrate the schema.
+        let store = Store::open(dir.path()).unwrap();
+
+        // Verify the old run can be loaded with new schema defaults.
+        let loaded = store.get_run("r_old").unwrap().unwrap();
+        assert_eq!(loaded.run_id, "r_old");
+        assert_eq!(loaded.workspace_id, "/tmp/ws");
+        assert_eq!(loaded.status, "prepared");
+        // New columns should have default values.
+        assert!(loaded.completed_steps.is_empty());
+        assert!(loaded.pending_steps.is_empty());
+        assert!(loaded.warnings.is_empty());
+        assert!(loaded.last_action.is_none());
+        assert!(loaded.last_observation.is_none());
+
+        // Verify we can save the run with expanded state.
+        let mut state = loaded;
+        state.completed_steps = vec!["step 1".into()];
+        state.pending_steps = vec!["step 2".into()];
+        state.last_action = Some("inspected".into());
+        state.warnings = vec!["caution".into()];
+        store.save_run(&state).unwrap();
+
+        // Verify roundtrip.
+        let reloaded = store.get_run("r_old").unwrap().unwrap();
+        assert_eq!(reloaded.completed_steps, vec!["step 1"]);
+        assert_eq!(reloaded.pending_steps, vec!["step 2"]);
+        assert_eq!(reloaded.last_action.as_deref(), Some("inspected"));
+        assert_eq!(reloaded.warnings, vec!["caution"]);
+    }
+
+    /// Verify that opening a fresh database creates the full schema.
+    #[test]
+    fn fresh_database_has_full_schema() {
+        let store = Store::open_in_memory().unwrap();
+
+        let state = make_run_state("r_fresh", "active");
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_fresh").unwrap().unwrap();
+        assert_eq!(loaded.run_id, "r_fresh");
+        assert_eq!(loaded.status, "active");
+        assert!(!loaded.plan.is_empty());
     }
 }
 

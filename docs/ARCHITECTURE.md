@@ -67,9 +67,13 @@ Deterministic logic:
 
 ### deterministic-daemon
 - HTTP JSON-RPC transport
-- SQLite persistence
+- SQLite persistence with automatic schema migration
 - handler wiring
 - health endpoint
+
+#### SQLite persistence
+
+The daemon stores run state in a local SQLite database (`runs.db`). The persistence layer automatically migrates older databases to the current schema using `ALTER TABLE ADD COLUMN` for backward compatibility. This allows the daemon to start and operate correctly even when an older database (e.g., from Milestone 3) is present. Missing columns are added with safe deterministic defaults (empty JSON arrays `[]` for list fields, `NULL` for optional fields).
 
 ## TypeScript MCP gateway
 
