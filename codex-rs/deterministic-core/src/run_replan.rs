@@ -35,8 +35,9 @@ pub fn replan(params: &RunReplanParams, state: &mut RunState) -> Result<RunRepla
         // recover.  A truly terminal failure should have status "failed"
         // set externally.
         if state.status == "blocked" || state.status == "awaiting_approval" {
+            let old_status = state.status.clone();
             state.status = "active".to_string();
-            delta_parts.push(format!("status {} → active", state.status));
+            delta_parts.push(format!("status {old_status} → active"));
         }
 
         // Insert a recovery step at the current position.
