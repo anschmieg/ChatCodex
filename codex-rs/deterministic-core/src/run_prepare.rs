@@ -80,6 +80,7 @@ pub fn prepare(params: &RunPrepareParams) -> Result<(RunPrepareResult, RunState)
         warnings: vec![],
         retryable_action: None,
         policy_profile: effective_policy,
+        finalized_outcome: None,
         created_at: now.clone(),
         updated_at: now,
     };

@@ -5,7 +5,7 @@
 //! access — unlike the previous JSON-file approach.
 
 use anyhow::{Context, Result};
-use deterministic_protocol::{PendingApproval, RetryableAction, RunHistoryEntry, RunPolicy, RunState, RunSummary};
+use deterministic_protocol::{PendingApproval, RetryableAction, RunHistoryEntry, RunOutcome, RunPolicy, RunState, RunSummary};
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
@@ -112,6 +112,9 @@ impl Store {
             ("runs", "retryable_action", "TEXT"),
             // Milestone 8 columns
             ("runs", "policy_profile", "TEXT NOT NULL DEFAULT '{}'"),
+            // Milestone 10 columns
+            ("runs", "outcome_kind", "TEXT"),
+            ("runs", "finalized_outcome", "TEXT"),
         ];
 
         for (table, column, def) in migrations {
@@ -167,14 +170,26 @@ impl Store {
             .context("failed to serialise retryable_action")?;
         let policy_profile_json = serde_json::to_string(&state.policy_profile)
             .context("failed to serialise policy_profile")?;
+        // Milestone 10: persist finalized_outcome as JSON; also extract outcome_kind for querying.
+        let outcome_kind: Option<&str> = state
+            .finalized_outcome
+            .as_ref()
+            .map(|o| o.outcome_kind.as_str());
+        let finalized_outcome_json: Option<String> = state
+            .finalized_outcome
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .context("failed to serialise finalized_outcome")?;
         conn.execute(
             "INSERT OR REPLACE INTO runs
                 (run_id, workspace_id, user_goal, status, plan, current_step,
                  completed_steps, pending_steps, last_action, last_observation,
                  recommended_next_action, recommended_tool,
                  latest_diff_summary, latest_test_result, focus_paths, warnings,
-                 retryable_action, policy_profile, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                 retryable_action, policy_profile, outcome_kind, finalized_outcome,
+                 created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -194,6 +209,8 @@ impl Store {
                 warnings_json,
                 retryable_action_json,
                 policy_profile_json,
+                outcome_kind,
+                finalized_outcome_json,
                 state.created_at,
                 state.updated_at,
             ],
@@ -212,7 +229,7 @@ impl Store {
                         last_action, last_observation,
                         recommended_next_action, recommended_tool,
                         latest_diff_summary, latest_test_result, focus_paths, warnings,
-                        retryable_action, policy_profile, created_at, updated_at
+                        retryable_action, policy_profile, finalized_outcome, created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
             .context("failed to prepare statement")?;
@@ -296,6 +313,20 @@ impl Store {
                     })?
                     .unwrap_or_default();
 
+                // Milestone 10: finalized_outcome — NULL for unfinalized runs.
+                let finalized_outcome_json: Option<String> = row.get(18)?;
+                let finalized_outcome: Option<RunOutcome> = finalized_outcome_json
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            18,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+
                 Ok(RunState {
                     run_id: row.get(0)?,
                     workspace_id: row.get(1)?,
@@ -315,8 +346,9 @@ impl Store {
                     warnings,
                     retryable_action,
                     policy_profile,
-                    created_at: row.get(18)?,
-                    updated_at: row.get(19)?,
+                    finalized_outcome,
+                    created_at: row.get(19)?,
+                    updated_at: row.get(20)?,
                 })
             })
             .context("failed to query run")?;
@@ -479,7 +511,7 @@ impl Store {
 
         let sql = format!(
             "SELECT run_id, workspace_id, user_goal, status, current_step, plan,
-                    created_at, updated_at
+                    created_at, updated_at, outcome_kind
              FROM runs {where_clause}
              ORDER BY updated_at DESC
              LIMIT ?1"
@@ -499,6 +531,7 @@ impl Store {
                 status: row.get(3)?,
                 current_step: row.get::<_, i64>(4)? as usize,
                 total_steps,
+                outcome_kind: row.get(8)?,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
@@ -610,6 +643,7 @@ mod tests {
             warnings: vec![],
             retryable_action: None,
             policy_profile: RunPolicy::default(),
+            finalized_outcome: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -1571,6 +1605,181 @@ mod tests {
 
         let reloaded = store.get_run("r_m7").unwrap().unwrap();
         assert_eq!(reloaded.policy_profile.patch_edit_threshold, 15);
+    }
+
+    // ---- Milestone 10: finalized_outcome persistence tests ----
+
+    #[test]
+    fn finalized_outcome_null_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_fo_null", "active");
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_fo_null").unwrap().unwrap();
+        assert!(loaded.finalized_outcome.is_none());
+    }
+
+    #[test]
+    fn finalized_outcome_completed_roundtrip() {
+        use deterministic_protocol::RunOutcome;
+
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_fo_c", "finalized:completed");
+        state.finalized_outcome = Some(RunOutcome {
+            outcome_kind: "completed".into(),
+            summary: "All done".into(),
+            reason: None,
+            finalized_at: "2024-06-01T12:00:00Z".into(),
+        });
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_fo_c").unwrap().unwrap();
+        let outcome = loaded.finalized_outcome.as_ref().unwrap();
+        assert_eq!(outcome.outcome_kind, "completed");
+        assert_eq!(outcome.summary, "All done");
+        assert!(outcome.reason.is_none());
+        assert_eq!(outcome.finalized_at, "2024-06-01T12:00:00Z");
+        assert_eq!(loaded.status, "finalized:completed");
+    }
+
+    #[test]
+    fn finalized_outcome_failed_with_reason_roundtrip() {
+        use deterministic_protocol::RunOutcome;
+
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_fo_f", "finalized:failed");
+        state.finalized_outcome = Some(RunOutcome {
+            outcome_kind: "failed".into(),
+            summary: "Build broke".into(),
+            reason: Some("compiler error in step 2".into()),
+            finalized_at: "2024-06-02T08:00:00Z".into(),
+        });
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_fo_f").unwrap().unwrap();
+        let outcome = loaded.finalized_outcome.as_ref().unwrap();
+        assert_eq!(outcome.outcome_kind, "failed");
+        assert_eq!(outcome.reason.as_deref(), Some("compiler error in step 2"));
+    }
+
+    #[test]
+    fn list_runs_includes_outcome_kind() {
+        use deterministic_protocol::RunOutcome;
+
+        let store = Store::open_in_memory().unwrap();
+        // Active run (no outcome).
+        store.save_run(&make_run_state("r_lk_a", "active")).unwrap();
+        // Finalized run.
+        let mut finalized = make_run_state("r_lk_f", "finalized:completed");
+        finalized.finalized_outcome = Some(RunOutcome {
+            outcome_kind: "completed".into(),
+            summary: "done".into(),
+            reason: None,
+            finalized_at: "2024-06-01T12:00:00Z".into(),
+        });
+        store.save_run(&finalized).unwrap();
+
+        let runs = store.list_runs(20, None, None).unwrap();
+        assert_eq!(runs.len(), 2);
+
+        let active = runs.iter().find(|r| r.run_id == "r_lk_a").unwrap();
+        assert!(active.outcome_kind.is_none());
+
+        let closed = runs.iter().find(|r| r.run_id == "r_lk_f").unwrap();
+        assert_eq!(closed.outcome_kind.as_deref(), Some("completed"));
+    }
+
+    /// Verify that migration from M9 (no outcome columns) succeeds and defaults outcome to None.
+    #[test]
+    fn migration_from_m9_adds_outcome_columns() {
+        use rusqlite::Connection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("runs.db");
+
+        // Create Milestone 9 schema (without outcome_kind / finalized_outcome columns).
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    run_id                   TEXT PRIMARY KEY,
+                    workspace_id             TEXT NOT NULL,
+                    user_goal                TEXT NOT NULL,
+                    status                   TEXT NOT NULL,
+                    plan                     TEXT NOT NULL,
+                    current_step             INTEGER NOT NULL DEFAULT 0,
+                    completed_steps          TEXT NOT NULL DEFAULT '[]',
+                    pending_steps            TEXT NOT NULL DEFAULT '[]',
+                    last_action              TEXT,
+                    last_observation         TEXT,
+                    recommended_next_action  TEXT,
+                    recommended_tool         TEXT,
+                    latest_diff_summary      TEXT,
+                    latest_test_result       TEXT,
+                    focus_paths              TEXT NOT NULL DEFAULT '[]',
+                    warnings                 TEXT NOT NULL DEFAULT '[]',
+                    retryable_action         TEXT,
+                    policy_profile           TEXT NOT NULL DEFAULT '{}',
+                    created_at               TEXT NOT NULL,
+                    updated_at               TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS approvals (
+                    approval_id         TEXT PRIMARY KEY,
+                    run_id              TEXT NOT NULL,
+                    action_description  TEXT NOT NULL,
+                    risk_reason         TEXT NOT NULL,
+                    policy_rationale    TEXT NOT NULL DEFAULT '',
+                    status              TEXT NOT NULL DEFAULT 'pending',
+                    decision            TEXT,
+                    decision_reason     TEXT,
+                    created_at          TEXT NOT NULL,
+                    resolved_at         TEXT,
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+                );
+                CREATE TABLE IF NOT EXISTS audit_trail (
+                    entry_id    TEXT PRIMARY KEY,
+                    run_id      TEXT NOT NULL,
+                    event_kind  TEXT NOT NULL,
+                    summary     TEXT NOT NULL,
+                    metadata    TEXT,
+                    occurred_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+                );",
+            )
+            .unwrap();
+
+            conn.execute(
+                "INSERT INTO runs (run_id, workspace_id, user_goal, status, plan, current_step,
+                                   completed_steps, pending_steps, focus_paths, warnings,
+                                   policy_profile, created_at, updated_at)
+                 VALUES ('r_m9', '/tmp/ws', 'fix', 'active', '[\"step 1\"]', 0,
+                         '[]', '[\"step 1\"]', '[]', '[]',
+                         '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Open with Store — should migrate and add outcome columns.
+        let store = Store::open(dir.path()).unwrap();
+        let loaded = store.get_run("r_m9").unwrap().unwrap();
+        // finalized_outcome should default to None.
+        assert!(loaded.finalized_outcome.is_none());
+
+        // Should be able to finalize now.
+        let mut updated = loaded;
+        updated.status = "finalized:abandoned".into();
+        updated.finalized_outcome = Some(deterministic_protocol::RunOutcome {
+            outcome_kind: "abandoned".into(),
+            summary: "goal changed".into(),
+            reason: None,
+            finalized_at: "2024-06-01T12:00:00Z".into(),
+        });
+        store.save_run(&updated).unwrap();
+
+        let reloaded = store.get_run("r_m9").unwrap().unwrap();
+        let outcome = reloaded.finalized_outcome.as_ref().unwrap();
+        assert_eq!(outcome.outcome_kind, "abandoned");
     }
 }
 

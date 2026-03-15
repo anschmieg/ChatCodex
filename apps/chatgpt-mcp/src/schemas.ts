@@ -276,3 +276,30 @@ export const PreviewTestPolicyInput = {
   target: z.string().optional().describe("Specific test target within scope"),
   reason: z.string().optional().describe("Why this test run is being evaluated"),
 };
+
+// ---------------------------------------------------------------
+// finalize_run  (Milestone 10)
+//
+// Explicitly closes a run with a structured outcome record.
+// No autonomous work is triggered.
+// ---------------------------------------------------------------
+export const FinalizeRunInput = {
+  runId: z.string().describe("Run ID from codex_prepare_run"),
+  outcomeKind: z
+    .enum(["completed", "failed", "abandoned"])
+    .describe(
+      "Final disposition of the run: 'completed', 'failed', or 'abandoned'",
+    ),
+  summary: z
+    .string()
+    .max(500)
+    .describe(
+      "Short deterministic summary of what was accomplished or why the run ended",
+    ),
+  reason: z
+    .string()
+    .optional()
+    .describe(
+      "Optional reason, typically for 'failed' or 'abandoned' runs",
+    ),
+};

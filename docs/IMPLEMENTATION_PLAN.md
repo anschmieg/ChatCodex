@@ -273,6 +273,84 @@ Acceptance:
 - ✅ TypeScript remains thin
 - ✅ SQLite migration is backward compatible
 
+## Milestone 9: deterministic operation preflight and approval preview ✅
+
+Add read-only policy evaluation before performing patch or test operations.
+
+### New protocol types
+
+- `PreflightDecision` enum: `proceed` | `requires_approval`
+- `PreflightResult` struct: `decision`, `actionSummary?`, `riskReason?`, `policyRationale?`, `effectivePolicy`
+- `PatchPreflightParams`, `TestsPreflightParams`
+
+### New daemon methods (read-only, no state mutation)
+
+- `patch.preflight` — evaluate patch approval policy without applying changes
+- `tests.preflight` — evaluate test approval policy without executing tests
+
+### New MCP tools
+
+- `preview_patch_policy` — inspect whether a proposed patch would require approval
+- `preview_test_policy` — inspect whether a proposed test run would require approval
+
+### TypeScript gateway
+
+- `PreviewPatchPolicyInput` and `PreviewTestPolicyInput` Zod schemas in `schemas.ts`
+- `tools.ts` registers both preview tools
+
+Acceptance:
+- ✅ preflight methods reuse existing policy evaluation logic
+- ✅ no state mutation from preview calls
+- ✅ `decision` field is always deterministic
+- ✅ TypeScript remains thin
+- ✅ no model/provider SDKs added
+
+## Milestone 10: deterministic run finalization, outcome recording, and closure ✅
+
+Add explicit and deterministic lifecycle closure so runs have a clean ending.
+
+### New protocol types
+
+- `RunOutcome` struct: `outcomeKind`, `summary`, `reason?`, `finalizedAt`
+- `RunFinalizeParams`: `runId`, `outcomeKind`, `summary`, `reason?`
+- `RunFinalizeResult`: `runId`, `outcomeKind`, `finalizedAt`, `status`, `recommendedNextAction`
+- `finalizedOutcome: Option<RunOutcome>` field added to `RunState`, `RunRefreshResult`, `RunGetResult`
+- `outcomeKind: Option<String>` field added to `RunSummary`
+
+### New daemon method
+
+- `run.finalize` — close a run with a structured outcome record
+  - Validates `outcomeKind` must be `completed`, `failed`, or `abandoned`
+  - Rejects if run is already finalized
+  - Sets `status` to `finalized:<outcomeKind>`
+  - Persists `RunOutcome` in SQLite
+  - Appends `run_finalized` audit trail entry
+  - Returns deterministic guidance; no autonomous follow-up
+
+### New MCP tool
+
+- `finalize_run` — thin gateway to `run.finalize`; not a coarse autonomous tool
+
+### SQLite migration
+
+- Adds `outcome_kind TEXT` and `finalized_outcome TEXT` columns to `runs` table
+- Backward compatible (NULL for unfinalized runs on older databases)
+
+### TypeScript gateway
+
+- `FinalizeRunInput` Zod schema in `schemas.ts`
+- `tools.ts` registers `finalize_run`
+
+Acceptance:
+- ✅ runs can be explicitly finalized with a structured outcome record
+- ✅ outcome_kind must be `completed`, `failed`, or `abandoned`
+- ✅ double finalization is rejected deterministically
+- ✅ finalization is recorded in the audit trail
+- ✅ closed runs expose outcome metadata in `run.get`, `run.refresh`, `runs.list`
+- ✅ TypeScript remains thin
+- ✅ SQLite migration is backward compatible
+- ✅ no autonomous continuation
+
 ## Out of scope
 
 These are intentionally not implemented:
@@ -285,16 +363,3 @@ These are intentionally not implemented:
 - background orchestration
 - any agent-owned runtime
 - `run_command` / `command.exec` (not implemented, not needed)
-
-## Potential future milestones
-
-If extending the project, likely next steps:
-
-### Milestone 9: policy amendment mid-run
-- Allow ChatGPT to tighten or relax constraints during an active run
-- Structured policy diff and rationale
-
-### Milestone 10: workspace templates
-- Predefined workspace configurations
-- Template sharing
-- Project scaffolding

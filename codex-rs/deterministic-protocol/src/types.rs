@@ -405,6 +405,9 @@ pub struct RunRefreshResult {
     pub warnings: Vec<String>,
     /// The effective policy profile governing this run (Milestone 8).
     pub effective_policy: RunPolicy,
+    /// Structured final outcome if this run has been explicitly finalized (Milestone 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalized_outcome: Option<RunOutcome>,
 }
 
 // ---------------------------------------------------------------------------
@@ -525,6 +528,28 @@ pub struct RetryableAction {
 }
 
 // ---------------------------------------------------------------------------
+// Run finalization outcome (Milestone 10)
+// ---------------------------------------------------------------------------
+
+/// Structured final outcome record for a closed run.
+///
+/// Persisted in SQLite alongside the run state when ChatGPT explicitly
+/// finalizes a run.  The record is read-only after creation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunOutcome {
+    /// Disposition: `"completed"`, `"failed"`, or `"abandoned"`.
+    pub outcome_kind: String,
+    /// Short deterministic summary of what was accomplished or why the run ended.
+    pub summary: String,
+    /// Optional reason for failure or abandonment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// ISO 8601 timestamp of when finalization occurred.
+    pub finalized_at: String,
+}
+
+// ---------------------------------------------------------------------------
 // Run state (persisted in SQLite)
 // ---------------------------------------------------------------------------
 
@@ -556,6 +581,9 @@ pub struct RunState {
     /// Per-run policy profile governing approval decisions (Milestone 8).
     #[serde(default)]
     pub policy_profile: RunPolicy,
+    /// Structured final outcome if this run has been explicitly finalized (Milestone 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalized_outcome: Option<RunOutcome>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -574,6 +602,9 @@ pub struct RunSummary {
     pub status: String,
     pub current_step: usize,
     pub total_steps: usize,
+    /// Final disposition if the run has been explicitly finalized (Milestone 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_kind: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -635,6 +666,9 @@ pub struct RunGetResult {
     pub warnings: Vec<String>,
     /// The effective policy profile governing this run (Milestone 8).
     pub effective_policy: RunPolicy,
+    /// Structured final outcome if this run has been explicitly finalized (Milestone 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalized_outcome: Option<RunOutcome>,
 }
 
 // ---------------------------------------------------------------------------
@@ -743,4 +777,44 @@ pub struct TestsPreflightParams {
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// run.finalize  (Milestone 10)
+// ---------------------------------------------------------------------------
+
+/// Valid closure kinds for run finalization.
+///
+/// The backend rejects any value not in this set.
+pub const VALID_OUTCOME_KINDS: &[&str] = &["completed", "failed", "abandoned"];
+
+/// Parameters for `run.finalize` — explicit deterministic run closure.
+///
+/// Calling this method permanently closes the run with a structured outcome
+/// record.  A run that is already finalized cannot be finalized again.
+/// No autonomous work is triggered as a result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunFinalizeParams {
+    pub run_id: String,
+    /// Must be one of: `"completed"`, `"failed"`, `"abandoned"`.
+    pub outcome_kind: String,
+    /// Short deterministic summary (recommended ≤ 200 characters).
+    pub summary: String,
+    /// Optional reason, typically for `"failed"` or `"abandoned"` runs.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Result of `run.finalize`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunFinalizeResult {
+    pub run_id: String,
+    pub outcome_kind: String,
+    pub finalized_at: String,
+    /// The new run status after finalization (e.g. `"finalized:completed"`).
+    pub status: String,
+    /// Deterministic guidance on what to do next (varies by outcome_kind).
+    pub recommended_next_action: String,
 }

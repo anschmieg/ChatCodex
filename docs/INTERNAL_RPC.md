@@ -73,6 +73,30 @@ No new daemon methods. Existing methods extended:
 * `patch.preflight`
 * `tests.preflight`
 
+### Milestone 10 methods
+
+* `run.finalize` — close a run with a structured outcome record
+
+#### `run.finalize` params
+
+```json
+{
+  "runId": "run_abc",
+  "outcomeKind": "completed",
+  "summary": "All steps completed successfully",
+  "reason": null
+}
+```
+
+Valid `outcomeKind` values: `"completed"`, `"failed"`, `"abandoned"`.
+
+Returns `RunFinalizeResult`:
+- `runId`
+- `outcomeKind`
+- `finalizedAt` — ISO 8601 timestamp
+- `status` — e.g. `"finalized:completed"`
+- `recommendedNextAction` — deterministic guidance string
+
 ## Forbidden internal methods
 
 Do not implement or surface:

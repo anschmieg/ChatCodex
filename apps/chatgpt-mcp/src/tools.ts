@@ -28,6 +28,7 @@ import {
   GetRunHistoryInput,
   PreviewPatchPolicyInput,
   PreviewTestPolicyInput,
+  FinalizeRunInput,
 } from "./schemas.js";
 
 /**
@@ -68,6 +69,8 @@ export const REGISTERED_TOOL_NAMES = [
   // Milestone 9: deterministic preflight / preview (read-only)
   "preview_patch_policy",
   "preview_test_policy",
+  // Milestone 10: deterministic run finalization
+  "finalize_run",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -334,6 +337,24 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
         runId: params.runId,
         scope: params.scope,
         target: params.target,
+        reason: params.reason,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- finalize_run (Milestone 10) ----
+  server.tool(
+    "finalize_run",
+    "Explicitly finalize a run with a structured outcome record (completed, failed, or abandoned). Persists final outcome. No autonomous work is triggered.",
+    FinalizeRunInput,
+    async (params) => {
+      const result = await client.call("run.finalize", {
+        runId: params.runId,
+        outcomeKind: params.outcomeKind,
+        summary: params.summary,
         reason: params.reason,
       });
       return {

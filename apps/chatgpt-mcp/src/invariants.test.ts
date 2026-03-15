@@ -16,6 +16,7 @@ import {
   PolicyProfileInputSchema,
   PreviewPatchPolicyInput,
   PreviewTestPolicyInput,
+  FinalizeRunInput,
 } from "./schemas.js";
 
 describe("MCP tool registry invariants", () => {
@@ -48,6 +49,8 @@ describe("MCP tool registry invariants", () => {
       // Milestone 9: deterministic preflight / preview (read-only)
       "preview_patch_policy",
       "preview_test_policy",
+      // Milestone 10: deterministic run finalization
+      "finalize_run",
     ]);
     const actual = new Set(REGISTERED_TOOL_NAMES);
     assert.deepStrictEqual(actual, expected);
@@ -203,6 +206,105 @@ describe("No-hidden-agent regression (Milestone 9)", () => {
   });
 
   it("no continue/resume/agent patterns in registered tool names", () => {
+    const coarsePatterns = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end"];
+    for (const name of REGISTERED_TOOL_NAMES) {
+      for (const pattern of coarsePatterns) {
+        assert.ok(
+          !name.includes(pattern),
+          `Tool "${name}" contains forbidden autonomous pattern "${pattern}"`,
+        );
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 10: FinalizeRunInput schema validation tests
+// ---------------------------------------------------------------
+const FinalizeRunSchema = z.object(FinalizeRunInput);
+
+describe("FinalizeRunInput schema (Milestone 10)", () => {
+  it("should accept a minimal completed finalization", () => {
+    const result = FinalizeRunSchema.safeParse({
+      runId: "run-abc",
+      outcomeKind: "completed",
+      summary: "All steps finished successfully",
+    });
+    assert.ok(result.success, "Minimal completed finalization should be valid");
+  });
+
+  it("should accept a failed finalization with a reason", () => {
+    const result = FinalizeRunSchema.safeParse({
+      runId: "run-xyz",
+      outcomeKind: "failed",
+      summary: "Build failed at step 2",
+      reason: "compiler error",
+    });
+    assert.ok(result.success, "Failed finalization with reason should be valid");
+  });
+
+  it("should accept an abandoned finalization", () => {
+    const result = FinalizeRunSchema.safeParse({
+      runId: "run-aba",
+      outcomeKind: "abandoned",
+      summary: "No longer needed",
+    });
+    assert.ok(result.success, "Abandoned finalization should be valid");
+  });
+
+  it("should reject an invalid outcome kind", () => {
+    const result = FinalizeRunSchema.safeParse({
+      runId: "run-abc",
+      outcomeKind: "unknown_kind",
+      summary: "done",
+    });
+    assert.ok(!result.success, "Invalid outcomeKind should be rejected");
+  });
+
+  it("should reject missing runId", () => {
+    const result = FinalizeRunSchema.safeParse({
+      outcomeKind: "completed",
+      summary: "done",
+    });
+    assert.ok(!result.success, "Missing runId should be invalid");
+  });
+
+  it("should reject missing outcomeKind", () => {
+    const result = FinalizeRunSchema.safeParse({
+      runId: "run-abc",
+      summary: "done",
+    });
+    assert.ok(!result.success, "Missing outcomeKind should be invalid");
+  });
+
+  it("should reject missing summary", () => {
+    const result = FinalizeRunSchema.safeParse({
+      runId: "run-abc",
+      outcomeKind: "completed",
+    });
+    assert.ok(!result.success, "Missing summary should be invalid");
+  });
+
+  it("should accept optional reason as undefined", () => {
+    const result = FinalizeRunSchema.safeParse({
+      runId: "run-abc",
+      outcomeKind: "completed",
+      summary: "done",
+      reason: undefined,
+    });
+    assert.ok(result.success, "Undefined reason should be valid (optional)");
+  });
+});
+
+describe("No-hidden-agent regression (Milestone 10)", () => {
+  it("finalize_run should be registered as a lifecycle tool", () => {
+    assert.ok(
+      REGISTERED_TOOL_NAMES.includes("finalize_run" as (typeof REGISTERED_TOOL_NAMES)[number]),
+      "finalize_run must be in the tool registry",
+    );
+  });
+
+  it("no coarse autonomous patterns in registered tool names", () => {
     const coarsePatterns = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end"];
     for (const name of REGISTERED_TOOL_NAMES) {
       for (const pattern of coarsePatterns) {

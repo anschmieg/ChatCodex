@@ -34,6 +34,8 @@ pub fn dispatch(
         // Milestone 9: read-only preflight evaluation
         Method::PatchPreflight => handle_patch_preflight(params, store),
         Method::TestsPreflight => handle_tests_preflight(params, store),
+        // Milestone 10: deterministic run finalization
+        Method::RunFinalize => handle_run_finalize(params, store),
     }
 }
 
@@ -432,6 +434,7 @@ fn handle_run_get(
     let recommended_tool = state.recommended_tool.clone();
     let warnings = state.warnings.clone();
     let effective_policy = state.policy_profile.clone();
+    let finalized_outcome = state.finalized_outcome.clone();
 
     let result = RunGetResult {
         run_state: state.clone(),
@@ -443,6 +446,7 @@ fn handle_run_get(
         recommended_tool,
         warnings,
         effective_policy,
+        finalized_outcome,
     };
     Ok((serde_json::to_value(result)?, Some(state)))
 }
@@ -556,9 +560,39 @@ fn map_policy_decision(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// ---- Milestone 10: deterministic run finalization ----
+
+/// Finalize a run with a structured outcome record.
+///
+/// Deterministic lifecycle rules (enforced in `deterministic_core::run_finalize`):
+/// - `outcome_kind` must be `"completed"`, `"failed"`, or `"abandoned"`.
+/// - A run that is already finalized cannot be finalized again.
+/// - Finalization never triggers autonomous follow-up work.
+fn handle_run_finalize(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunFinalizeParams = serde_json::from_value(params)?;
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let result = deterministic_core::run_finalize::finalize(&p, &mut state)?;
+    store.save_run(&state)?;
+
+    // Audit trail: run finalized.
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "run_finalized",
+        &format!(
+            "Run finalized: outcome_kind={}, summary={}",
+            p.outcome_kind, p.summary
+        ),
+        p.reason.as_deref(),
+    );
+
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
 
 #[cfg(test)]
 mod tests {
@@ -586,6 +620,7 @@ mod tests {
             warnings: vec![],
             retryable_action: None,
             policy_profile: RunPolicy::default(),
+            finalized_outcome: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -777,6 +812,15 @@ mod tests {
     }
 
     #[test]
+    fn method_registry_includes_run_finalize() {
+        use deterministic_protocol::Method;
+        let all = Method::all();
+        assert!(all.contains(&Method::RunFinalize));
+        assert_eq!(Method::RunFinalize.as_str(), "run.finalize");
+        assert_eq!(Method::parse_method("run.finalize"), Some(Method::RunFinalize));
+    }
+
+    #[test]
     fn forbidden_methods_not_registered() {
         use deterministic_protocol::Method;
         let forbidden_names = [
@@ -795,5 +839,166 @@ mod tests {
                 "Forbidden method '{name}' must not be registered"
             );
         }
+    }
+
+    // -- run.finalize handler tests ------------------------------------------
+
+    #[test]
+    fn run_finalize_completed() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_fin_c");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_fin_c",
+            "outcomeKind": "completed",
+            "summary": "All steps finished"
+        });
+        let (val, run_state_opt) = dispatch(Method::RunFinalize, params, &store).unwrap();
+        let result: RunFinalizeResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.outcome_kind, "completed");
+        assert_eq!(result.run_id, "r_fin_c");
+        assert!(!result.finalized_at.is_empty());
+        assert_eq!(result.status, "finalized:completed");
+        assert!(result.recommended_next_action.contains("complete"));
+
+        // State must be updated in the store.
+        let loaded = store.get_run("r_fin_c").unwrap().unwrap();
+        let outcome = loaded.finalized_outcome.as_ref().unwrap();
+        assert_eq!(outcome.outcome_kind, "completed");
+        assert_eq!(outcome.summary, "All steps finished");
+        assert!(outcome.reason.is_none());
+
+        // run_state must be returned.
+        assert!(run_state_opt.is_some());
+
+        // Audit trail must have a finalization entry.
+        let entries = store.get_audit_entries("r_fin_c", 10).unwrap();
+        assert!(entries.iter().any(|e| e.event_kind == "run_finalized"));
+    }
+
+    #[test]
+    fn run_finalize_failed_with_reason() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_fin_f");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_fin_f",
+            "outcomeKind": "failed",
+            "summary": "Tests broke",
+            "reason": "compiler error"
+        });
+        let (val, _) = dispatch(Method::RunFinalize, params, &store).unwrap();
+        let result: RunFinalizeResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.outcome_kind, "failed");
+        assert_eq!(result.status, "finalized:failed");
+        assert!(result.recommended_next_action.contains("failed"));
+
+        let loaded = store.get_run("r_fin_f").unwrap().unwrap();
+        let outcome = loaded.finalized_outcome.as_ref().unwrap();
+        assert_eq!(outcome.reason.as_deref(), Some("compiler error"));
+    }
+
+    #[test]
+    fn run_finalize_abandoned() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_fin_a");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_fin_a",
+            "outcomeKind": "abandoned",
+            "summary": "No longer needed",
+            "reason": "scope changed"
+        });
+        let (val, _) = dispatch(Method::RunFinalize, params, &store).unwrap();
+        let result: RunFinalizeResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.outcome_kind, "abandoned");
+        assert_eq!(result.status, "finalized:abandoned");
+        assert!(result.recommended_next_action.contains("abandoned"));
+    }
+
+    #[test]
+    fn run_finalize_invalid_kind_rejected() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_fin_inv");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_fin_inv",
+            "outcomeKind": "unknown_kind",
+            "summary": "done"
+        });
+        let err = dispatch(Method::RunFinalize, params, &store).unwrap_err();
+        assert!(err.to_string().contains("invalid outcome_kind"));
+
+        // State must not be mutated.
+        let loaded = store.get_run("r_fin_inv").unwrap().unwrap();
+        assert!(loaded.finalized_outcome.is_none());
+        assert_eq!(loaded.status, "active");
+    }
+
+    #[test]
+    fn run_finalize_duplicate_rejected() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_fin_dup");
+        store.save_run(&state).unwrap();
+
+        // First finalization must succeed.
+        let params1 = serde_json::json!({
+            "runId": "r_fin_dup",
+            "outcomeKind": "completed",
+            "summary": "Done"
+        });
+        dispatch(Method::RunFinalize, params1, &store).unwrap();
+
+        // Second finalization must be rejected.
+        let params2 = serde_json::json!({
+            "runId": "r_fin_dup",
+            "outcomeKind": "abandoned",
+            "summary": "Trying again"
+        });
+        let err = dispatch(Method::RunFinalize, params2, &store).unwrap_err();
+        assert!(err.to_string().contains("already finalized"));
+
+        // Original outcome must be preserved.
+        let loaded = store.get_run("r_fin_dup").unwrap().unwrap();
+        let outcome = loaded.finalized_outcome.as_ref().unwrap();
+        assert_eq!(outcome.outcome_kind, "completed");
+    }
+
+    #[test]
+    fn run_finalize_unknown_run_rejected() {
+        let store = Store::open_in_memory().unwrap();
+        let params = serde_json::json!({
+            "runId": "nonexistent",
+            "outcomeKind": "completed",
+            "summary": "done"
+        });
+        let err = dispatch(Method::RunFinalize, params, &store).unwrap_err();
+        assert!(err.to_string().contains("unknown run"));
+    }
+
+    #[test]
+    fn run_finalize_audit_trail_entry_created() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_fin_aud");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_fin_aud",
+            "outcomeKind": "completed",
+            "summary": "audit test"
+        });
+        dispatch(Method::RunFinalize, params, &store).unwrap();
+
+        let entries = store.get_audit_entries("r_fin_aud", 10).unwrap();
+        let finalized_entry = entries
+            .iter()
+            .find(|e| e.event_kind == "run_finalized")
+            .expect("run_finalized audit entry must be present");
+        assert!(finalized_entry.summary.contains("completed"));
+        assert_eq!(finalized_entry.run_id, "r_fin_aud");
     }
 }

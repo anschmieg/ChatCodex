@@ -310,7 +310,7 @@ Read-only listing of known runs.
 ### Returns
 
 - `runs: RunSummary[]` — array of compact run summaries
-  - `runId`, `workspaceId`, `userGoal`, `status`, `currentStep`, `totalSteps`, `createdAt`, `updatedAt`
+  - `runId`, `workspaceId`, `userGoal`, `status`, `currentStep`, `totalSteps`, `outcomeKind?` (Milestone 10), `createdAt`, `updatedAt`
 - `count: number` — number of runs returned
 
 ### Behavior
@@ -409,6 +409,36 @@ Same shape as `preview_patch_policy`.
 
 - Strictly read-only: no tests executed, no state modified
 - Reuses the same deterministic `evaluate_test_run` logic as `run_tests`
+
+## finalize_run (Milestone 10)
+
+Explicitly close a run with a structured outcome record.
+
+### Input
+
+- `runId`: string — Run ID from `codex_prepare_run`
+- `outcomeKind`: `"completed"` | `"failed"` | `"abandoned"` — final disposition
+- `summary`: string — short deterministic summary (max 500 chars)
+- `reason?`: string — optional reason, typically for `failed` or `abandoned` runs
+
+### Returns
+
+- `runId`
+- `outcomeKind` — the closure kind that was recorded
+- `finalizedAt` — ISO 8601 timestamp of finalization
+- `status` — new run status, e.g. `"finalized:completed"`
+- `recommendedNextAction` — deterministic guidance (no autonomous action taken)
+
+### Behavior
+
+- Exactly one finalization per run — repeated calls are rejected
+- `outcomeKind` must be `completed`, `failed`, or `abandoned`; other values are rejected
+- Sets `RunState.status` to `"finalized:<outcomeKind>"`
+- Persists a `RunOutcome` record in SQLite with `outcomeKind`, `summary`, `reason?`, `finalizedAt`
+- Appends a `run_finalized` audit trail entry
+- Returns deterministic `recommendedNextAction` guidance based on the outcome kind
+- Does **not** trigger any autonomous follow-up work
+- Closed runs expose `finalizedOutcome` in `get_run_state`, `refresh_run_state`, and `list_runs`
 
 ## Forbidden public tools
 

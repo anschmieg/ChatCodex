@@ -27,6 +27,8 @@ pub enum Method {
     // Milestone 9: deterministic preflight / preview (read-only)
     PatchPreflight,
     TestsPreflight,
+    // Milestone 10: deterministic run finalization
+    RunFinalize,
 }
 
 impl Method {
@@ -51,6 +53,8 @@ impl Method {
             // Milestone 9
             Self::PatchPreflight => "patch.preflight",
             Self::TestsPreflight => "tests.preflight",
+            // Milestone 10
+            Self::RunFinalize => "run.finalize",
         }
     }
 
@@ -75,6 +79,8 @@ impl Method {
             // Milestone 9
             "patch.preflight" => Some(Self::PatchPreflight),
             "tests.preflight" => Some(Self::TestsPreflight),
+            // Milestone 10
+            "run.finalize" => Some(Self::RunFinalize),
             _ => None,
         }
     }
@@ -100,6 +106,8 @@ impl Method {
             // Milestone 9
             Self::PatchPreflight,
             Self::TestsPreflight,
+            // Milestone 10
+            Self::RunFinalize,
         ]
     }
 }

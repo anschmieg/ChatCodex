@@ -127,9 +127,30 @@ ChatGPT-hosted model
 - 8 new TypeScript tests (schema validation + no-hidden-agent regression)
 - No backend model calls; no autonomous continuation; no state mutation from preview calls
 
+### Milestone 10: Deterministic Run Finalization, Outcome Recording, and Closure
+- Added `RunOutcome` struct to `deterministic-protocol`: `outcomeKind`, `summary`, `reason?`, `finalizedAt`
+- Added `RunFinalizeParams` and `RunFinalizeResult` to `deterministic-protocol`
+- Added `VALID_OUTCOME_KINDS` constant: `["completed", "failed", "abandoned"]`
+- Added `finalized_outcome: Option<RunOutcome>` to `RunState`, `RunRefreshResult`, and `RunGetResult`
+- Added `outcome_kind: Option<String>` to `RunSummary` for concise run listings
+- Added `run.finalize` internal daemon method with deterministic lifecycle rules:
+  - `outcome_kind` must be one of `completed`, `failed`, `abandoned`
+  - A run that is already finalized cannot be finalized again
+  - Run status is set to `finalized:<outcome_kind>`
+  - Finalization appends a `run_finalized` entry to the audit trail
+  - No autonomous follow-up work is triggered
+- Added `finalize_run` MCP tool in TypeScript (lifecycle tool, not a coarse autonomous tool)
+- TypeScript schema: `FinalizeRunInput` (Zod validated) — `runId`, `outcomeKind`, `summary`, `reason?`
+- SQLite migration adds `outcome_kind TEXT` and `finalized_outcome TEXT` columns with backward compatibility
+- Runs can now be inspected as active or finalized with authoritative closure metadata
+- 5 new Rust core tests (completed, failed, abandoned, invalid kind, duplicate finalization)
+- 18 new Rust daemon/handler tests (finalize paths, persistence roundtrip, audit trail, migration, registry)
+- 10 new TypeScript tests (8 schema validation + 2 no-hidden-agent regression)
+- No backend model calls; no autonomous continuation; no coarse tools introduced
+
 ## Current Implementation Surface
 
-### Public MCP Tools (16)
+### Public MCP Tools (17)
 
 | Tool | Description |
 |------|-------------|
@@ -149,8 +170,9 @@ ChatGPT-hosted model
 | `get_run_history` | Get audit trail of key events for a run (read-only) |
 | `preview_patch_policy` | Preview patch policy decision without applying changes (read-only, Milestone 9) |
 | `preview_test_policy` | Preview test-run policy decision without executing tests (read-only, Milestone 9) |
+| `finalize_run` | Explicitly close a run with a structured outcome record (Milestone 10) |
 
-### Internal Daemon Methods (16)
+### Internal Daemon Methods (17)
 
 | Method | Description |
 |--------|-------------|
@@ -170,10 +192,11 @@ ChatGPT-hosted model
 | `run.history` | Get audit trail entries for a run (read-only) |
 | `patch.preflight` | Evaluate patch policy without applying changes (read-only, Milestone 9) |
 | `tests.preflight` | Evaluate test-run policy without executing tests (read-only, Milestone 9) |
+| `run.finalize` | Close a run with structured outcome record (Milestone 10) |
 
 ### Run State Model
 
-**Statuses:** `prepared`, `active`, `blocked`, `awaiting_approval`, `done`, `failed`
+**Statuses:** `prepared`, `active`, `blocked`, `awaiting_approval`, `done`, `failed`, `finalized:completed`, `finalized:failed`, `finalized:abandoned`
 
 **Fields:**
 - `runId`, `workspaceId`, `userGoal`, `status`, `plan`
@@ -184,6 +207,7 @@ ChatGPT-hosted model
 - `latestDiffSummary`, `latestTestResult`
 - `retryableAction` (Milestone 6) — structured metadata for the last gated/failed action
 - `policyProfile` (Milestone 8) — effective `RunPolicy` governing the run
+- `finalizedOutcome` (Milestone 10) — structured outcome record for closed runs
 - `warnings`
 - `createdAt`, `updatedAt`
 
@@ -217,8 +241,8 @@ Policy knobs are now taken from the per-run `RunPolicy` profile (Milestone 8).
 
 ## Verified
 
-- ✅ 156 Rust tests pass (105 core + 49 daemon + 2 protocol)
-- ✅ 19 TypeScript tests pass (3 registry invariants + 6 policy schema + 10 Milestone 9 preflight)
+- ✅ 175 Rust tests pass (111 core + 62 daemon + 2 protocol)
+- ✅ 29 TypeScript tests pass (3 registry invariants + 6 policy schema + 10 Milestone 9 preflight + 10 Milestone 10 finalize)
 - ✅ Clippy clean
 - ✅ No forbidden methods or tools registered
 - ✅ No model SDK dependencies in deterministic crates
