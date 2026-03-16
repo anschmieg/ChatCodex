@@ -210,7 +210,7 @@ export const ApproveActionInput = {
 };
 
 // ---------------------------------------------------------------
-// list_runs  (Milestone 7; extended in Milestone 13)
+// list_runs  (Milestone 7; extended in Milestone 13, 15)
 // ---------------------------------------------------------------
 export const ListRunsInput = {
   limit: z
@@ -240,6 +240,13 @@ export const ListRunsInput = {
     .optional()
     .describe(
       "When true, return only archived runs. Takes precedence over includeArchived.",
+    ),
+  // Milestone 15: label filtering
+  label: z
+    .string()
+    .optional()
+    .describe(
+      "Filter by exact normalized label. When provided, only runs that carry this label are returned.",
     ),
 };
 
@@ -401,5 +408,46 @@ export const UnarchiveRunInput = {
     .max(500)
     .describe(
       "Human-readable reason for unarchiving (required for auditability)",
+    ),
+};
+
+// ---------------------------------------------------------------
+// annotate_run  (Milestone 15)
+//
+// Explicitly annotates a run with compact organization metadata:
+// one or more labels and/or an optional operator note.
+// This operation is deterministic, persisted, and audited.
+// It does not execute work, replan, reopen, finalize, archive,
+// unarchive, or supersede the run.
+// At least one of `labels` or `operatorNote` must be provided.
+// ---------------------------------------------------------------
+export const AnnotateRunInput = {
+  runId: z
+    .string()
+    .describe("Run ID to annotate"),
+  labels: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(
+          /^[a-z0-9_-]+$/,
+          "Labels must contain only lowercase ASCII letters, digits, hyphens, or underscores",
+        ),
+    )
+    .max(16)
+    .optional()
+    .describe(
+      "Compact normalized labels to set on the run. Replaces any existing labels. " +
+        "At most 16 labels, each at most 64 characters, lowercase alphanumeric/hyphens/underscores.",
+    ),
+  operatorNote: z
+    .string()
+    .max(1000)
+    .optional()
+    .describe(
+      "Optional concise operator note (max 1000 characters). Pass an empty string to clear. " +
+        "Non-semantic organization metadata only.",
     ),
 };

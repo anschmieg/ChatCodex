@@ -37,6 +37,8 @@ pub enum Method {
     RunArchive,
     // Milestone 14: deterministic run unarchiving
     RunUnarchive,
+    // Milestone 15: deterministic run labeling / annotation
+    RunAnnotate,
 }
 
 impl Method {
@@ -71,6 +73,8 @@ impl Method {
             Self::RunArchive => "run.archive",
             // Milestone 14
             Self::RunUnarchive => "run.unarchive",
+            // Milestone 15
+            Self::RunAnnotate => "run.annotate",
         }
     }
 
@@ -105,6 +109,8 @@ impl Method {
             "run.archive" => Some(Self::RunArchive),
             // Milestone 14
             "run.unarchive" => Some(Self::RunUnarchive),
+            // Milestone 15
+            "run.annotate" => Some(Self::RunAnnotate),
             _ => None,
         }
     }
@@ -140,6 +146,8 @@ impl Method {
             Self::RunArchive,
             // Milestone 14
             Self::RunUnarchive,
+            // Milestone 15
+            Self::RunAnnotate,
         ]
     }
 }

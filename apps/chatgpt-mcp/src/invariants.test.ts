@@ -22,6 +22,7 @@ import {
   ArchiveRunInput,
   UnarchiveRunInput,
   ListRunsInput,
+  AnnotateRunInput,
 } from "./schemas.js";
 
 describe("MCP tool registry invariants", () => {
@@ -64,6 +65,8 @@ describe("MCP tool registry invariants", () => {
       "archive_run",
       // Milestone 14: deterministic run unarchiving
       "unarchive_run",
+      // Milestone 15: deterministic run labeling / annotation
+      "annotate_run",
     ]);
     const actual = new Set(REGISTERED_TOOL_NAMES);
     assert.deepStrictEqual(actual, expected);
@@ -736,6 +739,144 @@ describe("No-hidden-agent regression (Milestone 14)", () => {
       assert.ok(
         method !== "run.unarchive",
         `run.unarchive must not be a forbidden agent-runtime method`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 15: AnnotateRunInput schema
+// ---------------------------------------------------------------
+describe("AnnotateRunInput schema (Milestone 15)", () => {
+  it("should accept labels-only annotation", () => {
+    const schema = z.object(AnnotateRunInput);
+    const result = schema.safeParse({ runId: "run-xyz", labels: ["auth", "ci"] });
+    assert.ok(result.success, "Labels-only annotation should pass validation");
+  });
+
+  it("should accept operatorNote-only annotation", () => {
+    const schema = z.object(AnnotateRunInput);
+    const result = schema.safeParse({ runId: "run-xyz", operatorNote: "tracking regression" });
+    assert.ok(result.success, "operatorNote-only annotation should pass validation");
+  });
+
+  it("should accept both labels and operatorNote", () => {
+    const schema = z.object(AnnotateRunInput);
+    const result = schema.safeParse({ runId: "run-xyz", labels: ["auth"], operatorNote: "note" });
+    assert.ok(result.success, "labels+operatorNote should pass validation");
+  });
+
+  it("should reject a label with spaces", () => {
+    const schema = z.object(AnnotateRunInput);
+    const result = schema.safeParse({ runId: "run-xyz", labels: ["bad label"] });
+    assert.ok(!result.success, "Label with spaces should fail validation");
+  });
+
+  it("should reject a label with uppercase", () => {
+    const schema = z.object(AnnotateRunInput);
+    const result = schema.safeParse({ runId: "run-xyz", labels: ["Auth"] });
+    assert.ok(!result.success, "Label with uppercase should fail validation");
+  });
+
+  it("should reject a label exceeding 64 characters", () => {
+    const schema = z.object(AnnotateRunInput);
+    const result = schema.safeParse({ runId: "run-xyz", labels: ["a".repeat(65)] });
+    assert.ok(!result.success, "Label exceeding 64 chars should fail validation");
+  });
+
+  it("should accept a label of exactly 64 characters", () => {
+    const schema = z.object(AnnotateRunInput);
+    const result = schema.safeParse({ runId: "run-xyz", labels: ["a".repeat(64)] });
+    assert.ok(result.success, "Label of exactly 64 chars should be valid");
+  });
+
+  it("should reject more than 16 labels", () => {
+    const schema = z.object(AnnotateRunInput);
+    const labels = Array.from({ length: 17 }, (_, i) => `label${i}`);
+    const result = schema.safeParse({ runId: "run-xyz", labels });
+    assert.ok(!result.success, "More than 16 labels should fail validation");
+  });
+
+  it("should accept exactly 16 labels", () => {
+    const schema = z.object(AnnotateRunInput);
+    const labels = Array.from({ length: 16 }, (_, i) => `label${i}`);
+    const result = schema.safeParse({ runId: "run-xyz", labels });
+    assert.ok(result.success, "Exactly 16 labels should be valid");
+  });
+
+  it("should reject operatorNote exceeding 1000 characters", () => {
+    const schema = z.object(AnnotateRunInput);
+    const result = schema.safeParse({ runId: "run-xyz", operatorNote: "x".repeat(1001) });
+    assert.ok(!result.success, "operatorNote exceeding 1000 chars should fail validation");
+  });
+
+  it("should accept operatorNote of exactly 1000 characters", () => {
+    const schema = z.object(AnnotateRunInput);
+    const result = schema.safeParse({ runId: "run-xyz", operatorNote: "x".repeat(1000) });
+    assert.ok(result.success, "operatorNote of exactly 1000 chars should be valid");
+  });
+
+  it("should reject missing runId", () => {
+    const schema = z.object(AnnotateRunInput);
+    const result = schema.safeParse({ labels: ["auth"] });
+    assert.ok(!result.success, "Missing runId should fail validation");
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 15: list_runs label filter schema
+// ---------------------------------------------------------------
+describe("ListRunsInput label field (Milestone 15)", () => {
+  it("should accept a label filter", () => {
+    const schema = z.object(ListRunsInput);
+    const result = schema.safeParse({ label: "auth" });
+    assert.ok(result.success, "label filter should be accepted");
+  });
+
+  it("should accept an absent label filter", () => {
+    const schema = z.object(ListRunsInput);
+    const result = schema.safeParse({});
+    assert.ok(result.success, "absent label filter should be accepted");
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 15: No-hidden-agent regression for annotate_run
+// ---------------------------------------------------------------
+describe("No-hidden-agent regression (Milestone 15)", () => {
+  it("annotate_run should be registered as a lifecycle tool", () => {
+    assert.ok(
+      REGISTERED_TOOL_NAMES.includes("annotate_run" as (typeof REGISTERED_TOOL_NAMES)[number]),
+      "annotate_run must be in the tool registry",
+    );
+  });
+
+  it("annotate_run is not an autonomous continuation tool", () => {
+    const coarsePatterns = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end"];
+    for (const pattern of coarsePatterns) {
+      assert.ok(
+        !"annotate_run".includes(pattern),
+        `"annotate_run" must not contain autonomous pattern "${pattern}"`,
+      );
+    }
+  });
+
+  it("daemon method run.annotate is not a forbidden agent-runtime method", () => {
+    const forbiddenMethods = [
+      "turn/start",
+      "turn/steer",
+      "review/start",
+      "codex",
+      "codex-reply",
+      "continue_run",
+      "resume_thread",
+      "agent_step",
+      "fix_end_to_end",
+    ];
+    for (const method of forbiddenMethods) {
+      assert.ok(
+        method !== "run.annotate",
+        `run.annotate must not be a forbidden agent-runtime method`,
       );
     }
   });

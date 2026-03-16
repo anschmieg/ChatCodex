@@ -608,6 +608,9 @@ pub struct RunState {
     /// Unarchive (restoration) metadata if this run has been explicitly unarchived (Milestone 14).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unarchive_metadata: Option<UnarchiveMetadata>,
+    /// Organization metadata: labels and optional operator note (Milestone 15).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<RunAnnotation>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -653,6 +656,12 @@ pub struct RunSummary {
     /// ISO 8601 timestamp of when this run was unarchived (Milestone 14).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unarchived_at: Option<String>,
+    /// Labels for this run (Milestone 15).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
+    /// Operator note for this run (Milestone 15).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_note: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -677,6 +686,10 @@ pub struct RunsListParams {
     /// Takes precedence over `include_archived`.
     #[serde(default)]
     pub archived_only: Option<bool>,
+    /// Filter by exact normalized label (Milestone 15).
+    /// When set, only runs that carry this label are returned.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -746,6 +759,9 @@ pub struct RunGetResult {
     /// Unarchive (restoration) metadata if this run has been explicitly unarchived (Milestone 14).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unarchive_metadata: Option<UnarchiveMetadata>,
+    /// Organization metadata: labels and optional operator note (Milestone 15).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<RunAnnotation>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1031,6 +1047,71 @@ pub struct RunArchiveResult {
     pub archived_at: String,
     /// Human-readable reason supplied for archiving.
     pub reason: String,
+    /// Confirmation message.
+    pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// run.annotate  (Milestone 15)
+// ---------------------------------------------------------------------------
+
+/// Compact deterministic organization metadata attached to a run.
+///
+/// Labels are normalized to lowercase, deduplicated, and sorted.
+/// The operator note is a free-text annotation with no semantic meaning
+/// to the backend — it is purely organizational metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAnnotation {
+    /// Zero or more lowercase normalized labels/tags for this run.
+    /// Each label is bounded to `LABEL_MAX_LEN` characters.
+    /// The total number of labels is bounded to `LABEL_MAX_COUNT`.
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// Optional operator note — concise free-text annotation for organization.
+    /// Bounded to `OPERATOR_NOTE_MAX_LEN` characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_note: Option<String>,
+}
+
+/// Maximum length of a single label (characters).
+pub const LABEL_MAX_LEN: usize = 64;
+/// Maximum number of labels on a single run.
+pub const LABEL_MAX_COUNT: usize = 16;
+/// Maximum length of the operator note (characters).
+pub const OPERATOR_NOTE_MAX_LEN: usize = 1000;
+
+/// Parameters for `run.annotate` — update organization metadata on a run.
+///
+/// This operation is purely organizational:
+/// - it does not execute work
+/// - it does not refresh, replan, reopen, finalize, archive, unarchive, or
+///   supersede the run
+/// - labels and note are persisted and visible in read surfaces
+/// - an audit entry is appended
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAnnotateParams {
+    pub run_id: String,
+    /// Full replacement label set (normalized at validation time).
+    /// When provided, replaces the existing label set entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
+    /// Full replacement operator note.
+    /// When provided, replaces any existing note.
+    /// Pass an empty string to clear the note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_note: Option<String>,
+}
+
+/// Result of `run.annotate`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAnnotateResult {
+    /// ID of the annotated run.
+    pub run_id: String,
+    /// The annotation after applying this update.
+    pub annotation: RunAnnotation,
     /// Confirmation message.
     pub message: String,
 }

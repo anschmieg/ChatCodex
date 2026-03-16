@@ -254,9 +254,35 @@ ChatGPT-hosted model
 - 9 new TypeScript tests (6 schema validation + 3 no-hidden-agent regression)
 - No backend model calls; no autonomous continuation; no coarse tools introduced
 
+### Milestone 15: Deterministic Run Labeling and Operator-Visible Organization Metadata
+- Added `RunAnnotation` struct to `deterministic-protocol` (`labels: Vec<String>`, `operator_note: Option<String>`)
+- Added `annotation: Option<RunAnnotation>` field to `RunState`
+- Added `labels: Vec<String>` and `operator_note: Option<String>` fields to `RunSummary`
+- Added `annotation` field to `RunGetResult`
+- Added `Method::RunAnnotate` (`run.annotate`) to the daemon method enum
+- Added constants: `LABEL_MAX_LEN = 64`, `LABEL_MAX_COUNT = 16`, `OPERATOR_NOTE_MAX_LEN = 1000`
+- Added `RunAnnotateParams` / `RunAnnotateResult` structs
+- Added `label: Option<String>` filter field to `RunsListParams`
+- Added `deterministic_core::run_annotate` module with deterministic rules:
+  - Labels normalized to lowercase, deduplicated, sorted
+  - Label validation: max 64 chars, only `[a-z0-9_-]`, at most 16 per run
+  - Operator note bounded to 1000 chars; empty string clears the note
+  - Requires at least one of `labels` or `operator_note`
+  - Does not execute work, replan, reopen, finalize, archive, unarchive, or supersede
+- Added `handle_run_annotate` in daemon handlers
+- Updated `handle_run_get` to expose `annotation` in `RunGetResult`
+- Updated `handle_runs_list` to pass label filter to persistence; post-query in-Rust label filtering
+- SQLite: added `annotation TEXT` column with backward-compatible migration (M15)
+- `run_annotated` audit entry appended with labels and note_updated flag on successful annotation
+- Added `annotate_run` to `REGISTERED_TOOL_NAMES` and registered the MCP tool
+- Added `AnnotateRunInput` Zod schema; extended `ListRunsInput` with `label?: string`
+- 23 new Rust tests (core: normalization, deduplication, invalid character rejection, note validation, empty params rejection, persistence roundtrip, status unchanged; handler: labels, note, normalization, persistence, audit, run.get visibility, runs.list visibility, label filter, status unchanged, empty rejection, invalid label rejection; persistence: annotation roundtrip, default None, list filter by label, summary carries annotation, M15 migration)
+- 17 new TypeScript tests (12 schema validation + 2 list label field + 3 no-hidden-agent regression)
+- No backend model calls; no autonomous continuation; no coarse tools introduced
+
 ## Current Implementation Surface
 
-### Public MCP Tools (21)
+### Public MCP Tools (22)
 
 | Tool | Description |
 |------|-------------|
@@ -271,7 +297,7 @@ ChatGPT-hosted model
 | `refresh_run_state` | Read-only run state snapshot |
 | `replan_run` | Deterministic rule-based replanning |
 | `approve_action` | Resolve pending approvals |
-| `list_runs` | List known runs with status and metadata; supports `includeArchived` / `archivedOnly` filtering (read-only) |
+| `list_runs` | List known runs with status and metadata; supports `includeArchived` / `archivedOnly` / `label` filtering (read-only) |
 | `get_run_state` | Get authoritative current state of a run (read-only) |
 | `get_run_history` | Get audit trail of key events for a run (read-only) |
 | `preview_patch_policy` | Preview patch policy decision without applying changes (read-only, Milestone 9) |
@@ -281,8 +307,9 @@ ChatGPT-hosted model
 | `supersede_run` | Create a successor run that explicitly replaces a finalized run with preserved lineage (Milestone 12) |
 | `archive_run` | Explicitly archive a finalized run so it remains preserved but out of the active working set (Milestone 13) |
 | `unarchive_run` | Explicitly unarchive (restore) an archived run back to the default active working set (Milestone 14) |
+| `annotate_run` | Explicitly annotate a run with labels and/or operator note for organization (Milestone 15) |
 
-### Internal Daemon Methods (21)
+### Internal Daemon Methods (22)
 
 | Method | Description |
 |--------|-------------|
@@ -297,8 +324,8 @@ ChatGPT-hosted model
 | `tests.run` | Run tests with policy checks |
 | `git.diff` | Diff summary/patch |
 | `approval.resolve` | Resolve pending approvals |
-| `runs.list` | List runs; supports `include_archived` / `archived_only` filtering (read-only) |
-| `run.get` | Get full run state with approvals, retryable action, and archive/unarchive metadata (read-only) |
+| `runs.list` | List runs; supports `include_archived` / `archived_only` / `label` filtering (read-only) |
+| `run.get` | Get full run state with approvals, retryable action, archive/unarchive/annotation metadata (read-only) |
 | `run.history` | Get audit trail entries for a run (read-only) |
 | `patch.preflight` | Evaluate patch policy without applying changes (read-only, Milestone 9) |
 | `tests.preflight` | Evaluate test-run policy without executing tests (read-only, Milestone 9) |
@@ -307,6 +334,7 @@ ChatGPT-hosted model
 | `run.supersede` | Create a successor run that supersedes a finalized run with preserved lineage (Milestone 12) |
 | `run.archive` | Archive a finalized run for retention with audit trail (Milestone 13) |
 | `run.unarchive` | Unarchive (restore) an archived run back to the default active working set (Milestone 14) |
+| `run.annotate` | Annotate a run with labels and/or operator note; audited, persisted, deterministic (Milestone 15) |
 
 ### Run State Model
 
@@ -325,6 +353,8 @@ ChatGPT-hosted model
 - `reopenMetadata` (Milestone 11) — compact reopen lineage metadata for reopened runs
 - `supersedes_run_id` / `superseded_by_run_id` / `supersession_reason` / `superseded_at` (Milestone 12) — supersession lineage
 - `archiveMetadata` (Milestone 13) — compact archive metadata (`reason`, `archivedAt`) for archived runs
+- `unarchiveMetadata` (Milestone 14) — compact unarchive metadata (`reason`, `unarchivedAt`) for restored runs
+- `annotation` (Milestone 15) — compact organization metadata: `labels: Vec<String>` and `operator_note: Option<String>`
 - `warnings`
 - `createdAt`, `updatedAt`
 
@@ -358,8 +388,8 @@ Policy knobs are now taken from the per-run `RunPolicy` profile (Milestone 8).
 
 ## Verified
 
-- ✅ 197 Rust tests pass (120 core + 75 daemon + 2 protocol)
-- ✅ 38 TypeScript tests pass (3 registry invariants + 6 policy schema + 4 Milestone 9 preflight + 2 Milestone 9 regression + 8 Milestone 10 finalize + 2 Milestone 10 regression + 6 Milestone 11 reopen schema + 3 Milestone 11 regression)
+- ✅ 309 Rust tests pass (175 core + 132 daemon + 2 protocol)
+- ✅ 90 TypeScript tests pass
 - ✅ Clippy clean
 - ✅ No forbidden methods or tools registered
 - ✅ No model SDK dependencies in deterministic crates

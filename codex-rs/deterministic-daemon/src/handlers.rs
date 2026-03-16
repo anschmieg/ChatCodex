@@ -44,6 +44,8 @@ pub fn dispatch(
         Method::RunArchive => handle_run_archive(params, store),
         // Milestone 14: deterministic run unarchiving
         Method::RunUnarchive => handle_run_unarchive(params, store),
+        // Milestone 15: deterministic run labeling / annotation
+        Method::RunAnnotate => handle_run_annotate(params, store),
     }
 }
 
@@ -417,12 +419,18 @@ fn handle_runs_list(
     let limit = p.limit.unwrap_or(20).min(100);
     let include_archived = p.include_archived.unwrap_or(false);
     let archived_only = p.archived_only.unwrap_or(false);
+    // Milestone 15: normalize the label filter before passing to the store.
+    let label_filter_owned = p
+        .label
+        .as_deref()
+        .map(|l| l.trim().to_lowercase());
     let runs = store.list_runs(
         limit,
         p.workspace_id.as_deref(),
         p.status.as_deref(),
         include_archived,
         archived_only,
+        label_filter_owned.as_deref(),
     )?;
     let count = runs.len();
     let result = RunsListResult { runs, count };
@@ -454,6 +462,7 @@ fn handle_run_get(
     let superseded_at = state.superseded_at.clone();
     let archive_metadata = state.archive_metadata.clone();
     let unarchive_metadata = state.unarchive_metadata.clone();
+    let annotation = state.annotation.clone();
 
     let result = RunGetResult {
         run_state: state.clone(),
@@ -473,6 +482,7 @@ fn handle_run_get(
         superseded_at,
         archive_metadata,
         unarchive_metadata,
+        annotation,
     };
     Ok((serde_json::to_value(result)?, Some(state)))
 }
@@ -797,6 +807,51 @@ fn handle_run_unarchive(
     Ok((serde_json::to_value(result)?, Some(state)))
 }
 
+// ---- Milestone 15: deterministic run labeling / annotation ----
+
+/// Annotate a run with organization metadata (labels and/or operator note).
+///
+/// Deterministic rules:
+/// - Labels are normalized to lowercase, deduplicated, and sorted.
+/// - Labels must consist of lowercase ASCII letters, digits, hyphens, or
+///   underscores; each bounded to `LABEL_MAX_LEN` chars; at most
+///   `LABEL_MAX_COUNT` labels per run.
+/// - Operator note is bounded to `OPERATOR_NOTE_MAX_LEN` characters.
+/// - At least one of `labels` or `operatorNote` must be provided.
+/// - This operation does not execute work, replan, reopen, finalize,
+///   archive, unarchive, or supersede the run.
+/// - An audit entry is appended.
+fn handle_run_annotate(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunAnnotateParams = serde_json::from_value(params)?;
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let result = deterministic_core::run_annotate::annotate(&p, &mut state)?;
+    store.save_run(&state)?;
+
+    // Audit trail: run annotated.
+    let labels_json = serde_json::to_string(&result.annotation.labels).unwrap_or_default();
+    let note_updated = result.annotation.operator_note.is_some() || p.operator_note.as_deref() == Some("");
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "run_annotated",
+        &format!("Run annotated: labels={labels_json}"),
+        Some(
+            &serde_json::json!({
+                "labels": result.annotation.labels,
+                "note_updated": note_updated,
+            })
+            .to_string(),
+        ),
+    );
+
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -831,6 +886,7 @@ mod tests {
             superseded_at: None,
             archive_metadata: None,
             unarchive_metadata: None,
+            annotation: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -1863,5 +1919,217 @@ mod tests {
         assert!(loaded.archive_metadata.is_some());
         // Status must remain finalized.
         assert!(loaded.status.starts_with("finalized:"));
+    }
+
+    // ---- Milestone 15: deterministic run labeling / annotation ----
+
+    #[test]
+    fn run_annotate_sets_labels() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ann_labels");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_ann_labels",
+            "labels": ["auth", "infra"]
+        });
+        let (val, _) = dispatch(Method::RunAnnotate, params, &store).unwrap();
+        let result: RunAnnotateResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.run_id, "r_ann_labels");
+        assert_eq!(result.annotation.labels, vec!["auth", "infra"]);
+    }
+
+    #[test]
+    fn run_annotate_sets_operator_note() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ann_note");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_ann_note",
+            "operatorNote": "tracking the auth regression"
+        });
+        let (val, _) = dispatch(Method::RunAnnotate, params, &store).unwrap();
+        let result: RunAnnotateResult = serde_json::from_value(val).unwrap();
+        assert_eq!(
+            result.annotation.operator_note.as_deref(),
+            Some("tracking the auth regression")
+        );
+    }
+
+    #[test]
+    fn run_annotate_normalizes_labels() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ann_norm");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_ann_norm",
+            "labels": ["INFRA", "Auth", "auth"]
+        });
+        let (val, _) = dispatch(Method::RunAnnotate, params, &store).unwrap();
+        let result: RunAnnotateResult = serde_json::from_value(val).unwrap();
+        // Normalized, deduped, sorted.
+        assert_eq!(result.annotation.labels, vec!["auth", "infra"]);
+    }
+
+    #[test]
+    fn run_annotate_persists_to_store() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ann_persist");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_ann_persist",
+            "labels": ["ci"],
+            "operatorNote": "CI regression"
+        });
+        dispatch(Method::RunAnnotate, params, &store).unwrap();
+
+        let loaded = store.get_run("r_ann_persist").unwrap().unwrap();
+        let annotation = loaded.annotation.expect("annotation must be persisted");
+        assert_eq!(annotation.labels, vec!["ci"]);
+        assert_eq!(annotation.operator_note.as_deref(), Some("CI regression"));
+    }
+
+    #[test]
+    fn run_annotate_appends_audit_entry() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ann_audit");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_ann_audit",
+            "labels": ["blocked"]
+        });
+        dispatch(Method::RunAnnotate, params, &store).unwrap();
+
+        let entries = store.get_audit_entries("r_ann_audit", 50).unwrap();
+        let has_entry = entries.iter().any(|e| e.event_kind == "run_annotated");
+        assert!(has_entry, "run_annotated audit entry must be appended");
+    }
+
+    #[test]
+    fn run_annotate_visible_in_run_get() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ann_get");
+        store.save_run(&state).unwrap();
+
+        let ann_params = serde_json::json!({
+            "runId": "r_ann_get",
+            "labels": ["feature"],
+            "operatorNote": "feature work"
+        });
+        dispatch(Method::RunAnnotate, ann_params, &store).unwrap();
+
+        let get_params = serde_json::json!({ "runId": "r_ann_get" });
+        let (val, _) = dispatch(Method::RunGet, get_params, &store).unwrap();
+        let result: RunGetResult = serde_json::from_value(val).unwrap();
+        let annotation = result.annotation.expect("annotation must appear in run.get");
+        assert_eq!(annotation.labels, vec!["feature"]);
+        assert_eq!(annotation.operator_note.as_deref(), Some("feature work"));
+    }
+
+    #[test]
+    fn run_annotate_visible_in_runs_list() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ann_list");
+        store.save_run(&state).unwrap();
+
+        let ann_params = serde_json::json!({
+            "runId": "r_ann_list",
+            "labels": ["review"]
+        });
+        dispatch(Method::RunAnnotate, ann_params, &store).unwrap();
+
+        let (val, _) = dispatch(Method::RunsList, serde_json::json!({}), &store).unwrap();
+        let list: RunsListResult = serde_json::from_value(val).unwrap();
+        let summary = list.runs.iter().find(|r| r.run_id == "r_ann_list").unwrap();
+        assert_eq!(summary.labels, vec!["review"]);
+    }
+
+    #[test]
+    fn run_annotate_list_filter_by_label() {
+        let store = Store::open_in_memory().unwrap();
+
+        let mut auth_state = make_run_state("r_filter_auth");
+        auth_state.workspace_id = "/tmp/ws".into();
+        store.save_run(&auth_state).unwrap();
+
+        let mut infra_state = make_run_state("r_filter_infra");
+        infra_state.workspace_id = "/tmp/ws".into();
+        store.save_run(&infra_state).unwrap();
+
+        // Annotate only auth run.
+        let ann_params = serde_json::json!({
+            "runId": "r_filter_auth",
+            "labels": ["auth"]
+        });
+        dispatch(Method::RunAnnotate, ann_params, &store).unwrap();
+
+        // Filter by label=auth.
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({ "label": "auth" }),
+            &store,
+        )
+        .unwrap();
+        let list: RunsListResult = serde_json::from_value(val).unwrap();
+        assert!(
+            list.runs.iter().any(|r| r.run_id == "r_filter_auth"),
+            "auth-labeled run must appear in label=auth filter"
+        );
+        assert!(
+            !list.runs.iter().any(|r| r.run_id == "r_filter_infra"),
+            "unlabeled run must NOT appear in label=auth filter"
+        );
+    }
+
+    #[test]
+    fn run_annotate_does_not_change_status() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_ann_status");
+        state.status = "active".into();
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_ann_status",
+            "labels": ["ci"]
+        });
+        dispatch(Method::RunAnnotate, params, &store).unwrap();
+
+        let loaded = store.get_run("r_ann_status").unwrap().unwrap();
+        assert_eq!(loaded.status, "active", "annotate must not change status");
+    }
+
+    #[test]
+    fn run_annotate_rejects_empty_params() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ann_empty");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({ "runId": "r_ann_empty" });
+        let err = dispatch(Method::RunAnnotate, params, &store).unwrap_err();
+        assert!(
+            err.to_string().contains("at least one"),
+            "must require at least one of labels/operatorNote"
+        );
+    }
+
+    #[test]
+    fn run_annotate_rejects_invalid_label() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_ann_invalid");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_ann_invalid",
+            "labels": ["bad label with spaces"]
+        });
+        let err = dispatch(Method::RunAnnotate, params, &store).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid character"),
+            "must reject labels with invalid characters"
+        );
     }
 }

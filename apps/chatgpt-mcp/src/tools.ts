@@ -33,6 +33,7 @@ import {
   SupersedeRunInput,
   ArchiveRunInput,
   UnarchiveRunInput,
+  AnnotateRunInput,
 } from "./schemas.js";
 
 /**
@@ -83,6 +84,8 @@ export const REGISTERED_TOOL_NAMES = [
   "archive_run",
   // Milestone 14: deterministic run unarchiving
   "unarchive_run",
+  // Milestone 15: deterministic run labeling / annotation
+  "annotate_run",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -275,10 +278,10 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
     },
   );
 
-  // ---- list_runs (Milestone 7; extended in Milestone 13) ----
+  // ---- list_runs (Milestone 7; extended in Milestone 13, 15) ----
   server.tool(
     "list_runs",
-    "List known runs with status and metadata (read-only). Supports archive filtering via optional parameters: set includeArchived=true to include archived runs, or archivedOnly=true to return only archived runs.",
+    "List known runs with status and metadata (read-only). Supports archive filtering via optional parameters: set includeArchived=true to include archived runs, or archivedOnly=true to return only archived runs. Use label= to filter by exact normalized label.",
     ListRunsInput,
     async (params) => {
       const result = await client.call("runs.list", {
@@ -287,6 +290,7 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
         status: params.status,
         includeArchived: params.includeArchived,
         archivedOnly: params.archivedOnly,
+        label: params.label,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -435,6 +439,28 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
       const result = await client.call("run.unarchive", {
         runId: params.runId,
         reason: params.reason,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- annotate_run (Milestone 15) ----
+  server.tool(
+    "annotate_run",
+    "Explicitly annotate a run with compact organization metadata: zero or more labels and/or an optional operator note. " +
+      "Labels are normalized to lowercase, deduplicated, and sorted. " +
+      "At least one of labels or operatorNote must be provided. " +
+      "Annotating does not execute work, replan, reopen, finalize, archive, unarchive, or supersede the run. " +
+      "Metadata is persisted and visible in get_run_state and list_runs. " +
+      "Use label filtering in list_runs to retrieve runs by label.",
+    AnnotateRunInput,
+    async (params) => {
+      const result = await client.call("run.annotate", {
+        runId: params.runId,
+        labels: params.labels,
+        operatorNote: params.operatorNote,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
