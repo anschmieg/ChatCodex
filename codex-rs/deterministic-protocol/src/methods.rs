@@ -42,6 +42,9 @@ pub enum Method {
     // Milestone 16: deterministic run pinning
     RunPin,
     RunUnpin,
+    // Milestone 17: deterministic run snoozing
+    RunSnooze,
+    RunUnsnooze,
 }
 
 impl Method {
@@ -81,6 +84,9 @@ impl Method {
             // Milestone 16
             Self::RunPin => "run.pin",
             Self::RunUnpin => "run.unpin",
+            // Milestone 17
+            Self::RunSnooze => "run.snooze",
+            Self::RunUnsnooze => "run.unsnooze",
         }
     }
 
@@ -120,6 +126,9 @@ impl Method {
             // Milestone 16
             "run.pin" => Some(Self::RunPin),
             "run.unpin" => Some(Self::RunUnpin),
+            // Milestone 17
+            "run.snooze" => Some(Self::RunSnooze),
+            "run.unsnooze" => Some(Self::RunUnsnooze),
             _ => None,
         }
     }
@@ -160,6 +169,9 @@ impl Method {
             // Milestone 16
             Self::RunPin,
             Self::RunUnpin,
+            // Milestone 17
+            Self::RunSnooze,
+            Self::RunUnsnooze,
         ]
     }
 }

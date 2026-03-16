@@ -49,6 +49,9 @@ pub fn dispatch(
         // Milestone 16: deterministic run pinning
         Method::RunPin => handle_run_pin(params, store),
         Method::RunUnpin => handle_run_unpin(params, store),
+        // Milestone 17: deterministic run snoozing
+        Method::RunSnooze => handle_run_snooze(params, store),
+        Method::RunUnsnooze => handle_run_unsnooze(params, store),
     }
 }
 
@@ -429,6 +432,9 @@ fn handle_runs_list(
         .map(|l| l.trim().to_lowercase());
     // Milestone 16: pinned_only filter.
     let pinned_only = p.pinned_only.unwrap_or(false);
+    // Milestone 17: snooze filtering.
+    let include_snoozed = p.include_snoozed.unwrap_or(false);
+    let snoozed_only = p.snoozed_only.unwrap_or(false);
     let runs = store.list_runs(
         limit,
         p.workspace_id.as_deref(),
@@ -437,6 +443,8 @@ fn handle_runs_list(
         archived_only,
         label_filter_owned.as_deref(),
         pinned_only,
+        include_snoozed,
+        snoozed_only,
     )?;
     let count = runs.len();
     let result = RunsListResult { runs, count };
@@ -934,6 +942,78 @@ fn handle_run_unpin(
     Ok((serde_json::to_value(result)?, Some(state)))
 }
 
+/// Snooze a run, deferring it out of the default visible working set.
+///
+/// Deterministic rules:
+/// - Any run may be snoozed regardless of current status.
+/// - Snoozing a run that is already snoozed replaces the snooze metadata (idempotent).
+/// - This operation updates snooze metadata only.
+/// - It does not execute work, replan, reopen, finalize, archive, unarchive,
+///   pin, unpin, or supersede the run.
+/// - An audit entry is appended.
+fn handle_run_snooze(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunSnoozeParams = serde_json::from_value(params)?;
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let result = deterministic_core::run_snooze::snooze(&p, &mut state)?;
+    store.save_run(&state)?;
+
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "run_snoozed",
+        &format!("Run snoozed: {}", result.reason),
+        Some(
+            &serde_json::json!({
+                "reason": result.reason,
+                "snoozed_at": result.snoozed_at,
+            })
+            .to_string(),
+        ),
+    );
+
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
+/// Unsnooze a run, restoring it to the normal visible working set.
+///
+/// Deterministic rules:
+/// - Only snoozed runs (with `snooze_metadata` set) may be unsnoozed.
+/// - This operation clears snooze metadata only.
+/// - It does not execute work, replan, reopen, finalize, archive, unarchive,
+///   pin, unpin, or supersede the run.
+/// - An audit entry is appended.
+fn handle_run_unsnooze(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunUnsnoozeParams = serde_json::from_value(params)?;
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let result = deterministic_core::run_unsnooze::unsnooze(&p, &mut state)?;
+    store.save_run(&state)?;
+
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "run_unsnoozed",
+        &format!("Run unsnoozed: {}", p.reason),
+        Some(
+            &serde_json::json!({
+                "reason": p.reason,
+            })
+            .to_string(),
+        ),
+    );
+
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -970,6 +1050,7 @@ mod tests {
             unarchive_metadata: None,
             annotation: None,
             pin_metadata: None,
+            snooze_metadata: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -2214,5 +2295,271 @@ mod tests {
             err.to_string().contains("invalid character"),
             "must reject labels with invalid characters"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Milestone 17: run.snooze / run.unsnooze tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn run_snooze_sets_snooze_metadata() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_snz_1");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_snz_1",
+            "reason": "blocked on external dep"
+        });
+        let (val, run_state) = dispatch(Method::RunSnooze, params, &store).unwrap();
+        let result: RunSnoozeResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.run_id, "r_snz_1");
+        assert_eq!(result.reason, "blocked on external dep");
+        assert!(!result.snoozed_at.is_empty());
+        assert!(run_state.is_some());
+        assert!(run_state.unwrap().snooze_metadata.is_some());
+    }
+
+    #[test]
+    fn run_snooze_persists_to_store() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_snz_persist");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_snz_persist",
+            "reason": "deferred"
+        });
+        dispatch(Method::RunSnooze, params, &store).unwrap();
+
+        let loaded = store.get_run("r_snz_persist").unwrap().unwrap();
+        assert!(loaded.snooze_metadata.is_some());
+        assert_eq!(loaded.snooze_metadata.unwrap().reason, "deferred");
+    }
+
+    #[test]
+    fn run_snooze_appends_audit_entry() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_snz_audit");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_snz_audit",
+            "reason": "audit test"
+        });
+        dispatch(Method::RunSnooze, params, &store).unwrap();
+
+        let history = store.get_run_history("r_snz_audit", 10).unwrap();
+        let entry = history.iter().find(|e| e.event_kind == "run_snoozed");
+        assert!(entry.is_some(), "run_snoozed audit entry must be appended");
+    }
+
+    #[test]
+    fn run_snooze_does_not_change_status() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_snz_status");
+        state.status = "active".into();
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_snz_status",
+            "reason": "snooze"
+        });
+        dispatch(Method::RunSnooze, params, &store).unwrap();
+
+        let loaded = store.get_run("r_snz_status").unwrap().unwrap();
+        assert_eq!(loaded.status, "active", "snooze must not change status");
+    }
+
+    #[test]
+    fn run_snooze_excluded_from_default_list() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_snz_list");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_snz_list",
+            "reason": "defer"
+        });
+        dispatch(Method::RunSnooze, params, &store).unwrap();
+
+        let list_params = serde_json::json!({ "limit": 50 });
+        let (val, _) = dispatch(Method::RunsList, list_params, &store).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        let found = result.runs.iter().any(|r| r.run_id == "r_snz_list");
+        assert!(!found, "snoozed run must be excluded from default list");
+    }
+
+    #[test]
+    fn run_snooze_included_with_include_snoozed() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_snz_incl");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_snz_incl",
+            "reason": "defer"
+        });
+        dispatch(Method::RunSnooze, params, &store).unwrap();
+
+        let list_params = serde_json::json!({ "limit": 50, "includeSnoozed": true });
+        let (val, _) = dispatch(Method::RunsList, list_params, &store).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        let found = result.runs.iter().any(|r| r.run_id == "r_snz_incl");
+        assert!(found, "snoozed run must appear when includeSnoozed=true");
+    }
+
+    #[test]
+    fn run_snooze_snoozed_only_filter() {
+        let store = Store::open_in_memory().unwrap();
+        let state_a = make_run_state("r_snz_only_a");
+        let state_b = make_run_state("r_snz_only_b");
+        store.save_run(&state_a).unwrap();
+        store.save_run(&state_b).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_snz_only_a",
+            "reason": "defer"
+        });
+        dispatch(Method::RunSnooze, params, &store).unwrap();
+
+        let list_params = serde_json::json!({ "limit": 50, "snoozedOnly": true });
+        let (val, _) = dispatch(Method::RunsList, list_params, &store).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        assert!(result.runs.iter().any(|r| r.run_id == "r_snz_only_a"), "snoozed run must appear");
+        assert!(!result.runs.iter().any(|r| r.run_id == "r_snz_only_b"), "non-snoozed run must not appear");
+    }
+
+    #[test]
+    fn run_snooze_rejects_empty_reason() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_snz_empty");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_snz_empty",
+            "reason": ""
+        });
+        let err = dispatch(Method::RunSnooze, params, &store).unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn run_unsnooze_clears_snooze_metadata() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_unsnz_1");
+        store.save_run(&state).unwrap();
+
+        // First snooze it.
+        let snooze_params = serde_json::json!({
+            "runId": "r_unsnz_1",
+            "reason": "blocked"
+        });
+        dispatch(Method::RunSnooze, snooze_params, &store).unwrap();
+
+        // Then unsnooze it.
+        let unsnooze_params = serde_json::json!({
+            "runId": "r_unsnz_1",
+            "reason": "resolved"
+        });
+        let (val, run_state) = dispatch(Method::RunUnsnooze, unsnooze_params, &store).unwrap();
+        let result: RunUnsnoozeResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.run_id, "r_unsnz_1");
+        assert!(run_state.is_some());
+        assert!(run_state.unwrap().snooze_metadata.is_none());
+    }
+
+    #[test]
+    fn run_unsnooze_persists_to_store() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_unsnz_persist");
+        store.save_run(&state).unwrap();
+
+        dispatch(
+            Method::RunSnooze,
+            serde_json::json!({"runId": "r_unsnz_persist", "reason": "defer"}),
+            &store,
+        ).unwrap();
+        dispatch(
+            Method::RunUnsnooze,
+            serde_json::json!({"runId": "r_unsnz_persist", "reason": "ready"}),
+            &store,
+        ).unwrap();
+
+        let loaded = store.get_run("r_unsnz_persist").unwrap().unwrap();
+        assert!(loaded.snooze_metadata.is_none(), "snooze_metadata must be cleared after unsnooze");
+    }
+
+    #[test]
+    fn run_unsnooze_appends_audit_entry() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_unsnz_audit");
+        store.save_run(&state).unwrap();
+
+        dispatch(
+            Method::RunSnooze,
+            serde_json::json!({"runId": "r_unsnz_audit", "reason": "defer"}),
+            &store,
+        ).unwrap();
+        dispatch(
+            Method::RunUnsnooze,
+            serde_json::json!({"runId": "r_unsnz_audit", "reason": "ready"}),
+            &store,
+        ).unwrap();
+
+        let history = store.get_run_history("r_unsnz_audit", 10).unwrap();
+        let entry = history.iter().find(|e| e.event_kind == "run_unsnoozed");
+        assert!(entry.is_some(), "run_unsnoozed audit entry must be appended");
+    }
+
+    #[test]
+    fn run_unsnooze_rejects_non_snoozed() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_unsnz_not");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_unsnz_not",
+            "reason": "restore"
+        });
+        let err = dispatch(Method::RunUnsnooze, params, &store).unwrap_err();
+        assert!(err.to_string().contains("not snoozed"));
+    }
+
+    #[test]
+    fn run_unsnooze_restores_to_default_list() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_unsnz_list");
+        store.save_run(&state).unwrap();
+
+        dispatch(
+            Method::RunSnooze,
+            serde_json::json!({"runId": "r_unsnz_list", "reason": "defer"}),
+            &store,
+        ).unwrap();
+
+        // Confirm excluded from default list.
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"limit": 50}),
+            &store,
+        ).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        assert!(!result.runs.iter().any(|r| r.run_id == "r_unsnz_list"));
+
+        // Unsnooze and confirm restored.
+        dispatch(
+            Method::RunUnsnooze,
+            serde_json::json!({"runId": "r_unsnz_list", "reason": "ready"}),
+            &store,
+        ).unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"limit": 50}),
+            &store,
+        ).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        assert!(result.runs.iter().any(|r| r.run_id == "r_unsnz_list"), "unsnoozed run must appear in default list");
     }
 }

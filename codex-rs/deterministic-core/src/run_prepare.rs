@@ -90,6 +90,7 @@ pub fn prepare(params: &RunPrepareParams) -> Result<(RunPrepareResult, RunState)
         unarchive_metadata: None,
         annotation: None,
         pin_metadata: None,
+        snooze_metadata: None,
         created_at: now.clone(),
         updated_at: now,
     };

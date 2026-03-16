@@ -22,5 +22,7 @@ pub mod run_replan;
 pub mod run_supersede;
 pub mod run_unarchive;
 pub mod run_unpin;
+pub mod run_snooze;
+pub mod run_unsnooze;
 pub mod tests_run;
 pub mod workspace_summary;

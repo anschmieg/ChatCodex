@@ -614,6 +614,9 @@ pub struct RunState {
     /// Pin metadata if this run has been explicitly pinned (Milestone 16).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin_metadata: Option<PinMetadata>,
+    /// Snooze metadata if this run has been explicitly snoozed (Milestone 17).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snooze_metadata: Option<SnoozeMetadata>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -674,6 +677,15 @@ pub struct RunSummary {
     /// ISO 8601 timestamp of when this run was pinned (Milestone 16).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_at: Option<String>,
+    /// Whether this run is currently snoozed (Milestone 17).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_snoozed: Option<bool>,
+    /// Snooze reason if the run is snoozed (Milestone 17).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snooze_reason: Option<String>,
+    /// ISO 8601 timestamp of when this run was snoozed (Milestone 17).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snoozed_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -705,6 +717,14 @@ pub struct RunsListParams {
     /// When true, return only pinned runs (Milestone 16).
     #[serde(default)]
     pub pinned_only: Option<bool>,
+    /// When true, snoozed runs are included alongside non-snoozed runs (Milestone 17).
+    /// Default: false (snoozed runs are excluded).
+    #[serde(default)]
+    pub include_snoozed: Option<bool>,
+    /// When true, return only snoozed runs (Milestone 17).
+    /// Takes precedence over `include_snoozed`.
+    #[serde(default)]
+    pub snoozed_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1252,6 +1272,84 @@ pub struct RunUnpinParams {
 #[serde(rename_all = "camelCase")]
 pub struct RunUnpinResult {
     /// ID of the run that was unpinned.
+    pub run_id: String,
+    /// Current status of the run (unchanged).
+    pub status: String,
+    /// Confirmation message.
+    pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// run.snooze / run.unsnooze  (Milestone 17)
+// ---------------------------------------------------------------------------
+
+/// Maximum length of a snooze reason (characters).
+pub const SNOOZE_REASON_MAX_LEN: usize = 500;
+
+/// Compact snooze metadata recorded when a run is explicitly snoozed.
+///
+/// Persisted in SQLite alongside run state.  Provides an auditable record of
+/// the snooze action without duplicating the full run state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SnoozeMetadata {
+    /// Human-readable reason supplied by ChatGPT for snoozing.
+    pub reason: String,
+    /// ISO 8601 timestamp of when the run was snoozed.
+    pub snoozed_at: String,
+}
+
+/// Parameters for `run.snooze` — explicit deterministic run snoozing.
+///
+/// Snoozing is deterministic, explicit, and audited.  It updates only the
+/// snooze metadata and does not execute work, change status, refresh, replan,
+/// reopen, finalize, archive, unarchive, or supersede the run.
+/// Snoozed runs are excluded from the default `runs.list` result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSnoozeParams {
+    /// ID of the run to snooze.
+    pub run_id: String,
+    /// Human-readable reason for snoozing (required for auditability).
+    pub reason: String,
+}
+
+/// Result of `run.snooze`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSnoozeResult {
+    /// ID of the run that was snoozed.
+    pub run_id: String,
+    /// Current status of the run (unchanged).
+    pub status: String,
+    /// ISO 8601 timestamp of when the run was snoozed.
+    pub snoozed_at: String,
+    /// Human-readable reason supplied for snoozing.
+    pub reason: String,
+    /// Confirmation message.
+    pub message: String,
+}
+
+/// Parameters for `run.unsnooze` — explicit deterministic run unsnoozing.
+///
+/// Unsnoozing is deterministic, explicit, and audited.  It clears the snooze
+/// metadata only and does not execute work, change status, refresh, replan,
+/// reopen, finalize, archive, unarchive, or supersede the run.
+/// Only snoozed runs may be unsnoozed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunUnsnoozeParams {
+    /// ID of the snoozed run to unsnooze.
+    pub run_id: String,
+    /// Human-readable reason for unsnoozing (required for auditability).
+    pub reason: String,
+}
+
+/// Result of `run.unsnooze`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunUnsnoozeResult {
+    /// ID of the run that was unsnoozed.
     pub run_id: String,
     /// Current status of the run (unchanged).
     pub status: String,

@@ -5,7 +5,7 @@
 //! access — unlike the previous JSON-file approach.
 
 use anyhow::{Context, Result};
-use deterministic_protocol::{ArchiveMetadata, PendingApproval, PinMetadata, ReopenMetadata, RetryableAction, RunAnnotation, RunHistoryEntry, RunOutcome, RunPolicy, RunState, RunSummary, UnarchiveMetadata};
+use deterministic_protocol::{ArchiveMetadata, PendingApproval, PinMetadata, ReopenMetadata, RetryableAction, RunAnnotation, RunHistoryEntry, RunOutcome, RunPolicy, RunState, RunSummary, SnoozeMetadata, UnarchiveMetadata};
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
@@ -131,6 +131,9 @@ impl Store {
             ("runs", "annotation", "TEXT"),
             // Milestone 16 columns
             ("runs", "pin_metadata", "TEXT"),
+            // Milestone 17 columns
+            ("runs", "is_snoozed", "INTEGER DEFAULT 0"),
+            ("runs", "snooze_metadata", "TEXT"),
         ];
 
         for (table, column, def) in migrations {
@@ -234,6 +237,14 @@ impl Store {
             .map(serde_json::to_string)
             .transpose()
             .context("failed to serialise pin_metadata")?;
+        // Milestone 17: persist snooze_metadata as JSON; also extract is_snoozed for filtering.
+        let is_snoozed: i64 = if state.snooze_metadata.is_some() { 1 } else { 0 };
+        let snooze_metadata_json: Option<String> = state
+            .snooze_metadata
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .context("failed to serialise snooze_metadata")?;
         conn.execute(
             "INSERT OR REPLACE INTO runs
                 (run_id, workspace_id, user_goal, status, plan, current_step,
@@ -244,8 +255,9 @@ impl Store {
                  reopen_metadata, supersedes_run_id, superseded_by_run_id,
                  supersession_reason, superseded_at, is_archived, archive_metadata,
                  unarchive_metadata, annotation, pin_metadata,
+                 is_snoozed, snooze_metadata,
                  created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -277,6 +289,8 @@ impl Store {
                 unarchive_metadata_json,
                 annotation_json,
                 pin_metadata_json,
+                is_snoozed,
+                snooze_metadata_json,
                 state.created_at,
                 state.updated_at,
             ],
@@ -299,6 +313,7 @@ impl Store {
                         reopen_metadata, supersedes_run_id, superseded_by_run_id,
                         supersession_reason, superseded_at, archive_metadata,
                         unarchive_metadata, annotation, pin_metadata,
+                        snooze_metadata,
                         created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
@@ -473,6 +488,20 @@ impl Store {
                         )
                     })?;
 
+                // Milestone 17: snooze metadata.
+                let snooze_metadata_json: Option<String> = row.get(28)?;
+                let snooze_metadata: Option<SnoozeMetadata> = snooze_metadata_json
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            28,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+
                 Ok(RunState {
                     run_id: row.get(0)?,
                     workspace_id: row.get(1)?,
@@ -502,8 +531,9 @@ impl Store {
                     unarchive_metadata,
                     annotation,
                     pin_metadata,
-                    created_at: row.get(28)?,
-                    updated_at: row.get(29)?,
+                    snooze_metadata,
+                    created_at: row.get(29)?,
+                    updated_at: row.get(30)?,
                 })
             })
             .context("failed to query run")?;
@@ -641,6 +671,8 @@ impl Store {
     /// Milestone 15: `label_filter` performs an exact normalized label match.
     /// Milestone 16: `pinned_only` filters to only pinned runs.
     ///              Pinned runs are always returned before non-pinned runs.
+    /// Milestone 17: `include_snoozed` includes snoozed runs; `snoozed_only` returns only snoozed runs.
+    ///              Default: snoozed runs are excluded.
     #[allow(clippy::too_many_arguments)]
     pub fn list_runs(
         &self,
@@ -651,6 +683,8 @@ impl Store {
         archived_only: bool,
         label_filter: Option<&str>,
         pinned_only: bool,
+        include_snoozed: bool,
+        snoozed_only: bool,
     ) -> Result<Vec<RunSummary>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -684,6 +718,16 @@ impl Store {
         }
         // If include_archived=true and archived_only=false, no condition is added (show all).
 
+        // Milestone 17: snooze filtering (SQL-level for performance).
+        // snoozed_only takes precedence over include_snoozed.
+        if snoozed_only {
+            conditions.push("is_snoozed = 1".to_string());
+        } else if !include_snoozed {
+            // Default: exclude snoozed runs.
+            conditions.push("is_snoozed = 0".to_string());
+        }
+        // If include_snoozed=true and snoozed_only=false, no condition is added (show all).
+
         // Milestone 15: label filtering.
         // SQLite JSON functions are not always available, so we filter in Rust after fetching.
         // The label_filter is used post-query.
@@ -703,7 +747,7 @@ impl Store {
             "SELECT run_id, workspace_id, user_goal, status, current_step, plan,
                     created_at, updated_at, outcome_kind, reopen_metadata,
                     supersedes_run_id, superseded_by_run_id, is_archived, archive_metadata,
-                    unarchive_metadata, annotation, pin_metadata
+                    unarchive_metadata, annotation, pin_metadata, snooze_metadata
              FROM runs {where_clause}
              ORDER BY CASE WHEN pin_metadata IS NOT NULL THEN 0 ELSE 1 END ASC, updated_at DESC
              LIMIT ?1"
@@ -718,7 +762,7 @@ impl Store {
             //  8: outcome_kind  9: reopen_metadata
             // 10: supersedes_run_id  11: superseded_by_run_id
             // 12: is_archived  13: archive_metadata  14: unarchive_metadata
-            // 15: annotation  16: pin_metadata
+            // 15: annotation  16: pin_metadata  17: snooze_metadata
             let plan_json: String = row.get(5)?;
             let total_steps: usize = serde_json::from_str::<Vec<String>>(&plan_json)
                 .map(|v| v.len())
@@ -761,6 +805,14 @@ impl Store {
             let (is_pinned, pin_reason, pinned_at) = pin_metadata
                 .map(|m| (Some(true), Some(m.reason), Some(m.pinned_at)))
                 .unwrap_or((None, None, None));
+            // Milestone 17: snooze summary fields.
+            let snooze_metadata_json: Option<String> = row.get(17)?;
+            let snooze_metadata = snooze_metadata_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<SnoozeMetadata>(s).ok());
+            let (is_snoozed, snooze_reason, snoozed_at) = snooze_metadata
+                .map(|m| (Some(true), Some(m.reason), Some(m.snoozed_at)))
+                .unwrap_or((None, None, None));
             Ok(RunSummary {
                 run_id: row.get(0)?,
                 workspace_id: row.get(1)?,
@@ -782,6 +834,9 @@ impl Store {
                 is_pinned,
                 pin_reason,
                 pinned_at,
+                is_snoozed,
+                snooze_reason,
+                snoozed_at,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
@@ -915,6 +970,7 @@ mod tests {
             unarchive_metadata: None,
             annotation: None,
             pin_metadata: None,
+            snooze_metadata: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -1491,7 +1547,7 @@ mod tests {
     #[test]
     fn list_runs_empty() {
         let store = Store::open_in_memory().unwrap();
-        let runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
+        let runs = store.list_runs(20, None, None, false, false, None, false, false, false).unwrap();
         assert!(runs.is_empty());
     }
 
@@ -1502,7 +1558,7 @@ mod tests {
         store.save_run(&make_run_state("r_b", "prepared")).unwrap();
         store.save_run(&make_run_state("r_c", "done")).unwrap();
 
-        let runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
+        let runs = store.list_runs(20, None, None, false, false, None, false, false, false).unwrap();
         assert_eq!(runs.len(), 3);
         // Each summary should have basic fields.
         for r in &runs {
@@ -1520,7 +1576,7 @@ mod tests {
                 .save_run(&make_run_state(&format!("r_{i}"), "active"))
                 .unwrap();
         }
-        let runs = store.list_runs(3, None, None, false, false, None, false).unwrap();
+        let runs = store.list_runs(3, None, None, false, false, None, false, false, false).unwrap();
         assert_eq!(runs.len(), 3);
     }
 
@@ -1531,10 +1587,10 @@ mod tests {
         store.save_run(&make_run_state("r_b", "active")).unwrap();
         store.save_run(&make_run_state("r_c", "done")).unwrap();
 
-        let active = store.list_runs(20, None, Some("active"), false, false, None, false).unwrap();
+        let active = store.list_runs(20, None, Some("active"), false, false, None, false, false, false).unwrap();
         assert_eq!(active.len(), 2);
 
-        let done = store.list_runs(20, None, Some("done"), false, false, None, false).unwrap();
+        let done = store.list_runs(20, None, Some("done"), false, false, None, false, false, false).unwrap();
         assert_eq!(done.len(), 1);
     }
 
@@ -1551,10 +1607,10 @@ mod tests {
         store.save_run(&s2).unwrap();
         store.save_run(&s3).unwrap();
 
-        let ws1 = store.list_runs(20, Some("/ws/one"), None, false, false, None, false).unwrap();
+        let ws1 = store.list_runs(20, Some("/ws/one"), None, false, false, None, false, false, false).unwrap();
         assert_eq!(ws1.len(), 2);
 
-        let ws2 = store.list_runs(20, Some("/ws/two"), None, false, false, None, false).unwrap();
+        let ws2 = store.list_runs(20, Some("/ws/two"), None, false, false, None, false, false, false).unwrap();
         assert_eq!(ws2.len(), 1);
     }
 
@@ -1564,7 +1620,7 @@ mod tests {
         let state = make_run_state("r_steps", "active"); // plan has 2 steps
         store.save_run(&state).unwrap();
 
-        let runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
+        let runs = store.list_runs(20, None, None, false, false, None, false, false, false).unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].total_steps, 2);
     }
@@ -1950,7 +2006,7 @@ mod tests {
         });
         store.save_run(&finalized).unwrap();
 
-        let runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
+        let runs = store.list_runs(20, None, None, false, false, None, false, false, false).unwrap();
         assert_eq!(runs.len(), 2);
 
         let active = runs.iter().find(|r| r.run_id == "r_lk_a").unwrap();
@@ -2151,7 +2207,7 @@ mod tests {
         });
         store.save_run(&state_reopened).unwrap();
 
-        let summaries = store.list_runs(10, None, None, false, false, None, false).unwrap();
+        let summaries = store.list_runs(10, None, None, false, false, None, false, false, false).unwrap();
         let s1 = summaries.iter().find(|s| s.run_id == "r_list_1").unwrap();
         let s2 = summaries.iter().find(|s| s.run_id == "r_list_2").unwrap();
         assert!(s1.reopen_count.is_none());
@@ -2224,7 +2280,7 @@ mod tests {
         state_successor.supersedes_run_id = Some("r_superseded".into());
         store.save_run(&state_successor).unwrap();
 
-        let summaries = store.list_runs(10, None, None, false, false, None, false).unwrap();
+        let summaries = store.list_runs(10, None, None, false, false, None, false, false, false).unwrap();
         let plain = summaries.iter().find(|s| s.run_id == "r_plain").unwrap();
         let superseded = summaries.iter().find(|s| s.run_id == "r_superseded").unwrap();
         let successor = summaries.iter().find(|s| s.run_id == "r_new").unwrap();
@@ -2348,7 +2404,7 @@ mod tests {
         store.save_run(&archived).unwrap();
 
         // Default: exclude archived.
-        let runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
+        let runs = store.list_runs(20, None, None, false, false, None, false, false, false).unwrap();
         assert!(
             runs.iter().any(|r| r.run_id == "r_active"),
             "active run must be included"
@@ -2376,7 +2432,7 @@ mod tests {
         });
         store.save_run(&archived).unwrap();
 
-        let runs = store.list_runs(20, None, None, true, false, None, false).unwrap();
+        let runs = store.list_runs(20, None, None, true, false, None, false, false, false).unwrap();
         assert!(
             runs.iter().any(|r| r.run_id == "r_active2"),
             "active run must be included"
@@ -2404,7 +2460,7 @@ mod tests {
         });
         store.save_run(&archived).unwrap();
 
-        let runs = store.list_runs(20, None, None, false, true, None, false).unwrap();
+        let runs = store.list_runs(20, None, None, false, true, None, false, false, false).unwrap();
         assert!(
             !runs.iter().any(|r| r.run_id == "r_active3"),
             "active run must NOT be included"
@@ -2428,7 +2484,7 @@ mod tests {
         });
         store.save_run(&state).unwrap();
 
-        let runs = store.list_runs(20, None, None, true, false, None, false).unwrap();
+        let runs = store.list_runs(20, None, None, true, false, None, false, false, false).unwrap();
         let summary = runs.iter().find(|r| r.run_id == "r_arch_sum").unwrap();
         assert_eq!(summary.is_archived, Some(true));
         assert_eq!(summary.archive_reason.as_deref(), Some("summary field test"));
@@ -2548,14 +2604,14 @@ mod tests {
         store.save_run(&state).unwrap();
 
         // Default list should include the restored run (is_archived=0 since unarchive_metadata is set).
-        let runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
+        let runs = store.list_runs(20, None, None, false, false, None, false, false, false).unwrap();
         assert!(
             runs.iter().any(|r| r.run_id == "r_restored"),
             "restored run must appear in default list"
         );
 
         // archived_only=true must NOT include the restored run.
-        let runs_ao = store.list_runs(20, None, None, false, true, None, false).unwrap();
+        let runs_ao = store.list_runs(20, None, None, false, true, None, false, false, false).unwrap();
         assert!(
             !runs_ao.iter().any(|r| r.run_id == "r_restored"),
             "restored run must NOT appear when archived_only=true"
@@ -2580,7 +2636,7 @@ mod tests {
         store.save_run(&state).unwrap();
 
         // include_archived=true to include runs with archive_metadata (even if unarchived).
-        let runs = store.list_runs(20, None, None, true, false, None, false).unwrap();
+        let runs = store.list_runs(20, None, None, true, false, None, false, false, false).unwrap();
         let summary = runs.iter().find(|r| r.run_id == "r_unarch_sum").unwrap();
         // is_archived must be None/false since the run is unarchived.
         assert_eq!(summary.is_archived, None, "is_archived must be None for unarchived run");
@@ -2700,18 +2756,18 @@ mod tests {
         store.save_run(&unlabeled).unwrap();
 
         // Filter by label=auth
-        let auth_runs = store.list_runs(20, None, None, false, false, Some("auth"), false).unwrap();
+        let auth_runs = store.list_runs(20, None, None, false, false, Some("auth"), false, false, false).unwrap();
         assert!(auth_runs.iter().any(|r| r.run_id == "r_lbl_auth"), "auth-labeled run must match");
         assert!(!auth_runs.iter().any(|r| r.run_id == "r_lbl_infra"), "infra-labeled run must not match");
         assert!(!auth_runs.iter().any(|r| r.run_id == "r_lbl_none"), "unlabeled run must not match");
 
         // Filter by label=infra
-        let infra_runs = store.list_runs(20, None, None, false, false, Some("infra"), false).unwrap();
+        let infra_runs = store.list_runs(20, None, None, false, false, Some("infra"), false, false, false).unwrap();
         assert!(infra_runs.iter().any(|r| r.run_id == "r_lbl_infra"), "infra-labeled run must match");
         assert!(!infra_runs.iter().any(|r| r.run_id == "r_lbl_auth"), "auth-labeled run must not match");
 
         // No label filter — all non-archived runs returned.
-        let all_runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
+        let all_runs = store.list_runs(20, None, None, false, false, None, false, false, false).unwrap();
         assert_eq!(all_runs.len(), 3);
     }
 
@@ -2727,7 +2783,7 @@ mod tests {
         });
         store.save_run(&state).unwrap();
 
-        let runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
+        let runs = store.list_runs(20, None, None, false, false, None, false, false, false).unwrap();
         let summary = runs.iter().find(|r| r.run_id == "r_ann_sum").unwrap();
         assert_eq!(summary.labels, vec!["blocked"]);
         assert_eq!(summary.operator_note.as_deref(), Some("waiting for review"));
@@ -2791,6 +2847,173 @@ mod tests {
 
         // M15 annotation must default to None.
         assert!(loaded.annotation.is_none());
+    }
+
+    /// Verify that migration from M16 schema (no M17 snooze columns) works safely.
+    #[test]
+    fn migration_m17_snooze_defaults_safely() {
+        use rusqlite::Connection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("runs.db");
+
+        // Simulate a Milestone 16 schema (no M17 snooze columns).
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    run_id               TEXT PRIMARY KEY,
+                    workspace_id         TEXT NOT NULL,
+                    user_goal            TEXT NOT NULL,
+                    status               TEXT NOT NULL,
+                    plan                 TEXT NOT NULL DEFAULT '[]',
+                    current_step         INTEGER NOT NULL DEFAULT 0,
+                    completed_steps      TEXT NOT NULL DEFAULT '[]',
+                    pending_steps        TEXT NOT NULL DEFAULT '[]',
+                    last_action          TEXT,
+                    last_observation     TEXT,
+                    recommended_next_action TEXT,
+                    recommended_tool     TEXT,
+                    latest_diff_summary  TEXT,
+                    latest_test_result   TEXT,
+                    focus_paths          TEXT NOT NULL DEFAULT '[]',
+                    warnings             TEXT NOT NULL DEFAULT '[]',
+                    retryable_action     TEXT,
+                    policy_profile       TEXT NOT NULL DEFAULT '{}',
+                    outcome_kind         TEXT,
+                    finalized_outcome    TEXT,
+                    reopen_metadata      TEXT,
+                    supersedes_run_id    TEXT,
+                    superseded_by_run_id TEXT,
+                    supersession_reason  TEXT,
+                    superseded_at        TEXT,
+                    is_archived          INTEGER DEFAULT 0,
+                    archive_metadata     TEXT,
+                    unarchive_metadata   TEXT,
+                    annotation           TEXT,
+                    pin_metadata         TEXT,
+                    created_at           TEXT NOT NULL,
+                    updated_at           TEXT NOT NULL
+                );",
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO runs (run_id, workspace_id, user_goal, status, plan, created_at, updated_at)
+                 VALUES ('r_m16', '/tmp/ws', 'old goal', 'active', '[]', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                [],
+            ).unwrap();
+        }
+
+        // Open with migration — should add M17 is_snoozed and snooze_metadata columns.
+        let store = Store::open(dir.path()).unwrap();
+        let loaded = store.get_run("r_m16").unwrap().unwrap();
+
+        // M17 snooze_metadata must default to None.
+        assert!(loaded.snooze_metadata.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Milestone 17: snooze persistence roundtrip tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn snooze_metadata_roundtrips() {
+        use deterministic_protocol::SnoozeMetadata;
+
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_snz_rt", "active");
+        state.snooze_metadata = Some(SnoozeMetadata {
+            reason: "blocked on review".into(),
+            snoozed_at: "2024-06-01T12:00:00Z".into(),
+        });
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_snz_rt").unwrap().unwrap();
+        let meta = loaded.snooze_metadata.unwrap();
+        assert_eq!(meta.reason, "blocked on review");
+        assert_eq!(meta.snoozed_at, "2024-06-01T12:00:00Z");
+    }
+
+    #[test]
+    fn snoozed_run_excluded_from_default_list() {
+        use deterministic_protocol::SnoozeMetadata;
+
+        let store = Store::open_in_memory().unwrap();
+        let mut snoozed = make_run_state("r_snz_excl", "active");
+        snoozed.snooze_metadata = Some(SnoozeMetadata {
+            reason: "deferred".into(),
+            snoozed_at: "2024-06-01T12:00:00Z".into(),
+        });
+        store.save_run(&snoozed).unwrap();
+
+        let normal = make_run_state("r_snz_normal", "active");
+        store.save_run(&normal).unwrap();
+
+        // Default: snoozed excluded.
+        let runs = store.list_runs(20, None, None, false, false, None, false, false, false).unwrap();
+        assert!(!runs.iter().any(|r| r.run_id == "r_snz_excl"), "snoozed must be excluded by default");
+        assert!(runs.iter().any(|r| r.run_id == "r_snz_normal"), "normal must be included by default");
+    }
+
+    #[test]
+    fn snoozed_run_included_with_include_snoozed() {
+        use deterministic_protocol::SnoozeMetadata;
+
+        let store = Store::open_in_memory().unwrap();
+        let mut snoozed = make_run_state("r_snz_incl2", "active");
+        snoozed.snooze_metadata = Some(SnoozeMetadata {
+            reason: "deferred".into(),
+            snoozed_at: "2024-06-01T12:00:00Z".into(),
+        });
+        store.save_run(&snoozed).unwrap();
+
+        let normal = make_run_state("r_snz_normal2", "active");
+        store.save_run(&normal).unwrap();
+
+        // include_snoozed=true: both returned.
+        let runs = store.list_runs(20, None, None, false, false, None, false, true, false).unwrap();
+        assert!(runs.iter().any(|r| r.run_id == "r_snz_incl2"), "snoozed must be included");
+        assert!(runs.iter().any(|r| r.run_id == "r_snz_normal2"), "normal must also be included");
+    }
+
+    #[test]
+    fn snoozed_only_filter() {
+        use deterministic_protocol::SnoozeMetadata;
+
+        let store = Store::open_in_memory().unwrap();
+        let mut snoozed = make_run_state("r_snz_only2", "active");
+        snoozed.snooze_metadata = Some(SnoozeMetadata {
+            reason: "deferred".into(),
+            snoozed_at: "2024-06-01T12:00:00Z".into(),
+        });
+        store.save_run(&snoozed).unwrap();
+
+        let normal = make_run_state("r_snz_norm3", "active");
+        store.save_run(&normal).unwrap();
+
+        // snoozed_only=true: only snoozed returned.
+        let runs = store.list_runs(20, None, None, false, false, None, false, false, true).unwrap();
+        assert!(runs.iter().any(|r| r.run_id == "r_snz_only2"), "snoozed must appear");
+        assert!(!runs.iter().any(|r| r.run_id == "r_snz_norm3"), "normal must not appear");
+    }
+
+    #[test]
+    fn list_runs_summary_carries_snooze_fields() {
+        use deterministic_protocol::SnoozeMetadata;
+
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_snz_sum", "active");
+        state.snooze_metadata = Some(SnoozeMetadata {
+            reason: "blocked".into(),
+            snoozed_at: "2024-06-01T12:00:00Z".into(),
+        });
+        store.save_run(&state).unwrap();
+
+        // Use include_snoozed to see it.
+        let runs = store.list_runs(20, None, None, false, false, None, false, true, false).unwrap();
+        let summary = runs.iter().find(|r| r.run_id == "r_snz_sum").unwrap();
+        assert_eq!(summary.is_snoozed, Some(true));
+        assert_eq!(summary.snooze_reason.as_deref(), Some("blocked"));
+        assert_eq!(summary.snoozed_at.as_deref(), Some("2024-06-01T12:00:00Z"));
     }
 }
 
