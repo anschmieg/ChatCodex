@@ -1,6 +1,7 @@
 //! Shared request / response DTOs for the deterministic daemon.
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC envelope
@@ -553,6 +554,113 @@ pub struct RunOutcome {
 }
 
 // ---------------------------------------------------------------------------
+// run.set_priority  (Milestone 18)
+// ---------------------------------------------------------------------------
+
+/// Deterministic run priority level.
+///
+/// The four levels are ordered from lowest to highest urgency:
+/// `low < normal < high < urgent`.  The default for new and existing runs
+/// is `normal`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunPriority {
+    Low,
+    Normal,
+    High,
+    Urgent,
+}
+
+impl RunPriority {
+    /// Canonical string representation used on the wire and in SQLite.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Normal => "normal",
+            Self::High => "high",
+            Self::Urgent => "urgent",
+        }
+    }
+
+    /// Parse a string into a [`RunPriority`].
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "low" => Some(Self::Low),
+            "normal" => Some(Self::Normal),
+            "high" => Some(Self::High),
+            "urgent" => Some(Self::Urgent),
+            _ => None,
+        }
+    }
+
+    /// All valid priority values, ordered from lowest to highest.
+    pub fn all() -> &'static [RunPriority] {
+        &[Self::Low, Self::Normal, Self::High, Self::Urgent]
+    }
+
+    /// Numeric sort key: higher value = higher urgency (for SQL ORDER BY DESC).
+    pub fn sort_key(self) -> i64 {
+        match self {
+            Self::Low => 0,
+            Self::Normal => 1,
+            Self::High => 2,
+            Self::Urgent => 3,
+        }
+    }
+}
+
+impl Default for RunPriority {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
+impl fmt::Display for RunPriority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Maximum length of a priority reason string (characters).
+pub const PRIORITY_REASON_MAX_LEN: usize = 500;
+
+/// Parameters for `run.set_priority` — explicit deterministic run priority update.
+///
+/// Setting priority is deterministic, explicit, and audited.  It updates only
+/// the priority field and does not execute work, change status, refresh, replan,
+/// reopen, finalize, archive, unarchive, pin, unpin, snooze, or unsnooze the run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSetPriorityParams {
+    /// ID of the run whose priority is being set.
+    pub run_id: String,
+    /// The new priority level.
+    pub priority: RunPriority,
+    /// Human-readable reason for changing the priority (required for auditability).
+    pub reason: String,
+}
+
+/// Result of `run.set_priority`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSetPriorityResult {
+    /// ID of the run whose priority was updated.
+    pub run_id: String,
+    /// Current status of the run (unchanged).
+    pub status: String,
+    /// The priority value before this update.
+    pub previous_priority: RunPriority,
+    /// The new priority value.
+    pub priority: RunPriority,
+    /// Human-readable reason supplied for the change.
+    pub reason: String,
+    /// ISO 8601 timestamp of when the priority was set.
+    pub set_at: String,
+    /// Confirmation message.
+    pub message: String,
+}
+
+// ---------------------------------------------------------------------------
 // Run state (persisted in SQLite)
 // ---------------------------------------------------------------------------
 
@@ -617,6 +725,10 @@ pub struct RunState {
     /// Snooze metadata if this run has been explicitly snoozed (Milestone 17).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snooze_metadata: Option<SnoozeMetadata>,
+    /// Explicit priority level for this run (Milestone 18).
+    /// Defaults to `RunPriority::Normal` for all runs.
+    #[serde(default)]
+    pub priority: RunPriority,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -686,6 +798,9 @@ pub struct RunSummary {
     /// ISO 8601 timestamp of when this run was snoozed (Milestone 17).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snoozed_at: Option<String>,
+    /// Explicit priority level for this run (Milestone 18).
+    #[serde(default)]
+    pub priority: RunPriority,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -725,6 +840,14 @@ pub struct RunsListParams {
     /// Takes precedence over `include_snoozed`.
     #[serde(default)]
     pub snoozed_only: Option<bool>,
+    /// Filter by exact priority level (Milestone 18).
+    /// When set, only runs matching this priority are returned.
+    #[serde(default)]
+    pub priority_filter: Option<RunPriority>,
+    /// When true, runs are sorted by priority descending (urgent → high → normal → low)
+    /// before the default pinned-first / updated_at ordering (Milestone 18).
+    #[serde(default)]
+    pub sort_by_priority: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -800,6 +923,9 @@ pub struct RunGetResult {
     /// Pin metadata if this run has been explicitly pinned (Milestone 16).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin_metadata: Option<PinMetadata>,
+    /// Explicit priority level for this run (Milestone 18).
+    #[serde(default)]
+    pub priority: RunPriority,
 }
 
 // ---------------------------------------------------------------------------

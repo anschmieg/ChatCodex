@@ -5,7 +5,7 @@
 //! access — unlike the previous JSON-file approach.
 
 use anyhow::{Context, Result};
-use deterministic_protocol::{ArchiveMetadata, PendingApproval, PinMetadata, ReopenMetadata, RetryableAction, RunAnnotation, RunHistoryEntry, RunOutcome, RunPolicy, RunState, RunSummary, SnoozeMetadata, UnarchiveMetadata};
+use deterministic_protocol::{ArchiveMetadata, PendingApproval, PinMetadata, ReopenMetadata, RetryableAction, RunAnnotation, RunHistoryEntry, RunOutcome, RunPolicy, RunPriority, RunState, RunSummary, SnoozeMetadata, UnarchiveMetadata};
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
@@ -134,6 +134,8 @@ impl Store {
             // Milestone 17 columns
             ("runs", "is_snoozed", "INTEGER DEFAULT 0"),
             ("runs", "snooze_metadata", "TEXT"),
+            // Milestone 18 columns
+            ("runs", "priority", "TEXT NOT NULL DEFAULT 'normal'"),
         ];
 
         for (table, column, def) in migrations {
@@ -245,6 +247,8 @@ impl Store {
             .map(serde_json::to_string)
             .transpose()
             .context("failed to serialise snooze_metadata")?;
+        // Milestone 18: persist priority as string.
+        let priority_str = state.priority.as_str();
         conn.execute(
             "INSERT OR REPLACE INTO runs
                 (run_id, workspace_id, user_goal, status, plan, current_step,
@@ -255,9 +259,9 @@ impl Store {
                  reopen_metadata, supersedes_run_id, superseded_by_run_id,
                  supersession_reason, superseded_at, is_archived, archive_metadata,
                  unarchive_metadata, annotation, pin_metadata,
-                 is_snoozed, snooze_metadata,
+                 is_snoozed, snooze_metadata, priority,
                  created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -291,6 +295,7 @@ impl Store {
                 pin_metadata_json,
                 is_snoozed,
                 snooze_metadata_json,
+                priority_str,
                 state.created_at,
                 state.updated_at,
             ],

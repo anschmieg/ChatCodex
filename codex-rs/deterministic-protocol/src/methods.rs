@@ -45,6 +45,8 @@ pub enum Method {
     // Milestone 17: deterministic run snoozing
     RunSnooze,
     RunUnsnooze,
+    // Milestone 18: deterministic run priority
+    RunSetPriority,
 }
 
 impl Method {
@@ -87,6 +89,8 @@ impl Method {
             // Milestone 17
             Self::RunSnooze => "run.snooze",
             Self::RunUnsnooze => "run.unsnooze",
+            // Milestone 18
+            Self::RunSetPriority => "run.set_priority",
         }
     }
 
@@ -129,6 +133,8 @@ impl Method {
             // Milestone 17
             "run.snooze" => Some(Self::RunSnooze),
             "run.unsnooze" => Some(Self::RunUnsnooze),
+            // Milestone 18
+            "run.set_priority" => Some(Self::RunSetPriority),
             _ => None,
         }
     }
@@ -172,6 +178,8 @@ impl Method {
             // Milestone 17
             Self::RunSnooze,
             Self::RunUnsnooze,
+            // Milestone 18
+            Self::RunSetPriority,
         ]
     }
 }

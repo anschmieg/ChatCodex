@@ -52,6 +52,8 @@ pub fn dispatch(
         // Milestone 17: deterministic run snoozing
         Method::RunSnooze => handle_run_snooze(params, store),
         Method::RunUnsnooze => handle_run_unsnooze(params, store),
+        // Milestone 18: deterministic run priority
+        Method::RunSetPriority => handle_run_set_priority(params, store),
     }
 }
 
@@ -435,7 +437,10 @@ fn handle_runs_list(
     // Milestone 17: snooze filtering.
     let include_snoozed = p.include_snoozed.unwrap_or(false);
     let snoozed_only = p.snoozed_only.unwrap_or(false);
-    let runs = store.list_runs(
+    // Milestone 18: priority filter and sort.
+    let priority_filter = p.priority_filter;
+    let sort_by_priority = p.sort_by_priority.unwrap_or(false);
+    let mut runs = store.list_runs(
         limit,
         p.workspace_id.as_deref(),
         p.status.as_deref(),
@@ -446,6 +451,17 @@ fn handle_runs_list(
         include_snoozed,
         snoozed_only,
     )?;
+    // Milestone 18: post-filter by exact priority if requested.
+    if let Some(pf) = priority_filter {
+        runs.retain(|r| r.priority == pf);
+    }
+    // Milestone 18: stable priority-descending sort (urgent → high → normal → low)
+    // applied on top of the pinned-first / updated_at ordering from SQL.
+    if sort_by_priority {
+        runs.sort_by(|a, b| {
+            b.priority.sort_key().cmp(&a.priority.sort_key())
+        });
+    }
     let count = runs.len();
     let result = RunsListResult { runs, count };
     Ok((serde_json::to_value(result)?, None))
@@ -478,6 +494,7 @@ fn handle_run_get(
     let unarchive_metadata = state.unarchive_metadata.clone();
     let annotation = state.annotation.clone();
     let pin_metadata = state.pin_metadata.clone();
+    let priority = state.priority;
 
     let result = RunGetResult {
         run_state: state.clone(),
@@ -499,6 +516,7 @@ fn handle_run_get(
         unarchive_metadata,
         annotation,
         pin_metadata,
+        priority,
     };
     Ok((serde_json::to_value(result)?, Some(state)))
 }
@@ -1014,11 +1032,56 @@ fn handle_run_unsnooze(
     Ok((serde_json::to_value(result)?, Some(state)))
 }
 
+// ---- Milestone 18: deterministic run priority ----
+
+/// Set the explicit priority of a run.
+///
+/// Deterministic rules:
+/// - Any run may have its priority updated regardless of current status.
+/// - This operation updates priority only.
+/// - It does not execute work, replan, reopen, finalize, archive, unarchive,
+///   pin, unpin, snooze, or unsnooze the run.
+/// - An audit entry is appended.
+fn handle_run_set_priority(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunSetPriorityParams = serde_json::from_value(params)?;
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let result = deterministic_core::run_set_priority::set_priority(&p, &mut state)?;
+    store.save_run(&state)?;
+
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "run_priority_set",
+        &format!(
+            "Run priority set: {} → {} ({})",
+            result.previous_priority.as_str(),
+            result.priority.as_str(),
+            result.reason
+        ),
+        Some(
+            &serde_json::json!({
+                "previous_priority": result.previous_priority.as_str(),
+                "priority": result.priority.as_str(),
+                "reason": result.reason,
+                "set_at": result.set_at,
+            })
+            .to_string(),
+        ),
+    );
+
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::persistence::Store;
-    use deterministic_protocol::RunPolicy;
+    use deterministic_protocol::{RunPolicy, RunPriority};
 
     fn make_run_state(run_id: &str) -> RunState {
         RunState {
@@ -1051,6 +1114,7 @@ mod tests {
             annotation: None,
             pin_metadata: None,
             snooze_metadata: None,
+            priority: RunPriority::Normal,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -2561,5 +2625,162 @@ mod tests {
         ).unwrap();
         let result: RunsListResult = serde_json::from_value(val).unwrap();
         assert!(result.runs.iter().any(|r| r.run_id == "r_unsnz_list"), "unsnoozed run must appear in default list");
+    }
+
+    // ---- Milestone 18: run priority tests ----
+
+    #[test]
+    fn run_set_priority_persists() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_prio_persist");
+        store.save_run(&state).unwrap();
+
+        let (val, run_state) = dispatch(
+            Method::RunSetPriority,
+            serde_json::json!({"runId": "r_prio_persist", "priority": "urgent", "reason": "blocks release"}),
+            &store,
+        ).unwrap();
+
+        let result: RunSetPriorityResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.priority, RunPriority::Urgent);
+        assert_eq!(result.previous_priority, RunPriority::Normal);
+        assert!(run_state.is_some());
+        assert_eq!(run_state.unwrap().priority, RunPriority::Urgent);
+
+        // Reload from store and verify persistence.
+        let loaded = store.get_run("r_prio_persist").unwrap().unwrap();
+        assert_eq!(loaded.priority, RunPriority::Urgent);
+    }
+
+    #[test]
+    fn run_set_priority_appends_audit_entry() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_prio_audit");
+        store.save_run(&state).unwrap();
+
+        dispatch(
+            Method::RunSetPriority,
+            serde_json::json!({"runId": "r_prio_audit", "priority": "high", "reason": "elevated"}),
+            &store,
+        ).unwrap();
+
+        let history = store.get_run_history("r_prio_audit", 10).unwrap();
+        let entry = history.iter().find(|e| e.event_kind == "run_priority_set");
+        assert!(entry.is_some(), "run_priority_set audit entry must be appended");
+    }
+
+    #[test]
+    fn run_set_priority_rejects_unknown_run() {
+        let store = Store::open_in_memory().unwrap();
+        let params = serde_json::json!({
+            "runId": "r_prio_unknown",
+            "priority": "urgent",
+            "reason": "test"
+        });
+        let err = dispatch(Method::RunSetPriority, params, &store).unwrap_err();
+        assert!(err.to_string().contains("unknown run"));
+    }
+
+    #[test]
+    fn run_set_priority_rejects_empty_reason() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_prio_empty_reason");
+        store.save_run(&state).unwrap();
+
+        let params = serde_json::json!({
+            "runId": "r_prio_empty_reason",
+            "priority": "urgent",
+            "reason": ""
+        });
+        let err = dispatch(Method::RunSetPriority, params, &store).unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn run_set_priority_list_filter_by_priority() {
+        let store = Store::open_in_memory().unwrap();
+
+        let low = make_run_state("r_prio_low");
+        let normal = make_run_state("r_prio_normal");
+        let mut high = make_run_state("r_prio_high");
+        high.priority = RunPriority::High;
+        let mut urgent = make_run_state("r_prio_urgent");
+        urgent.priority = RunPriority::Urgent;
+
+        store.save_run(&low).unwrap();
+        store.save_run(&normal).unwrap();
+        store.save_run(&high).unwrap();
+        store.save_run(&urgent).unwrap();
+
+        // Filter for urgent only.
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"limit": 50, "priorityFilter": "urgent"}),
+            &store,
+        ).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.runs.len(), 1);
+        assert_eq!(result.runs[0].run_id, "r_prio_urgent");
+
+        // Filter for high only.
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"limit": 50, "priorityFilter": "high"}),
+            &store,
+        ).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.runs.len(), 1);
+        assert_eq!(result.runs[0].run_id, "r_prio_high");
+    }
+
+    #[test]
+    fn run_set_priority_list_sort_by_priority() {
+        let store = Store::open_in_memory().unwrap();
+
+        let mut low = make_run_state("r_sort_low");
+        low.priority = RunPriority::Low;
+        let normal = make_run_state("r_sort_normal");
+        let mut high = make_run_state("r_sort_high");
+        high.priority = RunPriority::High;
+        let mut urgent = make_run_state("r_sort_urgent");
+        urgent.priority = RunPriority::Urgent;
+
+        store.save_run(&low).unwrap();
+        store.save_run(&normal).unwrap();
+        store.save_run(&high).unwrap();
+        store.save_run(&urgent).unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"limit": 50, "sortByPriority": true}),
+            &store,
+        ).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        // Urgent must come first, low must come last.
+        let ids: Vec<&str> = result.runs.iter().map(|r| r.run_id.as_str()).collect();
+        let urgent_pos = ids.iter().position(|&id| id == "r_sort_urgent").unwrap();
+        let high_pos = ids.iter().position(|&id| id == "r_sort_high").unwrap();
+        let normal_pos = ids.iter().position(|&id| id == "r_sort_normal").unwrap();
+        let low_pos = ids.iter().position(|&id| id == "r_sort_low").unwrap();
+        assert!(urgent_pos < high_pos, "urgent must precede high");
+        assert!(high_pos < normal_pos, "high must precede normal");
+        assert!(normal_pos < low_pos, "normal must precede low");
+    }
+
+    #[test]
+    fn run_set_priority_summary_carries_priority() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_prio_summary");
+        state.priority = RunPriority::Urgent;
+        store.save_run(&state).unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"limit": 50}),
+            &store,
+        ).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        let summary = result.runs.iter().find(|r| r.run_id == "r_prio_summary").unwrap();
+        assert_eq!(summary.priority, RunPriority::Urgent);
     }
 }
