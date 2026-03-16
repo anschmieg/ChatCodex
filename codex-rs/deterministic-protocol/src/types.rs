@@ -611,6 +611,9 @@ pub struct RunState {
     /// Organization metadata: labels and optional operator note (Milestone 15).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotation: Option<RunAnnotation>,
+    /// Pin metadata if this run has been explicitly pinned (Milestone 16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_metadata: Option<PinMetadata>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -662,6 +665,15 @@ pub struct RunSummary {
     /// Operator note for this run (Milestone 15).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_note: Option<String>,
+    /// Whether this run is currently pinned (Milestone 16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_pinned: Option<bool>,
+    /// Pin reason if the run is pinned (Milestone 16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_reason: Option<String>,
+    /// ISO 8601 timestamp of when this run was pinned (Milestone 16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -690,6 +702,9 @@ pub struct RunsListParams {
     /// When set, only runs that carry this label are returned.
     #[serde(default)]
     pub label: Option<String>,
+    /// When true, return only pinned runs (Milestone 16).
+    #[serde(default)]
+    pub pinned_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -762,6 +777,9 @@ pub struct RunGetResult {
     /// Organization metadata: labels and optional operator note (Milestone 15).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotation: Option<RunAnnotation>,
+    /// Pin metadata if this run has been explicitly pinned (Milestone 16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_metadata: Option<PinMetadata>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1161,6 +1179,82 @@ pub struct RunUnarchiveResult {
     pub unarchived_at: String,
     /// Human-readable reason supplied for unarchiving.
     pub reason: String,
+    /// Confirmation message.
+    pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// run.pin / run.unpin  (Milestone 16)
+// ---------------------------------------------------------------------------
+
+/// Maximum length of a pin reason (characters).
+pub const PIN_REASON_MAX_LEN: usize = 500;
+
+/// Compact pin metadata recorded when a run is explicitly pinned.
+///
+/// Persisted in SQLite alongside run state.  Provides an auditable record of
+/// the pin action without duplicating the full run state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PinMetadata {
+    /// Human-readable reason supplied by ChatGPT for pinning.
+    pub reason: String,
+    /// ISO 8601 timestamp of when the run was pinned.
+    pub pinned_at: String,
+}
+
+/// Parameters for `run.pin` — explicit deterministic run pinning.
+///
+/// Pinning is deterministic, explicit, and audited.  It updates only the
+/// pin metadata and does not execute work, change status, refresh, replan,
+/// reopen, finalize, archive, unarchive, or supersede the run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunPinParams {
+    /// ID of the run to pin.
+    pub run_id: String,
+    /// Human-readable reason for pinning (required for auditability).
+    pub reason: String,
+}
+
+/// Result of `run.pin`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunPinResult {
+    /// ID of the run that was pinned.
+    pub run_id: String,
+    /// Current status of the run (unchanged).
+    pub status: String,
+    /// ISO 8601 timestamp of when the run was pinned.
+    pub pinned_at: String,
+    /// Human-readable reason supplied for pinning.
+    pub reason: String,
+    /// Confirmation message.
+    pub message: String,
+}
+
+/// Parameters for `run.unpin` — explicit deterministic run unpinning.
+///
+/// Unpinning is deterministic, explicit, and audited.  It updates only the
+/// pin metadata and does not execute work, change status, or affect any other
+/// lifecycle field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunUnpinParams {
+    /// ID of the pinned run to unpin.
+    pub run_id: String,
+    /// Human-readable reason for unpinning (required for auditability).
+    pub reason: String,
+}
+
+/// Result of `run.unpin`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunUnpinResult {
+    /// ID of the run that was unpinned.
+    pub run_id: String,
+    /// Current status of the run (unchanged).
+    pub status: String,
     /// Confirmation message.
     pub message: String,
 }

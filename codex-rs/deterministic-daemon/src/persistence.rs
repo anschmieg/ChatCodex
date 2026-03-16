@@ -5,7 +5,7 @@
 //! access — unlike the previous JSON-file approach.
 
 use anyhow::{Context, Result};
-use deterministic_protocol::{ArchiveMetadata, PendingApproval, ReopenMetadata, RetryableAction, RunAnnotation, RunHistoryEntry, RunOutcome, RunPolicy, RunState, RunSummary, UnarchiveMetadata};
+use deterministic_protocol::{ArchiveMetadata, PendingApproval, PinMetadata, ReopenMetadata, RetryableAction, RunAnnotation, RunHistoryEntry, RunOutcome, RunPolicy, RunState, RunSummary, UnarchiveMetadata};
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
@@ -129,6 +129,8 @@ impl Store {
             ("runs", "unarchive_metadata", "TEXT"),
             // Milestone 15 columns
             ("runs", "annotation", "TEXT"),
+            // Milestone 16 columns
+            ("runs", "pin_metadata", "TEXT"),
         ];
 
         for (table, column, def) in migrations {
@@ -225,6 +227,13 @@ impl Store {
             .map(serde_json::to_string)
             .transpose()
             .context("failed to serialise annotation")?;
+        // Milestone 16: persist pin_metadata as JSON.
+        let pin_metadata_json: Option<String> = state
+            .pin_metadata
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .context("failed to serialise pin_metadata")?;
         conn.execute(
             "INSERT OR REPLACE INTO runs
                 (run_id, workspace_id, user_goal, status, plan, current_step,
@@ -234,9 +243,9 @@ impl Store {
                  retryable_action, policy_profile, outcome_kind, finalized_outcome,
                  reopen_metadata, supersedes_run_id, superseded_by_run_id,
                  supersession_reason, superseded_at, is_archived, archive_metadata,
-                 unarchive_metadata, annotation,
+                 unarchive_metadata, annotation, pin_metadata,
                  created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -267,6 +276,7 @@ impl Store {
                 archive_metadata_json,
                 unarchive_metadata_json,
                 annotation_json,
+                pin_metadata_json,
                 state.created_at,
                 state.updated_at,
             ],
@@ -288,7 +298,7 @@ impl Store {
                         retryable_action, policy_profile, finalized_outcome,
                         reopen_metadata, supersedes_run_id, superseded_by_run_id,
                         supersession_reason, superseded_at, archive_metadata,
-                        unarchive_metadata, annotation,
+                        unarchive_metadata, annotation, pin_metadata,
                         created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
@@ -449,6 +459,20 @@ impl Store {
                         )
                     })?;
 
+                // Milestone 16: pin metadata.
+                let pin_metadata_json: Option<String> = row.get(27)?;
+                let pin_metadata: Option<PinMetadata> = pin_metadata_json
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            27,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+
                 Ok(RunState {
                     run_id: row.get(0)?,
                     workspace_id: row.get(1)?,
@@ -477,8 +501,9 @@ impl Store {
                     archive_metadata,
                     unarchive_metadata,
                     annotation,
-                    created_at: row.get(27)?,
-                    updated_at: row.get(28)?,
+                    pin_metadata,
+                    created_at: row.get(28)?,
+                    updated_at: row.get(29)?,
                 })
             })
             .context("failed to query run")?;
@@ -611,9 +636,12 @@ impl Store {
 
     // ----- Milestone 7: run listing -----
 
-    /// List runs, ordered by updated_at descending.
+    /// List runs, ordered by pinned-first then updated_at descending.
     ///
     /// Milestone 15: `label_filter` performs an exact normalized label match.
+    /// Milestone 16: `pinned_only` filters to only pinned runs.
+    ///              Pinned runs are always returned before non-pinned runs.
+    #[allow(clippy::too_many_arguments)]
     pub fn list_runs(
         &self,
         limit: usize,
@@ -622,6 +650,7 @@ impl Store {
         include_archived: bool,
         archived_only: bool,
         label_filter: Option<&str>,
+        pinned_only: bool,
     ) -> Result<Vec<RunSummary>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -659,19 +688,24 @@ impl Store {
         // SQLite JSON functions are not always available, so we filter in Rust after fetching.
         // The label_filter is used post-query.
 
+        // Milestone 16: pinned_only.
+        // The pin_metadata column is post-query filtered in Rust.
+
         let where_clause = if conditions.is_empty() {
             String::new()
         } else {
             format!("WHERE {}", conditions.join(" AND "))
         };
 
+        // Milestone 16: pinned-first ordering.
+        // Runs with pin_metadata IS NOT NULL come first, then sorted by updated_at DESC.
         let sql = format!(
             "SELECT run_id, workspace_id, user_goal, status, current_step, plan,
                     created_at, updated_at, outcome_kind, reopen_metadata,
                     supersedes_run_id, superseded_by_run_id, is_archived, archive_metadata,
-                    unarchive_metadata, annotation
+                    unarchive_metadata, annotation, pin_metadata
              FROM runs {where_clause}
-             ORDER BY updated_at DESC
+             ORDER BY CASE WHEN pin_metadata IS NOT NULL THEN 0 ELSE 1 END ASC, updated_at DESC
              LIMIT ?1"
         );
 
@@ -684,7 +718,7 @@ impl Store {
             //  8: outcome_kind  9: reopen_metadata
             // 10: supersedes_run_id  11: superseded_by_run_id
             // 12: is_archived  13: archive_metadata  14: unarchive_metadata
-            // 15: annotation
+            // 15: annotation  16: pin_metadata
             let plan_json: String = row.get(5)?;
             let total_steps: usize = serde_json::from_str::<Vec<String>>(&plan_json)
                 .map(|v| v.len())
@@ -719,6 +753,14 @@ impl Store {
             let (labels, operator_note) = annotation
                 .map(|a| (a.labels, a.operator_note))
                 .unwrap_or_default();
+            // Milestone 16: pin summary fields.
+            let pin_metadata_json: Option<String> = row.get(16)?;
+            let pin_metadata = pin_metadata_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<PinMetadata>(s).ok());
+            let (is_pinned, pin_reason, pinned_at) = pin_metadata
+                .map(|m| (Some(true), Some(m.reason), Some(m.pinned_at)))
+                .unwrap_or((None, None, None));
             Ok(RunSummary {
                 run_id: row.get(0)?,
                 workspace_id: row.get(1)?,
@@ -737,6 +779,9 @@ impl Store {
                 unarchived_at,
                 labels,
                 operator_note,
+                is_pinned,
+                pin_reason,
+                pinned_at,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
@@ -765,6 +810,10 @@ impl Store {
             if let Some(label) = label_filter
                 && !summary.labels.iter().any(|l| l == label)
             {
+                continue;
+            }
+            // Milestone 16: post-filter pinned_only.
+            if pinned_only && summary.is_pinned != Some(true) {
                 continue;
             }
             summaries.push(summary);
@@ -865,6 +914,7 @@ mod tests {
             archive_metadata: None,
             unarchive_metadata: None,
             annotation: None,
+            pin_metadata: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -1441,7 +1491,7 @@ mod tests {
     #[test]
     fn list_runs_empty() {
         let store = Store::open_in_memory().unwrap();
-        let runs = store.list_runs(20, None, None, false, false, None).unwrap();
+        let runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
         assert!(runs.is_empty());
     }
 
@@ -1452,7 +1502,7 @@ mod tests {
         store.save_run(&make_run_state("r_b", "prepared")).unwrap();
         store.save_run(&make_run_state("r_c", "done")).unwrap();
 
-        let runs = store.list_runs(20, None, None, false, false, None).unwrap();
+        let runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
         assert_eq!(runs.len(), 3);
         // Each summary should have basic fields.
         for r in &runs {
@@ -1470,7 +1520,7 @@ mod tests {
                 .save_run(&make_run_state(&format!("r_{i}"), "active"))
                 .unwrap();
         }
-        let runs = store.list_runs(3, None, None, false, false, None).unwrap();
+        let runs = store.list_runs(3, None, None, false, false, None, false).unwrap();
         assert_eq!(runs.len(), 3);
     }
 
@@ -1481,10 +1531,10 @@ mod tests {
         store.save_run(&make_run_state("r_b", "active")).unwrap();
         store.save_run(&make_run_state("r_c", "done")).unwrap();
 
-        let active = store.list_runs(20, None, Some("active"), false, false, None).unwrap();
+        let active = store.list_runs(20, None, Some("active"), false, false, None, false).unwrap();
         assert_eq!(active.len(), 2);
 
-        let done = store.list_runs(20, None, Some("done"), false, false, None).unwrap();
+        let done = store.list_runs(20, None, Some("done"), false, false, None, false).unwrap();
         assert_eq!(done.len(), 1);
     }
 
@@ -1501,10 +1551,10 @@ mod tests {
         store.save_run(&s2).unwrap();
         store.save_run(&s3).unwrap();
 
-        let ws1 = store.list_runs(20, Some("/ws/one"), None, false, false, None).unwrap();
+        let ws1 = store.list_runs(20, Some("/ws/one"), None, false, false, None, false).unwrap();
         assert_eq!(ws1.len(), 2);
 
-        let ws2 = store.list_runs(20, Some("/ws/two"), None, false, false, None).unwrap();
+        let ws2 = store.list_runs(20, Some("/ws/two"), None, false, false, None, false).unwrap();
         assert_eq!(ws2.len(), 1);
     }
 
@@ -1514,7 +1564,7 @@ mod tests {
         let state = make_run_state("r_steps", "active"); // plan has 2 steps
         store.save_run(&state).unwrap();
 
-        let runs = store.list_runs(20, None, None, false, false, None).unwrap();
+        let runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].total_steps, 2);
     }
@@ -1900,7 +1950,7 @@ mod tests {
         });
         store.save_run(&finalized).unwrap();
 
-        let runs = store.list_runs(20, None, None, false, false, None).unwrap();
+        let runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
         assert_eq!(runs.len(), 2);
 
         let active = runs.iter().find(|r| r.run_id == "r_lk_a").unwrap();
@@ -2101,7 +2151,7 @@ mod tests {
         });
         store.save_run(&state_reopened).unwrap();
 
-        let summaries = store.list_runs(10, None, None, false, false, None).unwrap();
+        let summaries = store.list_runs(10, None, None, false, false, None, false).unwrap();
         let s1 = summaries.iter().find(|s| s.run_id == "r_list_1").unwrap();
         let s2 = summaries.iter().find(|s| s.run_id == "r_list_2").unwrap();
         assert!(s1.reopen_count.is_none());
@@ -2174,7 +2224,7 @@ mod tests {
         state_successor.supersedes_run_id = Some("r_superseded".into());
         store.save_run(&state_successor).unwrap();
 
-        let summaries = store.list_runs(10, None, None, false, false, None).unwrap();
+        let summaries = store.list_runs(10, None, None, false, false, None, false).unwrap();
         let plain = summaries.iter().find(|s| s.run_id == "r_plain").unwrap();
         let superseded = summaries.iter().find(|s| s.run_id == "r_superseded").unwrap();
         let successor = summaries.iter().find(|s| s.run_id == "r_new").unwrap();
@@ -2298,7 +2348,7 @@ mod tests {
         store.save_run(&archived).unwrap();
 
         // Default: exclude archived.
-        let runs = store.list_runs(20, None, None, false, false, None).unwrap();
+        let runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
         assert!(
             runs.iter().any(|r| r.run_id == "r_active"),
             "active run must be included"
@@ -2326,7 +2376,7 @@ mod tests {
         });
         store.save_run(&archived).unwrap();
 
-        let runs = store.list_runs(20, None, None, true, false, None).unwrap();
+        let runs = store.list_runs(20, None, None, true, false, None, false).unwrap();
         assert!(
             runs.iter().any(|r| r.run_id == "r_active2"),
             "active run must be included"
@@ -2354,7 +2404,7 @@ mod tests {
         });
         store.save_run(&archived).unwrap();
 
-        let runs = store.list_runs(20, None, None, false, true, None).unwrap();
+        let runs = store.list_runs(20, None, None, false, true, None, false).unwrap();
         assert!(
             !runs.iter().any(|r| r.run_id == "r_active3"),
             "active run must NOT be included"
@@ -2378,7 +2428,7 @@ mod tests {
         });
         store.save_run(&state).unwrap();
 
-        let runs = store.list_runs(20, None, None, true, false, None).unwrap();
+        let runs = store.list_runs(20, None, None, true, false, None, false).unwrap();
         let summary = runs.iter().find(|r| r.run_id == "r_arch_sum").unwrap();
         assert_eq!(summary.is_archived, Some(true));
         assert_eq!(summary.archive_reason.as_deref(), Some("summary field test"));
@@ -2498,14 +2548,14 @@ mod tests {
         store.save_run(&state).unwrap();
 
         // Default list should include the restored run (is_archived=0 since unarchive_metadata is set).
-        let runs = store.list_runs(20, None, None, false, false, None).unwrap();
+        let runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
         assert!(
             runs.iter().any(|r| r.run_id == "r_restored"),
             "restored run must appear in default list"
         );
 
         // archived_only=true must NOT include the restored run.
-        let runs_ao = store.list_runs(20, None, None, false, true, None).unwrap();
+        let runs_ao = store.list_runs(20, None, None, false, true, None, false).unwrap();
         assert!(
             !runs_ao.iter().any(|r| r.run_id == "r_restored"),
             "restored run must NOT appear when archived_only=true"
@@ -2530,7 +2580,7 @@ mod tests {
         store.save_run(&state).unwrap();
 
         // include_archived=true to include runs with archive_metadata (even if unarchived).
-        let runs = store.list_runs(20, None, None, true, false, None).unwrap();
+        let runs = store.list_runs(20, None, None, true, false, None, false).unwrap();
         let summary = runs.iter().find(|r| r.run_id == "r_unarch_sum").unwrap();
         // is_archived must be None/false since the run is unarchived.
         assert_eq!(summary.is_archived, None, "is_archived must be None for unarchived run");
@@ -2650,18 +2700,18 @@ mod tests {
         store.save_run(&unlabeled).unwrap();
 
         // Filter by label=auth
-        let auth_runs = store.list_runs(20, None, None, false, false, Some("auth")).unwrap();
+        let auth_runs = store.list_runs(20, None, None, false, false, Some("auth"), false).unwrap();
         assert!(auth_runs.iter().any(|r| r.run_id == "r_lbl_auth"), "auth-labeled run must match");
         assert!(!auth_runs.iter().any(|r| r.run_id == "r_lbl_infra"), "infra-labeled run must not match");
         assert!(!auth_runs.iter().any(|r| r.run_id == "r_lbl_none"), "unlabeled run must not match");
 
         // Filter by label=infra
-        let infra_runs = store.list_runs(20, None, None, false, false, Some("infra")).unwrap();
+        let infra_runs = store.list_runs(20, None, None, false, false, Some("infra"), false).unwrap();
         assert!(infra_runs.iter().any(|r| r.run_id == "r_lbl_infra"), "infra-labeled run must match");
         assert!(!infra_runs.iter().any(|r| r.run_id == "r_lbl_auth"), "auth-labeled run must not match");
 
         // No label filter — all non-archived runs returned.
-        let all_runs = store.list_runs(20, None, None, false, false, None).unwrap();
+        let all_runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
         assert_eq!(all_runs.len(), 3);
     }
 
@@ -2677,7 +2727,7 @@ mod tests {
         });
         store.save_run(&state).unwrap();
 
-        let runs = store.list_runs(20, None, None, false, false, None).unwrap();
+        let runs = store.list_runs(20, None, None, false, false, None, false).unwrap();
         let summary = runs.iter().find(|r| r.run_id == "r_ann_sum").unwrap();
         assert_eq!(summary.labels, vec!["blocked"]);
         assert_eq!(summary.operator_note.as_deref(), Some("waiting for review"));

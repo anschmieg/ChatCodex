@@ -23,6 +23,8 @@ import {
   UnarchiveRunInput,
   ListRunsInput,
   AnnotateRunInput,
+  PinRunInput,
+  UnpinRunInput,
 } from "./schemas.js";
 
 describe("MCP tool registry invariants", () => {
@@ -67,6 +69,9 @@ describe("MCP tool registry invariants", () => {
       "unarchive_run",
       // Milestone 15: deterministic run labeling / annotation
       "annotate_run",
+      // Milestone 16: deterministic run pinning
+      "pin_run",
+      "unpin_run",
     ]);
     const actual = new Set(REGISTERED_TOOL_NAMES);
     assert.deepStrictEqual(actual, expected);
@@ -879,5 +884,116 @@ describe("No-hidden-agent regression (Milestone 15)", () => {
         `run.annotate must not be a forbidden agent-runtime method`,
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 16: No-hidden-agent regression for pin_run / unpin_run
+// ---------------------------------------------------------------
+describe("No-hidden-agent regression (Milestone 16)", () => {
+  it("pin_run should be registered as a lifecycle tool", () => {
+    assert.ok(
+      REGISTERED_TOOL_NAMES.includes("pin_run" as (typeof REGISTERED_TOOL_NAMES)[number]),
+      "pin_run must be in the tool registry",
+    );
+  });
+
+  it("unpin_run should be registered as a lifecycle tool", () => {
+    assert.ok(
+      REGISTERED_TOOL_NAMES.includes("unpin_run" as (typeof REGISTERED_TOOL_NAMES)[number]),
+      "unpin_run must be in the tool registry",
+    );
+  });
+
+  it("pin_run is not an autonomous continuation tool", () => {
+    const coarsePatterns = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end"];
+    for (const pattern of coarsePatterns) {
+      assert.ok(
+        !"pin_run".includes(pattern),
+        `"pin_run" must not contain autonomous pattern "${pattern}"`,
+      );
+    }
+  });
+
+  it("unpin_run is not an autonomous continuation tool", () => {
+    const coarsePatterns = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end"];
+    for (const pattern of coarsePatterns) {
+      assert.ok(
+        !"unpin_run".includes(pattern),
+        `"unpin_run" must not contain autonomous pattern "${pattern}"`,
+      );
+    }
+  });
+
+  it("daemon method run.pin is not a forbidden agent-runtime method", () => {
+    const forbiddenMethods = [
+      "turn/start",
+      "turn/steer",
+      "review/start",
+      "codex",
+      "codex-reply",
+      "continue_run",
+      "resume_thread",
+      "agent_step",
+      "fix_end_to_end",
+    ];
+    for (const method of forbiddenMethods) {
+      assert.ok(
+        method !== "run.pin",
+        `run.pin must not be a forbidden agent-runtime method`,
+      );
+    }
+  });
+
+  it("daemon method run.unpin is not a forbidden agent-runtime method", () => {
+    const forbiddenMethods = [
+      "turn/start",
+      "turn/steer",
+      "review/start",
+      "codex",
+      "codex-reply",
+      "continue_run",
+      "resume_thread",
+      "agent_step",
+      "fix_end_to_end",
+    ];
+    for (const method of forbiddenMethods) {
+      assert.ok(
+        method !== "run.unpin",
+        `run.unpin must not be a forbidden agent-runtime method`,
+      );
+    }
+  });
+
+  it("PinRunInput schema requires non-empty reason", () => {
+    const schema = z.object(PinRunInput);
+    const empty = schema.safeParse({ runId: "r1", reason: "" });
+    assert.ok(!empty.success, "empty reason should be rejected");
+    const valid = schema.safeParse({ runId: "r1", reason: "primary effort" });
+    assert.ok(valid.success, "valid reason should be accepted");
+  });
+
+  it("UnpinRunInput schema requires non-empty reason", () => {
+    const schema = z.object(UnpinRunInput);
+    const empty = schema.safeParse({ runId: "r1", reason: "" });
+    assert.ok(!empty.success, "empty reason should be rejected");
+    const valid = schema.safeParse({ runId: "r1", reason: "no longer priority" });
+    assert.ok(valid.success, "valid reason should be accepted");
+  });
+
+  it("PinRunInput schema rejects reason exceeding 500 characters", () => {
+    const schema = z.object(PinRunInput);
+    const longReason = schema.safeParse({ runId: "r1", reason: "x".repeat(501) });
+    assert.ok(!longReason.success, "reason longer than 500 chars should be rejected");
+    const maxReason = schema.safeParse({ runId: "r1", reason: "x".repeat(500) });
+    assert.ok(maxReason.success, "reason of exactly 500 chars should be accepted");
+  });
+
+  it("ListRunsInput schema accepts pinnedOnly filter", () => {
+    const schema = z.object(ListRunsInput);
+    const withPinned = schema.safeParse({ pinnedOnly: true });
+    assert.ok(withPinned.success, "pinnedOnly=true should be accepted");
+    const withoutPinned = schema.safeParse({});
+    assert.ok(withoutPinned.success, "absent pinnedOnly should be accepted");
   });
 });

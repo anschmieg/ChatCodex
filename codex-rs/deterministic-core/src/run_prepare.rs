@@ -89,6 +89,7 @@ pub fn prepare(params: &RunPrepareParams) -> Result<(RunPrepareResult, RunState)
         archive_metadata: None,
         unarchive_metadata: None,
         annotation: None,
+        pin_metadata: None,
         created_at: now.clone(),
         updated_at: now,
     };

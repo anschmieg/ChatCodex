@@ -46,6 +46,9 @@ pub fn dispatch(
         Method::RunUnarchive => handle_run_unarchive(params, store),
         // Milestone 15: deterministic run labeling / annotation
         Method::RunAnnotate => handle_run_annotate(params, store),
+        // Milestone 16: deterministic run pinning
+        Method::RunPin => handle_run_pin(params, store),
+        Method::RunUnpin => handle_run_unpin(params, store),
     }
 }
 
@@ -424,6 +427,8 @@ fn handle_runs_list(
         .label
         .as_deref()
         .map(|l| l.trim().to_lowercase());
+    // Milestone 16: pinned_only filter.
+    let pinned_only = p.pinned_only.unwrap_or(false);
     let runs = store.list_runs(
         limit,
         p.workspace_id.as_deref(),
@@ -431,6 +436,7 @@ fn handle_runs_list(
         include_archived,
         archived_only,
         label_filter_owned.as_deref(),
+        pinned_only,
     )?;
     let count = runs.len();
     let result = RunsListResult { runs, count };
@@ -463,6 +469,7 @@ fn handle_run_get(
     let archive_metadata = state.archive_metadata.clone();
     let unarchive_metadata = state.unarchive_metadata.clone();
     let annotation = state.annotation.clone();
+    let pin_metadata = state.pin_metadata.clone();
 
     let result = RunGetResult {
         run_state: state.clone(),
@@ -483,6 +490,7 @@ fn handle_run_get(
         archive_metadata,
         unarchive_metadata,
         annotation,
+        pin_metadata,
     };
     Ok((serde_json::to_value(result)?, Some(state)))
 }
@@ -852,6 +860,80 @@ fn handle_run_annotate(
     Ok((serde_json::to_value(result)?, Some(state)))
 }
 
+// ---- Milestone 16: deterministic run pinning ----
+
+/// Pin a run to keep it prominent in the working set.
+///
+/// Deterministic rules:
+/// - Any run may be pinned regardless of current status.
+/// - If already pinned, the metadata is replaced (idempotent re-pin).
+/// - This operation updates pin metadata only.
+/// - It does not execute work, replan, reopen, finalize, archive, unarchive,
+///   or supersede the run.
+/// - An audit entry is appended.
+fn handle_run_pin(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunPinParams = serde_json::from_value(params)?;
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let result = deterministic_core::run_pin::pin(&p, &mut state)?;
+    store.save_run(&state)?;
+
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "run_pinned",
+        &format!("Run pinned: {}", result.reason),
+        Some(
+            &serde_json::json!({
+                "reason": result.reason,
+                "pinned_at": result.pinned_at,
+            })
+            .to_string(),
+        ),
+    );
+
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
+/// Unpin a run, removing it from the prominent working-set position.
+///
+/// Deterministic rules:
+/// - Only pinned runs (with `pin_metadata` set) may be unpinned.
+/// - This operation clears pin metadata only.
+/// - It does not execute work, replan, reopen, finalize, archive, unarchive,
+///   or supersede the run.
+/// - An audit entry is appended.
+fn handle_run_unpin(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunUnpinParams = serde_json::from_value(params)?;
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let result = deterministic_core::run_unpin::unpin(&p, &mut state)?;
+    store.save_run(&state)?;
+
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "run_unpinned",
+        &format!("Run unpinned: {}", p.reason),
+        Some(
+            &serde_json::json!({
+                "reason": p.reason,
+            })
+            .to_string(),
+        ),
+    );
+
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -887,6 +969,7 @@ mod tests {
             archive_metadata: None,
             unarchive_metadata: None,
             annotation: None,
+            pin_metadata: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

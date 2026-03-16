@@ -34,6 +34,8 @@ import {
   ArchiveRunInput,
   UnarchiveRunInput,
   AnnotateRunInput,
+  PinRunInput,
+  UnpinRunInput,
 } from "./schemas.js";
 
 /**
@@ -86,6 +88,9 @@ export const REGISTERED_TOOL_NAMES = [
   "unarchive_run",
   // Milestone 15: deterministic run labeling / annotation
   "annotate_run",
+  // Milestone 16: deterministic run pinning
+  "pin_run",
+  "unpin_run",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -278,10 +283,10 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
     },
   );
 
-  // ---- list_runs (Milestone 7; extended in Milestone 13, 15) ----
+  // ---- list_runs (Milestone 7; extended in Milestone 13, 15, 16) ----
   server.tool(
     "list_runs",
-    "List known runs with status and metadata (read-only). Supports archive filtering via optional parameters: set includeArchived=true to include archived runs, or archivedOnly=true to return only archived runs. Use label= to filter by exact normalized label.",
+    "List known runs with status and metadata (read-only). Supports archive filtering via optional parameters: set includeArchived=true to include archived runs, or archivedOnly=true to return only archived runs. Use label= to filter by exact normalized label. Use pinnedOnly=true to return only pinned runs. Pinned runs appear first by default.",
     ListRunsInput,
     async (params) => {
       const result = await client.call("runs.list", {
@@ -291,6 +296,7 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
         includeArchived: params.includeArchived,
         archivedOnly: params.archivedOnly,
         label: params.label,
+        pinnedOnly: params.pinnedOnly,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -461,6 +467,45 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
         runId: params.runId,
         labels: params.labels,
         operatorNote: params.operatorNote,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- pin_run (Milestone 16) ----
+  server.tool(
+    "pin_run",
+    "Explicitly pin a run to keep it prominent in the working set. " +
+      "Pinning is deterministic and audited. " +
+      "It updates only pin metadata and does not execute work, change status, replan, reopen, finalize, archive, unarchive, or supersede the run. " +
+      "Pinned runs appear first in list_runs by default. " +
+      "Use pinnedOnly=true in list_runs to return only pinned runs.",
+    PinRunInput,
+    async (params) => {
+      const result = await client.call("run.pin", {
+        runId: params.runId,
+        reason: params.reason,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- unpin_run (Milestone 16) ----
+  server.tool(
+    "unpin_run",
+    "Explicitly unpin a previously pinned run to remove it from the prominent working-set position. " +
+      "Unpinning is deterministic and audited. " +
+      "It clears pin metadata only and does not execute work, change status, replan, reopen, finalize, archive, unarchive, or supersede the run. " +
+      "Only pinned runs can be unpinned.",
+    UnpinRunInput,
+    async (params) => {
+      const result = await client.call("run.unpin", {
+        runId: params.runId,
+        reason: params.reason,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

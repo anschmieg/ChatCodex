@@ -248,6 +248,11 @@ export const ListRunsInput = {
     .describe(
       "Filter by exact normalized label. When provided, only runs that carry this label are returned.",
     ),
+  // Milestone 16: pinned_only filter
+  pinnedOnly: z
+    .boolean()
+    .optional()
+    .describe("When true, return only pinned runs."),
 };
 
 // ---------------------------------------------------------------
@@ -449,5 +454,33 @@ export const AnnotateRunInput = {
     .describe(
       "Optional concise operator note (max 1000 characters). Pass an empty string to clear. " +
         "Non-semantic organization metadata only.",
+    ),
+};
+
+// ---------------------------------------------------------------
+// PinRunInput / UnpinRunInput  (Milestone 16)
+// ---------------------------------------------------------------
+
+/** Input schema for `pin_run`. */
+export const PinRunInput = {
+  runId: z.string().describe("Run ID to pin"),
+  reason: z
+    .string()
+    .min(1)
+    .max(500)
+    .describe(
+      "Human-readable reason for pinning (required for auditability, max 500 characters).",
+    ),
+};
+
+/** Input schema for `unpin_run`. */
+export const UnpinRunInput = {
+  runId: z.string().describe("Run ID to unpin"),
+  reason: z
+    .string()
+    .min(1)
+    .max(500)
+    .describe(
+      "Human-readable reason for unpinning (required for auditability, max 500 characters).",
     ),
 };
