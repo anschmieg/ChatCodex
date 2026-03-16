@@ -36,6 +36,8 @@ import {
   AnnotateRunInput,
   PinRunInput,
   UnpinRunInput,
+  SnoozeRunInput,
+  UnsnoozeRunInput,
 } from "./schemas.js";
 
 /**
@@ -91,6 +93,9 @@ export const REGISTERED_TOOL_NAMES = [
   // Milestone 16: deterministic run pinning
   "pin_run",
   "unpin_run",
+  // Milestone 17: deterministic run snoozing
+  "snooze_run",
+  "unsnooze_run",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -283,10 +288,10 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
     },
   );
 
-  // ---- list_runs (Milestone 7; extended in Milestone 13, 15, 16) ----
+  // ---- list_runs (Milestone 7; extended in Milestone 13, 15, 16, 17) ----
   server.tool(
     "list_runs",
-    "List known runs with status and metadata (read-only). Supports archive filtering via optional parameters: set includeArchived=true to include archived runs, or archivedOnly=true to return only archived runs. Use label= to filter by exact normalized label. Use pinnedOnly=true to return only pinned runs. Pinned runs appear first by default.",
+    "List known runs with status and metadata (read-only). Supports archive filtering via optional parameters: set includeArchived=true to include archived runs, or archivedOnly=true to return only archived runs. Use label= to filter by exact normalized label. Use pinnedOnly=true to return only pinned runs. Pinned runs appear first by default. Snoozed runs are excluded by default; use includeSnoozed=true to include them or snoozedOnly=true to return only snoozed runs.",
     ListRunsInput,
     async (params) => {
       const result = await client.call("runs.list", {
@@ -297,6 +302,8 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
         archivedOnly: params.archivedOnly,
         label: params.label,
         pinnedOnly: params.pinnedOnly,
+        includeSnoozed: params.includeSnoozed,
+        snoozedOnly: params.snoozedOnly,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -504,6 +511,46 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
     UnpinRunInput,
     async (params) => {
       const result = await client.call("run.unpin", {
+        runId: params.runId,
+        reason: params.reason,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- snooze_run (Milestone 17) ----
+  server.tool(
+    "snooze_run",
+    "Explicitly snooze a run to temporarily defer it out of the default visible working set without archiving it. " +
+      "Snoozing is deterministic and audited. " +
+      "It updates only snooze metadata and does not execute work, change lifecycle status, replan, reopen, finalize, archive, unarchive, or supersede the run. " +
+      "Snoozed runs are excluded from list_runs by default; use includeSnoozed=true or snoozedOnly=true to include them. " +
+      "Any run regardless of lifecycle status may be snoozed. Re-snoozing a snoozed run replaces the existing snooze metadata.",
+    SnoozeRunInput,
+    async (params) => {
+      const result = await client.call("run.snooze", {
+        runId: params.runId,
+        reason: params.reason,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- unsnooze_run (Milestone 17) ----
+  server.tool(
+    "unsnooze_run",
+    "Explicitly unsnooze a snoozed run to restore it to the default visible working set. " +
+      "Unsnoozing is deterministic and audited. " +
+      "It clears snooze metadata only and does not execute work, change lifecycle status, replan, reopen, finalize, archive, unarchive, or supersede the run. " +
+      "Only snoozed runs can be unsnoozed; non-snoozed runs are rejected. " +
+      "After unsnoozing, the run reappears in the default list_runs result.",
+    UnsnoozeRunInput,
+    async (params) => {
+      const result = await client.call("run.unsnooze", {
         runId: params.runId,
         reason: params.reason,
       });

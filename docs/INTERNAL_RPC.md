@@ -441,3 +441,27 @@ mutated.
 Params: `{ runId, scope, target?, reason? }`
 
 Returns: `PreflightResult` — same shape as `patch.preflight`.
+
+### run.snooze (Milestone 17)
+
+Snooze a run to defer it out of the default visible working set.
+
+Params: `{ runId, reason }`
+
+Returns: `{ runId, status, snoozedAt, reason, message }`
+
+Any run may be snoozed regardless of lifecycle status. Re-snoozing replaces existing snooze metadata. Appends `run_snoozed` audit entry.
+
+### run.unsnooze (Milestone 17)
+
+Restore a snoozed run to the default visible working set.
+
+Params: `{ runId, reason }`
+
+Returns: `{ runId, status, unsnoozedAt, reason, message }`
+
+Only snoozed runs may be unsnoozed. Clears snooze metadata. Appends `run_unsnoozed` audit entry.
+
+### runs.list snooze filtering (Milestone 17)
+
+`runs.list` now accepts `includeSnoozed` (boolean) and `snoozedOnly` (boolean) params. Default excludes snoozed runs.

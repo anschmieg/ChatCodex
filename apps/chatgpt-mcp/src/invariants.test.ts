@@ -25,6 +25,8 @@ import {
   AnnotateRunInput,
   PinRunInput,
   UnpinRunInput,
+  SnoozeRunInput,
+  UnsnoozeRunInput,
 } from "./schemas.js";
 
 describe("MCP tool registry invariants", () => {
@@ -72,6 +74,9 @@ describe("MCP tool registry invariants", () => {
       // Milestone 16: deterministic run pinning
       "pin_run",
       "unpin_run",
+      // Milestone 17: deterministic run snoozing
+      "snooze_run",
+      "unsnooze_run",
     ]);
     const actual = new Set(REGISTERED_TOOL_NAMES);
     assert.deepStrictEqual(actual, expected);
@@ -995,5 +1000,132 @@ describe("No-hidden-agent regression (Milestone 16)", () => {
     assert.ok(withPinned.success, "pinnedOnly=true should be accepted");
     const withoutPinned = schema.safeParse({});
     assert.ok(withoutPinned.success, "absent pinnedOnly should be accepted");
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 17: No-hidden-agent regression for snooze_run / unsnooze_run
+// ---------------------------------------------------------------
+describe("No-hidden-agent regression (Milestone 17)", () => {
+  it("snooze_run should be registered as a lifecycle tool", () => {
+    assert.ok(
+      REGISTERED_TOOL_NAMES.includes("snooze_run" as (typeof REGISTERED_TOOL_NAMES)[number]),
+      "snooze_run must be in the tool registry",
+    );
+  });
+
+  it("unsnooze_run should be registered as a lifecycle tool", () => {
+    assert.ok(
+      REGISTERED_TOOL_NAMES.includes("unsnooze_run" as (typeof REGISTERED_TOOL_NAMES)[number]),
+      "unsnooze_run must be in the tool registry",
+    );
+  });
+
+  it("snooze_run is not an autonomous continuation tool", () => {
+    const coarsePatterns = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end"];
+    for (const pattern of coarsePatterns) {
+      assert.ok(
+        !"snooze_run".includes(pattern),
+        `"snooze_run" must not contain autonomous pattern "${pattern}"`,
+      );
+    }
+  });
+
+  it("unsnooze_run is not an autonomous continuation tool", () => {
+    const coarsePatterns = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end"];
+    for (const pattern of coarsePatterns) {
+      assert.ok(
+        !"unsnooze_run".includes(pattern),
+        `"unsnooze_run" must not contain autonomous pattern "${pattern}"`,
+      );
+    }
+  });
+
+  it("daemon method run.snooze is not a forbidden agent-runtime method", () => {
+    const forbiddenMethods = [
+      "turn/start",
+      "turn/steer",
+      "review/start",
+      "codex",
+      "codex-reply",
+      "continue_run",
+      "resume_thread",
+      "agent_step",
+      "fix_end_to_end",
+    ];
+    for (const method of forbiddenMethods) {
+      assert.ok(
+        method !== "run.snooze",
+        `run.snooze must not be a forbidden agent-runtime method`,
+      );
+    }
+  });
+
+  it("daemon method run.unsnooze is not a forbidden agent-runtime method", () => {
+    const forbiddenMethods = [
+      "turn/start",
+      "turn/steer",
+      "review/start",
+      "codex",
+      "codex-reply",
+      "continue_run",
+      "resume_thread",
+      "agent_step",
+      "fix_end_to_end",
+    ];
+    for (const method of forbiddenMethods) {
+      assert.ok(
+        method !== "run.unsnooze",
+        `run.unsnooze must not be a forbidden agent-runtime method`,
+      );
+    }
+  });
+
+  it("SnoozeRunInput schema requires non-empty reason", () => {
+    const schema = z.object(SnoozeRunInput);
+    const empty = schema.safeParse({ runId: "r1", reason: "" });
+    assert.ok(!empty.success, "empty reason should be rejected");
+    const valid = schema.safeParse({ runId: "r1", reason: "blocked on upstream" });
+    assert.ok(valid.success, "valid reason should be accepted");
+  });
+
+  it("UnsnoozeRunInput schema requires non-empty reason", () => {
+    const schema = z.object(UnsnoozeRunInput);
+    const empty = schema.safeParse({ runId: "r1", reason: "" });
+    assert.ok(!empty.success, "empty reason should be rejected");
+    const valid = schema.safeParse({ runId: "r1", reason: "upstream unblocked" });
+    assert.ok(valid.success, "valid reason should be accepted");
+  });
+
+  it("SnoozeRunInput schema rejects reason exceeding 500 characters", () => {
+    const schema = z.object(SnoozeRunInput);
+    const longReason = schema.safeParse({ runId: "r1", reason: "x".repeat(501) });
+    assert.ok(!longReason.success, "reason longer than 500 chars should be rejected");
+    const maxReason = schema.safeParse({ runId: "r1", reason: "x".repeat(500) });
+    assert.ok(maxReason.success, "reason of exactly 500 chars should be accepted");
+  });
+
+  it("UnsnoozeRunInput schema rejects reason exceeding 500 characters", () => {
+    const schema = z.object(UnsnoozeRunInput);
+    const longReason = schema.safeParse({ runId: "r1", reason: "x".repeat(501) });
+    assert.ok(!longReason.success, "reason longer than 500 chars should be rejected");
+    const maxReason = schema.safeParse({ runId: "r1", reason: "x".repeat(500) });
+    assert.ok(maxReason.success, "reason of exactly 500 chars should be accepted");
+  });
+
+  it("ListRunsInput schema accepts includeSnoozed filter", () => {
+    const schema = z.object(ListRunsInput);
+    const withSnoozed = schema.safeParse({ includeSnoozed: true });
+    assert.ok(withSnoozed.success, "includeSnoozed=true should be accepted");
+    const withoutSnoozed = schema.safeParse({});
+    assert.ok(withoutSnoozed.success, "absent includeSnoozed should be accepted");
+  });
+
+  it("ListRunsInput schema accepts snoozedOnly filter", () => {
+    const schema = z.object(ListRunsInput);
+    const snoozedOnly = schema.safeParse({ snoozedOnly: true });
+    assert.ok(snoozedOnly.success, "snoozedOnly=true should be accepted");
+    const withoutSnoozedOnly = schema.safeParse({});
+    assert.ok(withoutSnoozedOnly.success, "absent snoozedOnly should be accepted");
   });
 });

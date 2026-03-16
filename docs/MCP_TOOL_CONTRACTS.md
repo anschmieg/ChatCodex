@@ -574,6 +574,71 @@ Explicitly unarchive (restore) an archived run so it returns to the default acti
 - `archivedOnly=true` excludes restored (unarchived) runs
 - Unarchived runs remain fully inspectable via `get_run_state` and `get_run_history`
 
+## snooze_run (Milestone 17)
+
+Explicitly snooze a run to temporarily defer it out of the default visible working set without archiving it.
+
+### Input
+
+- `runId`: string — Run ID to snooze
+- `reason`: string — human-readable reason for snoozing (required, 1–500 chars)
+
+### Returns
+
+- `runId` — the snoozed run ID
+- `status` — the run status at time of snoozing (unchanged)
+- `snoozedAt` — ISO 8601 timestamp of snoozing
+- `reason` — the reason provided
+- `message` — human-readable confirmation
+
+### Behavior
+
+- Any run regardless of lifecycle status may be snoozed
+- Re-snoozing a snoozed run replaces the existing snooze metadata
+- Snoozing does **not** execute work, change lifecycle status, replan, reopen, finalize, archive, unarchive, or supersede the run
+- `snoozeMetadata` is added to the run state and persisted in SQLite
+- Appends `run_snoozed` audit entry with the snooze reason
+- Snoozed runs remain fully inspectable via `get_run_state` and `get_run_history`
+- `list_runs` excludes snoozed runs by default; use `includeSnoozed=true` or `snoozedOnly=true` to include them
+
+### `list_runs` snooze filtering (Milestone 17 extension)
+
+The `list_runs` tool now accepts two optional boolean parameters:
+
+- `includeSnoozed` (boolean, default: false) — when `true`, include snoozed runs alongside non-snoozed runs
+- `snoozedOnly` (boolean, default: false) — when `true`, return only snoozed runs (takes precedence over `includeSnoozed`)
+
+When both are omitted, snoozed runs are excluded by default.
+
+---
+
+## unsnooze_run (Milestone 17)
+
+Explicitly unsnooze a snoozed run to restore it to the default visible working set.
+
+### Input
+
+- `runId`: string — Run ID to unsnooze (must currently be snoozed)
+- `reason`: string — human-readable reason for unsnoozing (required, 1–500 chars)
+
+### Returns
+
+- `runId` — the unsnoozed run ID
+- `status` — the run status (unchanged)
+- `unsnoozedAt` — ISO 8601 timestamp of unsnoozing
+- `reason` — the reason provided
+- `message` — human-readable confirmation
+
+### Behavior
+
+- Only snoozed runs may be unsnoozed; non-snoozed runs are rejected deterministically
+- Unsnoozing does **not** execute work, change lifecycle status, replan, reopen, finalize, archive, unarchive, or supersede the run
+- The run's plan, completed steps, audit history, and all other metadata are fully preserved
+- `snoozeMetadata` is cleared from the run state and the change is persisted
+- Appends `run_unsnoozed` audit entry with the unsnooze reason
+- After unsnoozing, the run reappears in the default `list_runs` visible set
+- `snoozedOnly=true` excludes unsnooozed runs
+
 ## Forbidden public tools
 
 Do not expose:

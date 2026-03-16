@@ -388,12 +388,51 @@ Policy knobs are now taken from the per-run `RunPolicy` profile (Milestone 8).
 
 ## Verified
 
-- ✅ 309 Rust tests pass (175 core + 132 daemon + 2 protocol)
-- ✅ 90 TypeScript tests pass
+- ✅ 309+ Rust tests pass (including Milestone 17 snooze/unsnooze tests)
+- ✅ 112 TypeScript tests pass (22 new Milestone 17 tests)
 - ✅ Clippy clean
 - ✅ No forbidden methods or tools registered
 - ✅ No model SDK dependencies in deterministic crates
 - ✅ CI workflow validates all invariants
+
+## Milestone 17: Deterministic Run Snoozing (completed)
+
+Added explicit, audited snooze / unsnooze lifecycle controls so ChatGPT can temporarily defer runs out of the default visible working set without archiving them.
+
+### What was added
+
+**Protocol (`deterministic-protocol`)**:
+- `SnoozeMetadata` struct with `reason` and `snoozed_at`
+- `RunSnoozeParams` / `RunSnoozeResult`
+- `RunUnsnoozeParams` / `RunUnsnoozeResult`
+- `SNOOZE_REASON_MAX_LEN` constant (500)
+- `snooze_metadata: Option<SnoozeMetadata>` field on `RunState`
+- `is_snoozed`, `snooze_reason`, `snoozed_at` on `RunSummary`
+- `include_snoozed`, `snoozed_only` on `RunsListParams`
+- `Method::RunSnooze` (`run.snooze`) / `Method::RunUnsnooze` (`run.unsnooze`)
+
+**Core logic (`deterministic-core`)**:
+- `run_snooze.rs` — any run may be snoozed; re-snooze replaces metadata
+- `run_unsnooze.rs` — only snoozed runs accepted; clears snooze metadata only
+
+**Persistence (`deterministic-daemon`)**:
+- Migration adds `is_snoozed INTEGER DEFAULT 0` and `snooze_metadata TEXT`
+- `save_run` / `get_run` roundtrip snooze state
+- `list_runs` with `include_snoozed` / `snoozed_only` filtering; default excludes snoozed
+
+**Handlers (`deterministic-daemon`)**:
+- `handle_run_snooze` / `handle_run_unsnooze` with `run_snoozed` / `run_unsnoozed` audit entries
+
+**TypeScript MCP gateway**:
+- `SnoozeRunInput` / `UnsnoozeRunInput` Zod schemas (reason 1–500 chars)
+- `ListRunsInput` extended with `includeSnoozed` / `snoozedOnly`
+- `snooze_run` → `run.snooze` and `unsnooze_run` → `run.unsnooze` tools registered
+- 12 new invariant / schema tests (no-hidden-agent regression, schema validation, list filter fields)
+
+### Architecture invariant confirmed
+- No backend model calls added
+- No hidden agent loop added
+- No coarse autonomous tools added
 
 ## Pending / Out of Scope
 

@@ -253,6 +253,19 @@ export const ListRunsInput = {
     .boolean()
     .optional()
     .describe("When true, return only pinned runs."),
+  // Milestone 17: snooze filtering
+  includeSnoozed: z
+    .boolean()
+    .optional()
+    .describe(
+      "When true, include snoozed runs alongside non-snoozed runs in the results. Default: false (snoozed runs are excluded).",
+    ),
+  snoozedOnly: z
+    .boolean()
+    .optional()
+    .describe(
+      "When true, return only snoozed runs. Takes precedence over includeSnoozed.",
+    ),
 };
 
 // ---------------------------------------------------------------
@@ -482,5 +495,33 @@ export const UnpinRunInput = {
     .max(500)
     .describe(
       "Human-readable reason for unpinning (required for auditability, max 500 characters).",
+    ),
+};
+
+// ---------------------------------------------------------------
+// SnoozeRunInput / UnsnoozeRunInput  (Milestone 17)
+// ---------------------------------------------------------------
+
+/** Input schema for `snooze_run`. */
+export const SnoozeRunInput = {
+  runId: z.string().describe("Run ID to snooze"),
+  reason: z
+    .string()
+    .min(1)
+    .max(500)
+    .describe(
+      "Human-readable reason for snoozing (required for auditability, max 500 characters).",
+    ),
+};
+
+/** Input schema for `unsnooze_run`. */
+export const UnsnoozeRunInput = {
+  runId: z.string().describe("Run ID to unsnooze (must currently be snoozed)"),
+  reason: z
+    .string()
+    .min(1)
+    .max(500)
+    .describe(
+      "Human-readable reason for unsnoozing (required for auditability, max 500 characters).",
     ),
 };
