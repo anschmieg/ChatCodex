@@ -83,6 +83,7 @@ pub fn supersede(
         annotation: None,
         pin_metadata: None,
         snooze_metadata: None,
+        priority: original_state.priority,
         created_at: now.clone(),
         updated_at: now.clone(),
     };
@@ -145,6 +146,7 @@ mod tests {
             annotation: None,
             pin_metadata: None,
             snooze_metadata: None,
+            priority: deterministic_protocol::RunPriority::Normal,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -321,6 +323,24 @@ mod tests {
         assert_eq!(successor.workspace_id, "/projects/my-repo");
         assert_eq!(successor.policy_profile.patch_edit_threshold, 3);
         assert_eq!(successor.focus_paths, vec!["src/", "tests/"]);
+    }
+
+    #[test]
+    fn successor_inherits_priority() {
+        let mut original = make_active_state("run-prio");
+        original.priority = deterministic_protocol::RunPriority::Urgent;
+        finalize_state(&mut original, "completed");
+
+        let params = RunSupersedeParams {
+            run_id: "run-prio".into(),
+            new_user_goal: None,
+            reason: "carry urgency forward".into(),
+        };
+        let (_result, successor) = supersede(&params, &mut original, "run-prio-v2").unwrap();
+        assert_eq!(
+            successor.priority,
+            deterministic_protocol::RunPriority::Urgent
+        );
     }
 
     // -----------------------------------------------------------------------

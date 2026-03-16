@@ -318,7 +318,7 @@ impl Store {
                         reopen_metadata, supersedes_run_id, superseded_by_run_id,
                         supersession_reason, superseded_at, archive_metadata,
                         unarchive_metadata, annotation, pin_metadata,
-                        snooze_metadata,
+                        snooze_metadata, priority,
                         created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
@@ -506,6 +506,15 @@ impl Store {
                             Box::new(e),
                         )
                     })?;
+                // Milestone 18: explicit priority metadata.
+                let priority_str: String = row.get(29)?;
+                let priority = RunPriority::parse(&priority_str).ok_or_else(|| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        29,
+                        rusqlite::types::Type::Text,
+                        format!("invalid run priority in SQLite: '{priority_str}'").into(),
+                    )
+                })?;
 
                 Ok(RunState {
                     run_id: row.get(0)?,
@@ -537,8 +546,9 @@ impl Store {
                     annotation,
                     pin_metadata,
                     snooze_metadata,
-                    created_at: row.get(29)?,
-                    updated_at: row.get(30)?,
+                    priority,
+                    created_at: row.get(30)?,
+                    updated_at: row.get(31)?,
                 })
             })
             .context("failed to query run")?;
@@ -752,7 +762,7 @@ impl Store {
             "SELECT run_id, workspace_id, user_goal, status, current_step, plan,
                     created_at, updated_at, outcome_kind, reopen_metadata,
                     supersedes_run_id, superseded_by_run_id, is_archived, archive_metadata,
-                    unarchive_metadata, annotation, pin_metadata, snooze_metadata
+                    unarchive_metadata, annotation, pin_metadata, snooze_metadata, priority
              FROM runs {where_clause}
              ORDER BY CASE WHEN pin_metadata IS NOT NULL THEN 0 ELSE 1 END ASC, updated_at DESC
              LIMIT ?1"
@@ -767,7 +777,7 @@ impl Store {
             //  8: outcome_kind  9: reopen_metadata
             // 10: supersedes_run_id  11: superseded_by_run_id
             // 12: is_archived  13: archive_metadata  14: unarchive_metadata
-            // 15: annotation  16: pin_metadata  17: snooze_metadata
+            // 15: annotation  16: pin_metadata  17: snooze_metadata  18: priority
             let plan_json: String = row.get(5)?;
             let total_steps: usize = serde_json::from_str::<Vec<String>>(&plan_json)
                 .map(|v| v.len())
@@ -818,6 +828,14 @@ impl Store {
             let (is_snoozed, snooze_reason, snoozed_at) = snooze_metadata
                 .map(|m| (Some(true), Some(m.reason), Some(m.snoozed_at)))
                 .unwrap_or((None, None, None));
+            let priority_str: String = row.get(18)?;
+            let priority = RunPriority::parse(&priority_str).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    18,
+                    rusqlite::types::Type::Text,
+                    format!("invalid run priority in SQLite: '{priority_str}'").into(),
+                )
+            })?;
             Ok(RunSummary {
                 run_id: row.get(0)?,
                 workspace_id: row.get(1)?,
@@ -842,6 +860,7 @@ impl Store {
                 is_snoozed,
                 snooze_reason,
                 snoozed_at,
+                priority,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
@@ -939,6 +958,11 @@ impl Store {
         }
         Ok(entries)
     }
+
+    /// Backward-compatible alias used by daemon handler tests.
+    pub fn get_run_history(&self, run_id: &str, limit: usize) -> Result<Vec<RunHistoryEntry>> {
+        self.get_audit_entries(run_id, limit)
+    }
 }
 
 #[cfg(test)]
@@ -976,6 +1000,7 @@ mod tests {
             annotation: None,
             pin_metadata: None,
             snooze_metadata: None,
+            priority: deterministic_protocol::RunPriority::Normal,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -3021,4 +3046,3 @@ mod tests {
         assert_eq!(summary.snoozed_at.as_deref(), Some("2024-06-01T12:00:00Z"));
     }
 }
-

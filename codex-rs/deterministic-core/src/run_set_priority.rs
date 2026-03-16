@@ -96,7 +96,7 @@ mod tests {
             annotation: None,
             pin_metadata: None,
             snooze_metadata: None,
-            priority: RunPriority::Normal,
+            priority: deterministic_protocol::RunPriority::Normal,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -151,7 +151,7 @@ mod tests {
         state.priority = RunPriority::Urgent;
         let params = RunSetPriorityParams {
             run_id: "run-4".into(),
-            priority: RunPriority::Normal,
+            priority: deterministic_protocol::RunPriority::Normal,
             reason: "urgency resolved".into(),
         };
         let result = set_priority(&params, &mut state).unwrap();

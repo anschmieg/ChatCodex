@@ -562,10 +562,11 @@ pub struct RunOutcome {
 /// The four levels are ordered from lowest to highest urgency:
 /// `low < normal < high < urgent`.  The default for new and existing runs
 /// is `normal`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RunPriority {
     Low,
+    #[default]
     Normal,
     High,
     Urgent,
@@ -606,12 +607,6 @@ impl RunPriority {
             Self::High => 2,
             Self::Urgent => 3,
         }
-    }
-}
-
-impl Default for RunPriority {
-    fn default() -> Self {
-        Self::Normal
     }
 }
 
