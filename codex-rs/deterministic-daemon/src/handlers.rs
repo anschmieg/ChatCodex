@@ -54,6 +54,8 @@ pub fn dispatch(
         Method::RunUnsnooze => handle_run_unsnooze(params, store),
         // Milestone 18: deterministic run priority
         Method::RunSetPriority => handle_run_set_priority(params, store),
+        // Milestone 19: deterministic run ownership/assignee
+        Method::RunAssignOwner => handle_run_assign_owner(params, store),
     }
 }
 
@@ -461,6 +463,10 @@ fn handle_runs_list(
         runs.sort_by(|a, b| {
             b.priority.sort_key().cmp(&a.priority.sort_key())
         });
+    }
+    // Milestone 19: assignee filter
+    if let Some(ref assignee_filter) = p.assignee {
+        runs.retain(|r| r.assignee.as_deref() == Some(assignee_filter.as_str()));
     }
     let count = runs.len();
     let result = RunsListResult { runs, count };
@@ -1077,6 +1083,35 @@ fn handle_run_set_priority(
     Ok((serde_json::to_value(result)?, Some(state)))
 }
 
+fn handle_run_assign_owner(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunAssignOwnerParams = serde_json::from_value(params)?;
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let result = deterministic_core::run_assign_owner::assign_owner(&p, &mut state)?;
+    store.save_run(&state)?;
+
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "run_owner_assigned",
+        &result.message,
+        Some(
+            &serde_json::json!({
+                "previous_assignee": result.previous_assignee,
+                "assignee": result.assignee,
+                "ownership_note_set": result.ownership_note.is_some(),
+            })
+            .to_string(),
+        ),
+    );
+
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1115,6 +1150,8 @@ mod tests {
             pin_metadata: None,
             snooze_metadata: None,
             priority: deterministic_protocol::RunPriority::Normal,
+            assignee: None,
+            ownership_note: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -2782,5 +2819,114 @@ mod tests {
         let result: RunsListResult = serde_json::from_value(val).unwrap();
         let summary = result.runs.iter().find(|r| r.run_id == "r_prio_summary").unwrap();
         assert_eq!(summary.priority, RunPriority::Urgent);
+    }
+
+    // -- run.assign_owner tests (Milestone 19) --------------------------------
+
+    #[test]
+    fn run_assign_owner_sets_assignee() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_ao_set")).unwrap();
+        let (val, run_state) = dispatch(
+            Method::RunAssignOwner,
+            serde_json::json!({"runId": "r_ao_set", "assignee": "alice"}),
+            &store,
+        ).unwrap();
+        let result: RunAssignOwnerResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.assignee.as_deref(), Some("alice"));
+        assert_eq!(result.previous_assignee, None);
+        assert!(run_state.is_some());
+        assert_eq!(run_state.unwrap().assignee.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn run_assign_owner_clears_assignee() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_ao_clear");
+        state.assignee = Some("bob".into());
+        store.save_run(&state).unwrap();
+        let (val, _) = dispatch(
+            Method::RunAssignOwner,
+            serde_json::json!({"runId": "r_ao_clear", "assignee": null}),
+            &store,
+        ).unwrap();
+        let result: RunAssignOwnerResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.assignee, None);
+        assert_eq!(result.previous_assignee.as_deref(), Some("bob"));
+    }
+
+    #[test]
+    fn run_assign_owner_update_note() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_ao_note")).unwrap();
+        let (val, _) = dispatch(
+            Method::RunAssignOwner,
+            serde_json::json!({"runId": "r_ao_note", "ownershipNote": "hand off to team B"}),
+            &store,
+        ).unwrap();
+        let result: RunAssignOwnerResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.ownership_note.as_deref(), Some("hand off to team B"));
+    }
+
+    #[test]
+    fn run_assign_owner_persists() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_ao_persist")).unwrap();
+        dispatch(
+            Method::RunAssignOwner,
+            serde_json::json!({"runId": "r_ao_persist", "assignee": "carol"}),
+            &store,
+        ).unwrap();
+        let loaded = store.get_run("r_ao_persist").unwrap().unwrap();
+        assert_eq!(loaded.assignee.as_deref(), Some("carol"));
+    }
+
+    #[test]
+    fn run_assign_owner_audit_entry() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_ao_audit")).unwrap();
+        dispatch(
+            Method::RunAssignOwner,
+            serde_json::json!({"runId": "r_ao_audit", "assignee": "dave"}),
+            &store,
+        ).unwrap();
+        let history = store.get_run_history("r_ao_audit", 10).unwrap();
+        assert!(history.iter().any(|e| e.event_kind == "run_owner_assigned"));
+    }
+
+    #[test]
+    fn run_assign_owner_does_not_change_status() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_ao_status");
+        state.status = "finalized:completed".into();
+        store.save_run(&state).unwrap();
+        let (val, _) = dispatch(
+            Method::RunAssignOwner,
+            serde_json::json!({"runId": "r_ao_status", "assignee": "eve"}),
+            &store,
+        ).unwrap();
+        let result: RunAssignOwnerResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.status, "finalized:completed");
+    }
+
+    #[test]
+    fn run_assign_owner_list_filter_by_assignee() {
+        let store = Store::open_in_memory().unwrap();
+        let mut s1 = make_run_state("r_ao_list1");
+        s1.assignee = Some("alice".into());
+        let mut s2 = make_run_state("r_ao_list2");
+        s2.assignee = Some("bob".into());
+        let s3 = make_run_state("r_ao_list3");
+        store.save_run(&s1).unwrap();
+        store.save_run(&s2).unwrap();
+        store.save_run(&s3).unwrap();
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"limit": 50, "assignee": "alice"}),
+            &store,
+        ).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.runs.len(), 1);
+        assert_eq!(result.runs[0].run_id, "r_ao_list1");
     }
 }

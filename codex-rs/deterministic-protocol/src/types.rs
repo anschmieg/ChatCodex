@@ -724,6 +724,12 @@ pub struct RunState {
     /// Defaults to `RunPriority::Normal` for all runs.
     #[serde(default)]
     pub priority: RunPriority,
+    /// Assignee identifier (Milestone 19).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    /// Ownership / handoff note (Milestone 19).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership_note: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -796,6 +802,9 @@ pub struct RunSummary {
     /// Explicit priority level for this run (Milestone 18).
     #[serde(default)]
     pub priority: RunPriority,
+    /// Assignee identifier, if set (Milestone 19).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -843,6 +852,10 @@ pub struct RunsListParams {
     /// before the default pinned-first / updated_at ordering (Milestone 18).
     #[serde(default)]
     pub sort_by_priority: Option<bool>,
+    /// Exact normalized assignee filter (Milestone 19).
+    /// When set, only runs with this assignee are returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1475,5 +1488,61 @@ pub struct RunUnsnoozeResult {
     /// Current status of the run (unchanged).
     pub status: String,
     /// Confirmation message.
+    pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// run.assign_owner  (Milestone 19)
+// ---------------------------------------------------------------------------
+
+/// Maximum length of an assignee string (characters).
+///
+/// Conservative bound; the format is further restricted to `[a-z0-9._-]`.
+pub const ASSIGNEE_MAX_LEN: usize = 64;
+
+/// Maximum length of an ownership note string (characters).
+pub const OWNERSHIP_NOTE_MAX_LEN: usize = 500;
+
+/// Parameters for `run.assign_owner` — explicit deterministic ownership update.
+///
+/// Absent field → leave current value unchanged.
+/// Explicit JSON `null` → clear the field.
+/// String value → set to normalized string.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAssignOwnerParams {
+    pub run_id: String,
+    /// New assignee or null to clear or absent to preserve.
+    #[serde(default, skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_nullable_optional_string")]
+    pub assignee: Option<Option<String>>,
+    /// New ownership note or null to clear or absent to preserve.
+    #[serde(default, skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_nullable_optional_string")]
+    pub ownership_note: Option<Option<String>>,
+}
+
+fn deserialize_nullable_optional_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<String>::deserialize(deserializer)?))
+}
+
+/// Result of `run.assign_owner`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAssignOwnerResult {
+    pub run_id: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_assignee: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership_note: Option<String>,
+    pub updated_at: String,
     pub message: String,
 }

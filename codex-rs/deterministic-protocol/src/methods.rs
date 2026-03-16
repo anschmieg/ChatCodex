@@ -47,6 +47,8 @@ pub enum Method {
     RunUnsnooze,
     // Milestone 18: deterministic run priority
     RunSetPriority,
+    // Milestone 19: deterministic run ownership/assignee
+    RunAssignOwner,
 }
 
 impl Method {
@@ -91,6 +93,8 @@ impl Method {
             Self::RunUnsnooze => "run.unsnooze",
             // Milestone 18
             Self::RunSetPriority => "run.set_priority",
+            // Milestone 19
+            Self::RunAssignOwner => "run.assign_owner",
         }
     }
 
@@ -135,6 +139,8 @@ impl Method {
             "run.unsnooze" => Some(Self::RunUnsnooze),
             // Milestone 18
             "run.set_priority" => Some(Self::RunSetPriority),
+            // Milestone 19
+            "run.assign_owner" => Some(Self::RunAssignOwner),
             _ => None,
         }
     }
@@ -180,6 +186,8 @@ impl Method {
             Self::RunUnsnooze,
             // Milestone 18
             Self::RunSetPriority,
+            // Milestone 19
+            Self::RunAssignOwner,
         ]
     }
 }
