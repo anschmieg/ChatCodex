@@ -92,6 +92,8 @@ pub fn prepare(params: &RunPrepareParams) -> Result<(RunPrepareResult, RunState)
         pin_metadata: None,
         snooze_metadata: None,
         priority: deterministic_protocol::RunPriority::Normal,
+        assignee: None,
+        ownership_note: None,
         created_at: now.clone(),
         updated_at: now,
     };

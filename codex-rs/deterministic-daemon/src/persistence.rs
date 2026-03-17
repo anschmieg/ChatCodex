@@ -136,6 +136,9 @@ impl Store {
             ("runs", "snooze_metadata", "TEXT"),
             // Milestone 18 columns
             ("runs", "priority", "TEXT NOT NULL DEFAULT 'normal'"),
+            // Milestone 19 columns
+            ("runs", "assignee", "TEXT"),
+            ("runs", "ownership_note", "TEXT"),
         ];
 
         for (table, column, def) in migrations {
@@ -260,8 +263,9 @@ impl Store {
                  supersession_reason, superseded_at, is_archived, archive_metadata,
                  unarchive_metadata, annotation, pin_metadata,
                  is_snoozed, snooze_metadata, priority,
+                 assignee, ownership_note,
                  created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -296,6 +300,8 @@ impl Store {
                 is_snoozed,
                 snooze_metadata_json,
                 priority_str,
+                state.assignee,
+                state.ownership_note,
                 state.created_at,
                 state.updated_at,
             ],
@@ -319,6 +325,7 @@ impl Store {
                         supersession_reason, superseded_at, archive_metadata,
                         unarchive_metadata, annotation, pin_metadata,
                         snooze_metadata, priority,
+                        assignee, ownership_note,
                         created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
@@ -516,6 +523,10 @@ impl Store {
                     )
                 })?;
 
+                // Milestone 19: ownership metadata.
+                let assignee: Option<String> = row.get(30)?;
+                let ownership_note: Option<String> = row.get(31)?;
+
                 Ok(RunState {
                     run_id: row.get(0)?,
                     workspace_id: row.get(1)?,
@@ -547,8 +558,10 @@ impl Store {
                     pin_metadata,
                     snooze_metadata,
                     priority,
-                    created_at: row.get(30)?,
-                    updated_at: row.get(31)?,
+                    assignee,
+                    ownership_note,
+                    created_at: row.get(32)?,
+                    updated_at: row.get(33)?,
                 })
             })
             .context("failed to query run")?;
@@ -762,7 +775,8 @@ impl Store {
             "SELECT run_id, workspace_id, user_goal, status, current_step, plan,
                     created_at, updated_at, outcome_kind, reopen_metadata,
                     supersedes_run_id, superseded_by_run_id, is_archived, archive_metadata,
-                    unarchive_metadata, annotation, pin_metadata, snooze_metadata, priority
+                    unarchive_metadata, annotation, pin_metadata, snooze_metadata, priority,
+                    assignee
              FROM runs {where_clause}
              ORDER BY CASE WHEN pin_metadata IS NOT NULL THEN 0 ELSE 1 END ASC, updated_at DESC
              LIMIT ?1"
@@ -861,6 +875,7 @@ impl Store {
                 snooze_reason,
                 snoozed_at,
                 priority,
+                assignee: row.get(19)?,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
@@ -1001,6 +1016,8 @@ mod tests {
             pin_metadata: None,
             snooze_metadata: None,
             priority: deterministic_protocol::RunPriority::Normal,
+            assignee: None,
+            ownership_note: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
