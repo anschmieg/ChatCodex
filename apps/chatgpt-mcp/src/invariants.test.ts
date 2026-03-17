@@ -27,6 +27,9 @@ import {
   UnpinRunInput,
   SnoozeRunInput,
   UnsnoozeRunInput,
+  SetRunPriorityInput,
+  AssignRunOwnerInput,
+  SetRunDueDateInput,
 } from "./schemas.js";
 
 describe("MCP tool registry invariants", () => {
@@ -77,6 +80,12 @@ describe("MCP tool registry invariants", () => {
       // Milestone 17: deterministic run snoozing
       "snooze_run",
       "unsnooze_run",
+      // Milestone 18: deterministic run priority
+      "set_run_priority",
+      // Milestone 19: deterministic run ownership
+      "assign_run_owner",
+      // Milestone 20: deterministic run due dates
+      "set_run_due_date",
     ]);
     const actual = new Set(REGISTERED_TOOL_NAMES);
     assert.deepStrictEqual(actual, expected);
@@ -1127,5 +1136,135 @@ describe("No-hidden-agent regression (Milestone 17)", () => {
     assert.ok(snoozedOnly.success, "snoozedOnly=true should be accepted");
     const withoutSnoozedOnly = schema.safeParse({});
     assert.ok(withoutSnoozedOnly.success, "absent snoozedOnly should be accepted");
+  });
+});
+
+// ---------------------------------------------------------------
+// Milestone 20: No-hidden-agent regression for set_run_due_date
+// ---------------------------------------------------------------
+describe("Milestone 20 due-date tool invariants", () => {
+  it("set_run_due_date should be registered", () => {
+    assert.ok(
+      REGISTERED_TOOL_NAMES.includes("set_run_due_date" as (typeof REGISTERED_TOOL_NAMES)[number]),
+      "set_run_due_date must be in the tool registry",
+    );
+  });
+
+  it("set_run_due_date is not an autonomous continuation tool", () => {
+    const forbidden = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end_to_end"];
+    for (const pattern of forbidden) {
+      assert.ok(
+        !"set_run_due_date".includes(pattern),
+        `"set_run_due_date" must not contain autonomous pattern "${pattern}"`,
+      );
+    }
+  });
+
+  it("daemon method run.set_due_date is not a forbidden agent-runtime method", () => {
+    const forbiddenMethods = [
+      "turn/start",
+      "turn/steer",
+      "review/start",
+      "codex",
+      "codex-reply",
+      "continue_run",
+      "resume_thread",
+      "agent_step",
+      "fix_end_to_end",
+    ];
+    for (const method of forbiddenMethods) {
+      assert.ok(
+        method !== "run.set_due_date",
+        `run.set_due_date must not be a forbidden agent-runtime method`,
+      );
+    }
+  });
+
+  it("SetRunDueDateInput schema accepts a valid ISO date", () => {
+    const schema = z.object(SetRunDueDateInput);
+    const valid = schema.safeParse({ runId: "r1", dueDate: "2026-03-31" });
+    assert.ok(valid.success, "valid ISO date should be accepted");
+  });
+
+  it("SetRunDueDateInput schema rejects malformed dates", () => {
+    const schema = z.object(SetRunDueDateInput);
+    const bad = ["not-a-date", "2026/03/31", "31-03-2026", "2026-3-1", ""];
+    for (const d of bad) {
+      const result = schema.safeParse({ runId: "r1", dueDate: d });
+      assert.ok(!result.success, `malformed date "${d}" should be rejected`);
+    }
+  });
+
+  it("SetRunDueDateInput schema accepts null (clear)", () => {
+    const schema = z.object(SetRunDueDateInput);
+    const cleared = schema.safeParse({ runId: "r1", dueDate: null });
+    assert.ok(cleared.success, "null dueDate should be accepted to clear the due date");
+  });
+
+  it("SetRunDueDateInput schema accepts absent dueDate", () => {
+    const schema = z.object(SetRunDueDateInput);
+    const absent = schema.safeParse({ runId: "r1" });
+    assert.ok(absent.success, "absent dueDate should be accepted");
+  });
+
+  it("ListRunsInput schema accepts dueOnOrBefore filter", () => {
+    const schema = z.object(ListRunsInput);
+    const withFilter = schema.safeParse({ dueOnOrBefore: "2026-03-31" });
+    assert.ok(withFilter.success, "valid dueOnOrBefore date should be accepted");
+    const withoutFilter = schema.safeParse({});
+    assert.ok(withoutFilter.success, "absent dueOnOrBefore should be accepted");
+  });
+
+  it("ListRunsInput schema rejects malformed dueOnOrBefore", () => {
+    const schema = z.object(ListRunsInput);
+    const bad = schema.safeParse({ dueOnOrBefore: "not-a-date" });
+    assert.ok(!bad.success, "malformed dueOnOrBefore should be rejected");
+  });
+
+  it("ListRunsInput schema accepts sortByDueDate flag", () => {
+    const schema = z.object(ListRunsInput);
+    const withFlag = schema.safeParse({ sortByDueDate: true });
+    assert.ok(withFlag.success, "sortByDueDate=true should be accepted");
+  });
+
+  // Milestone 18 and 19 tool registry checks (added here for completeness)
+  it("set_run_priority should be registered", () => {
+    assert.ok(
+      REGISTERED_TOOL_NAMES.includes("set_run_priority" as (typeof REGISTERED_TOOL_NAMES)[number]),
+      "set_run_priority must be in the tool registry",
+    );
+  });
+
+  it("assign_run_owner should be registered", () => {
+    assert.ok(
+      REGISTERED_TOOL_NAMES.includes("assign_run_owner" as (typeof REGISTERED_TOOL_NAMES)[number]),
+      "assign_run_owner must be in the tool registry",
+    );
+  });
+
+  it("SetRunPriorityInput schema accepts valid priority levels", () => {
+    const schema = z.object(SetRunPriorityInput);
+    for (const level of ["critical", "high", "normal", "low"]) {
+      const result = schema.safeParse({ runId: "r1", priority: level });
+      assert.ok(result.success, `priority level "${level}" should be accepted`);
+    }
+  });
+
+  it("SetRunPriorityInput schema rejects unknown priority levels", () => {
+    const schema = z.object(SetRunPriorityInput);
+    const bad = schema.safeParse({ runId: "r1", priority: "urgent" });
+    assert.ok(!bad.success, `unknown priority level should be rejected`);
+  });
+
+  it("AssignRunOwnerInput schema accepts an assignee", () => {
+    const schema = z.object(AssignRunOwnerInput);
+    const result = schema.safeParse({ runId: "r1", assignee: "alice" });
+    assert.ok(result.success, "valid assignee should be accepted");
+  });
+
+  it("AssignRunOwnerInput schema accepts null assignee (clear)", () => {
+    const schema = z.object(AssignRunOwnerInput);
+    const result = schema.safeParse({ runId: "r1", assignee: null });
+    assert.ok(result.success, "null assignee should be accepted to clear");
   });
 });

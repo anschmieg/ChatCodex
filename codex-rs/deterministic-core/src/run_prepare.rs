@@ -94,6 +94,7 @@ pub fn prepare(params: &RunPrepareParams) -> Result<(RunPrepareResult, RunState)
         priority: deterministic_protocol::RunPriority::Normal,
         assignee: None,
         ownership_note: None,
+        due_date: None,
         created_at: now.clone(),
         updated_at: now,
     };

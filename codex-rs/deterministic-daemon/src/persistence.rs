@@ -139,6 +139,8 @@ impl Store {
             // Milestone 19 columns
             ("runs", "assignee", "TEXT"),
             ("runs", "ownership_note", "TEXT"),
+            // Milestone 20 columns
+            ("runs", "due_date", "TEXT"),
         ];
 
         for (table, column, def) in migrations {
@@ -263,9 +265,9 @@ impl Store {
                  supersession_reason, superseded_at, is_archived, archive_metadata,
                  unarchive_metadata, annotation, pin_metadata,
                  is_snoozed, snooze_metadata, priority,
-                 assignee, ownership_note,
+                 assignee, ownership_note, due_date,
                  created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -302,6 +304,7 @@ impl Store {
                 priority_str,
                 state.assignee,
                 state.ownership_note,
+                state.due_date,
                 state.created_at,
                 state.updated_at,
             ],
@@ -325,7 +328,7 @@ impl Store {
                         supersession_reason, superseded_at, archive_metadata,
                         unarchive_metadata, annotation, pin_metadata,
                         snooze_metadata, priority,
-                        assignee, ownership_note,
+                        assignee, ownership_note, due_date,
                         created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
@@ -527,6 +530,9 @@ impl Store {
                 let assignee: Option<String> = row.get(30)?;
                 let ownership_note: Option<String> = row.get(31)?;
 
+                // Milestone 20: due date.
+                let due_date: Option<String> = row.get(32)?;
+
                 Ok(RunState {
                     run_id: row.get(0)?,
                     workspace_id: row.get(1)?,
@@ -560,8 +566,9 @@ impl Store {
                     priority,
                     assignee,
                     ownership_note,
-                    created_at: row.get(32)?,
-                    updated_at: row.get(33)?,
+                    due_date,
+                    created_at: row.get(33)?,
+                    updated_at: row.get(34)?,
                 })
             })
             .context("failed to query run")?;
@@ -776,7 +783,7 @@ impl Store {
                     created_at, updated_at, outcome_kind, reopen_metadata,
                     supersedes_run_id, superseded_by_run_id, is_archived, archive_metadata,
                     unarchive_metadata, annotation, pin_metadata, snooze_metadata, priority,
-                    assignee
+                    assignee, due_date
              FROM runs {where_clause}
              ORDER BY CASE WHEN pin_metadata IS NOT NULL THEN 0 ELSE 1 END ASC, updated_at DESC
              LIMIT ?1"
@@ -792,6 +799,7 @@ impl Store {
             // 10: supersedes_run_id  11: superseded_by_run_id
             // 12: is_archived  13: archive_metadata  14: unarchive_metadata
             // 15: annotation  16: pin_metadata  17: snooze_metadata  18: priority
+            // 19: assignee  20: due_date
             let plan_json: String = row.get(5)?;
             let total_steps: usize = serde_json::from_str::<Vec<String>>(&plan_json)
                 .map(|v| v.len())
@@ -876,6 +884,7 @@ impl Store {
                 snoozed_at,
                 priority,
                 assignee: row.get(19)?,
+                due_date: row.get(20)?,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
@@ -1018,6 +1027,7 @@ mod tests {
             priority: deterministic_protocol::RunPriority::Normal,
             assignee: None,
             ownership_note: None,
+            due_date: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -3061,5 +3071,54 @@ mod tests {
         assert_eq!(summary.is_snoozed, Some(true));
         assert_eq!(summary.snooze_reason.as_deref(), Some("blocked"));
         assert_eq!(summary.snoozed_at.as_deref(), Some("2024-06-01T12:00:00Z"));
+    }
+
+    // ----- Milestone 20: due date persistence -----
+
+    #[test]
+    fn due_date_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_dd_1", "active");
+        state.due_date = Some("2026-03-31".into());
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_dd_1").unwrap().unwrap();
+        assert_eq!(loaded.due_date.as_deref(), Some("2026-03-31"));
+    }
+
+    #[test]
+    fn due_date_clear_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_dd_2", "active");
+        state.due_date = Some("2026-03-31".into());
+        store.save_run(&state).unwrap();
+
+        state.due_date = None;
+        store.save_run(&state).unwrap();
+        let loaded = store.get_run("r_dd_2").unwrap().unwrap();
+        assert_eq!(loaded.due_date, None);
+    }
+
+    #[test]
+    fn list_runs_summary_carries_due_date() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_dd_sum", "active");
+        state.due_date = Some("2026-06-30".into());
+        store.save_run(&state).unwrap();
+
+        let runs = store.list_runs(20, None, None, false, false, None, false, false, false).unwrap();
+        let summary = runs.iter().find(|r| r.run_id == "r_dd_sum").unwrap();
+        assert_eq!(summary.due_date.as_deref(), Some("2026-06-30"));
+    }
+
+    #[test]
+    fn due_date_none_in_summary_when_not_set() {
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_dd_none", "active");
+        store.save_run(&state).unwrap();
+
+        let runs = store.list_runs(20, None, None, false, false, None, false, false, false).unwrap();
+        let summary = runs.iter().find(|r| r.run_id == "r_dd_none").unwrap();
+        assert_eq!(summary.due_date, None);
     }
 }

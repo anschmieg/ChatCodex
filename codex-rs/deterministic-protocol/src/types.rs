@@ -730,6 +730,10 @@ pub struct RunState {
     /// Ownership / handoff note (Milestone 19).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ownership_note: Option<String>,
+    /// Explicit due date for this run in ISO `YYYY-MM-DD` format (Milestone 20).
+    /// No time-of-day or timezone semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_date: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -805,6 +809,9 @@ pub struct RunSummary {
     /// Assignee identifier, if set (Milestone 19).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// Explicit due date in ISO `YYYY-MM-DD` format, if set (Milestone 20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_date: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -856,6 +863,14 @@ pub struct RunsListParams {
     /// When set, only runs with this assignee are returned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// Filter runs due on or before this ISO date (`YYYY-MM-DD`) (Milestone 20).
+    /// When set, only runs with a `due_date` ≤ this value are returned.
+    #[serde(default)]
+    pub due_on_or_before: Option<String>,
+    /// When true, runs are sorted by due date ascending (soonest first) as the
+    /// primary sort key, before pinned-first / priority / updated_at (Milestone 20).
+    #[serde(default)]
+    pub sort_by_due_date: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -934,6 +949,9 @@ pub struct RunGetResult {
     /// Explicit priority level for this run (Milestone 18).
     #[serde(default)]
     pub priority: RunPriority,
+    /// Explicit due date in ISO `YYYY-MM-DD` format, if set (Milestone 20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_date: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1544,5 +1562,52 @@ pub struct RunAssignOwnerResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ownership_note: Option<String>,
     pub updated_at: String,
+    pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// run.set_due_date  (Milestone 20)
+// ---------------------------------------------------------------------------
+
+/// Maximum length of a due-date string.
+///
+/// ISO `YYYY-MM-DD` is 10 characters.  We allow a small buffer for validation
+/// purposes but reject anything that doesn't match the exact format.
+pub const DUE_DATE_MAX_LEN: usize = 10;
+
+/// Parameters for `run.set_due_date` — explicit deterministic due-date update.
+///
+/// - Providing a string sets or replaces the due date.
+/// - Providing JSON `null` clears the due date.
+/// - Omitting the field (absent) is not meaningful here; callers must supply
+///   one of the two above.
+///
+/// Due dates are ISO date-only (`YYYY-MM-DD`).  No time-of-day or timezone
+/// math is performed in the backend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSetDueDateParams {
+    /// ID of the run whose due date is being updated.
+    pub run_id: String,
+    /// New due date (`YYYY-MM-DD`) or `null` to clear.
+    #[serde(deserialize_with = "deserialize_nullable_optional_string")]
+    pub due_date: Option<Option<String>>,
+}
+
+/// Result of `run.set_due_date`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSetDueDateResult {
+    pub run_id: String,
+    pub status: String,
+    /// The previous due date, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_due_date: Option<String>,
+    /// The new due date after the update, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_date: Option<String>,
+    /// ISO 8601 timestamp of when this update was applied.
+    pub updated_at: String,
+    /// Short confirmation message.
     pub message: String,
 }

@@ -49,6 +49,8 @@ pub enum Method {
     RunSetPriority,
     // Milestone 19: deterministic run ownership/assignee
     RunAssignOwner,
+    // Milestone 20: deterministic run due dates
+    RunSetDueDate,
 }
 
 impl Method {
@@ -95,6 +97,8 @@ impl Method {
             Self::RunSetPriority => "run.set_priority",
             // Milestone 19
             Self::RunAssignOwner => "run.assign_owner",
+            // Milestone 20
+            Self::RunSetDueDate => "run.set_due_date",
         }
     }
 
@@ -141,6 +145,8 @@ impl Method {
             "run.set_priority" => Some(Self::RunSetPriority),
             // Milestone 19
             "run.assign_owner" => Some(Self::RunAssignOwner),
+            // Milestone 20
+            "run.set_due_date" => Some(Self::RunSetDueDate),
             _ => None,
         }
     }
@@ -188,6 +194,8 @@ impl Method {
             Self::RunSetPriority,
             // Milestone 19
             Self::RunAssignOwner,
+            // Milestone 20
+            Self::RunSetDueDate,
         ]
     }
 }

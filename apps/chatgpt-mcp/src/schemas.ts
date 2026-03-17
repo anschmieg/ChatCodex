@@ -266,6 +266,20 @@ export const ListRunsInput = {
     .describe(
       "When true, return only snoozed runs. Takes precedence over includeSnoozed.",
     ),
+  // Milestone 20: due-date filtering and sorting
+  dueOnOrBefore: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "must be YYYY-MM-DD")
+    .optional()
+    .describe(
+      "ISO date (YYYY-MM-DD). When provided, only runs with a due date on or before this date are returned. Runs with no due date are excluded.",
+    ),
+  sortByDueDate: z
+    .boolean()
+    .optional()
+    .describe(
+      "When true, results are sorted ascending by due date (soonest first). Runs with no due date sort last.",
+    ),
 };
 
 // ---------------------------------------------------------------
@@ -523,5 +537,62 @@ export const UnsnoozeRunInput = {
     .max(500)
     .describe(
       "Human-readable reason for unsnoozing (required for auditability, max 500 characters).",
+    ),
+};
+
+// ---------------------------------------------------------------
+// SetRunPriorityInput  (Milestone 18)
+// ---------------------------------------------------------------
+
+/** Input schema for `set_run_priority`. */
+export const SetRunPriorityInput = {
+  runId: z.string().describe("Run ID whose priority should be updated"),
+  priority: z
+    .enum(["critical", "high", "normal", "low"])
+    .describe(
+      "New priority level for this run. One of: critical, high, normal, low.",
+    ),
+};
+
+// ---------------------------------------------------------------
+// AssignRunOwnerInput  (Milestone 19)
+// ---------------------------------------------------------------
+
+/** Input schema for `assign_run_owner`. */
+export const AssignRunOwnerInput = {
+  runId: z.string().describe("Run ID whose owner should be updated"),
+  assignee: z
+    .string()
+    .max(128)
+    .nullable()
+    .optional()
+    .describe(
+      "New assignee identifier (e.g. username or team name). Pass null to clear the assignee.",
+    ),
+  ownershipNote: z
+    .string()
+    .max(1000)
+    .nullable()
+    .optional()
+    .describe(
+      "Optional free-text ownership note (max 1000 characters). Pass null to clear.",
+    ),
+};
+
+// ---------------------------------------------------------------
+// SetRunDueDateInput  (Milestone 20)
+// ---------------------------------------------------------------
+
+/** Input schema for `set_run_due_date`. */
+export const SetRunDueDateInput = {
+  runId: z.string().describe("Run ID whose due date should be updated"),
+  dueDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "must be YYYY-MM-DD")
+    .nullable()
+    .optional()
+    .describe(
+      "New due date in ISO YYYY-MM-DD format. Pass null to clear the due date. " +
+        "No time-of-day or timezone semantics; the backend stores the date string as-is.",
     ),
 };

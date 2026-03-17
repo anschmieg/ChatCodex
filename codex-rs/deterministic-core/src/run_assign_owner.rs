@@ -128,6 +128,7 @@ mod tests {
             priority: RunPriority::Normal,
             assignee: None,
             ownership_note: None,
+            due_date: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }

@@ -56,6 +56,8 @@ pub fn dispatch(
         Method::RunSetPriority => handle_run_set_priority(params, store),
         // Milestone 19: deterministic run ownership/assignee
         Method::RunAssignOwner => handle_run_assign_owner(params, store),
+        // Milestone 20: deterministic run due dates
+        Method::RunSetDueDate => handle_run_set_due_date(params, store),
     }
 }
 
@@ -468,6 +470,25 @@ fn handle_runs_list(
     if let Some(ref assignee_filter) = p.assignee {
         runs.retain(|r| r.assignee.as_deref() == Some(assignee_filter.as_str()));
     }
+    // Milestone 20: due_on_or_before filter.
+    if let Some(ref threshold) = p.due_on_or_before {
+        runs.retain(|r| {
+            r.due_date
+                .as_deref()
+                .map(|d| d <= threshold.as_str())
+                .unwrap_or(false)
+        });
+    }
+    // Milestone 20: sort_by_due_date — soonest first as primary key,
+    // runs with no due date sort last.
+    if p.sort_by_due_date.unwrap_or(false) {
+        runs.sort_by(|a, b| match (&a.due_date, &b.due_date) {
+            (Some(da), Some(db)) => da.cmp(db),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+    }
     let count = runs.len();
     let result = RunsListResult { runs, count };
     Ok((serde_json::to_value(result)?, None))
@@ -501,6 +522,7 @@ fn handle_run_get(
     let annotation = state.annotation.clone();
     let pin_metadata = state.pin_metadata.clone();
     let priority = state.priority;
+    let due_date = state.due_date.clone();
 
     let result = RunGetResult {
         run_state: state.clone(),
@@ -523,6 +545,7 @@ fn handle_run_get(
         annotation,
         pin_metadata,
         priority,
+        due_date,
     };
     Ok((serde_json::to_value(result)?, Some(state)))
 }
@@ -1112,6 +1135,38 @@ fn handle_run_assign_owner(
     Ok((serde_json::to_value(result)?, Some(state)))
 }
 
+/// Set or clear the due date on a run.
+///
+/// - An audit entry is appended.
+fn handle_run_set_due_date(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunSetDueDateParams = serde_json::from_value(params)?;
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let result = deterministic_core::run_set_due_date::set_due_date(&p, &mut state)?;
+    store.save_run(&state)?;
+
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "run_due_date_set",
+        &result.message,
+        Some(
+            &serde_json::json!({
+                "previous_due_date": result.previous_due_date,
+                "due_date": result.due_date,
+                "updated_at": result.updated_at,
+            })
+            .to_string(),
+        ),
+    );
+
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1152,6 +1207,7 @@ mod tests {
             priority: deterministic_protocol::RunPriority::Normal,
             assignee: None,
             ownership_note: None,
+            due_date: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -2928,5 +2984,174 @@ mod tests {
         let result: RunsListResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.runs.len(), 1);
         assert_eq!(result.runs[0].run_id, "r_ao_list1");
+    }
+
+    // ----- Milestone 20: run.set_due_date -----
+
+    #[test]
+    fn run_set_due_date_sets_date() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_dd_h1")).unwrap();
+        let (val, _) = dispatch(
+            Method::RunSetDueDate,
+            serde_json::json!({"runId": "r_dd_h1", "dueDate": "2026-03-31"}),
+            &store,
+        ).unwrap();
+        let result: RunSetDueDateResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.due_date.as_deref(), Some("2026-03-31"));
+    }
+
+    #[test]
+    fn run_set_due_date_persists() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_dd_h2")).unwrap();
+        dispatch(
+            Method::RunSetDueDate,
+            serde_json::json!({"runId": "r_dd_h2", "dueDate": "2026-06-30"}),
+            &store,
+        ).unwrap();
+        let loaded = store.get_run("r_dd_h2").unwrap().unwrap();
+        assert_eq!(loaded.due_date.as_deref(), Some("2026-06-30"));
+    }
+
+    #[test]
+    fn run_set_due_date_clear() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_dd_h3");
+        state.due_date = Some("2026-01-01".into());
+        store.save_run(&state).unwrap();
+        let (val, _) = dispatch(
+            Method::RunSetDueDate,
+            serde_json::json!({"runId": "r_dd_h3", "dueDate": null}),
+            &store,
+        ).unwrap();
+        let result: RunSetDueDateResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.due_date, None);
+        assert_eq!(result.previous_due_date.as_deref(), Some("2026-01-01"));
+        let loaded = store.get_run("r_dd_h3").unwrap().unwrap();
+        assert_eq!(loaded.due_date, None);
+    }
+
+    #[test]
+    fn run_set_due_date_invalid_format_rejected() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_dd_h4")).unwrap();
+        let err = dispatch(
+            Method::RunSetDueDate,
+            serde_json::json!({"runId": "r_dd_h4", "dueDate": "not-a-date"}),
+            &store,
+        ).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("10 characters") || msg.contains("non-digit") || msg.contains("separators"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn run_set_due_date_unknown_run_rejected() {
+        let store = Store::open_in_memory().unwrap();
+        let err = dispatch(
+            Method::RunSetDueDate,
+            serde_json::json!({"runId": "r_dd_missing", "dueDate": "2026-01-01"}),
+            &store,
+        ).unwrap_err();
+        assert!(err.to_string().contains("unknown run"), "{err}");
+    }
+
+    #[test]
+    fn run_set_due_date_audit_entry() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_dd_audit")).unwrap();
+        dispatch(
+            Method::RunSetDueDate,
+            serde_json::json!({"runId": "r_dd_audit", "dueDate": "2026-09-01"}),
+            &store,
+        ).unwrap();
+        let history = store.get_run_history("r_dd_audit", 10).unwrap();
+        assert!(history.iter().any(|e| e.event_kind == "run_due_date_set"));
+    }
+
+    #[test]
+    fn runs_list_filter_by_due_on_or_before() {
+        let store = Store::open_in_memory().unwrap();
+        let mut s1 = make_run_state("r_dd_flt1");
+        s1.due_date = Some("2026-01-15".into());
+        let mut s2 = make_run_state("r_dd_flt2");
+        s2.due_date = Some("2026-06-30".into());
+        let s3 = make_run_state("r_dd_flt3"); // no due date
+        store.save_run(&s1).unwrap();
+        store.save_run(&s2).unwrap();
+        store.save_run(&s3).unwrap();
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"limit": 50, "dueOnOrBefore": "2026-03-31"}),
+            &store,
+        ).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        let ids: Vec<&str> = result.runs.iter().map(|r| r.run_id.as_str()).collect();
+        assert!(ids.contains(&"r_dd_flt1"), "should include r_dd_flt1 (2026-01-15 ≤ threshold)");
+        assert!(!ids.contains(&"r_dd_flt2"), "r_dd_flt2 (2026-06-30) exceeds threshold");
+        assert!(!ids.contains(&"r_dd_flt3"), "r_dd_flt3 has no due date");
+    }
+
+    #[test]
+    fn runs_list_sort_by_due_date() {
+        let store = Store::open_in_memory().unwrap();
+        let mut s1 = make_run_state("r_dd_sort1");
+        s1.due_date = Some("2026-12-31".into());
+        let mut s2 = make_run_state("r_dd_sort2");
+        s2.due_date = Some("2026-01-01".into());
+        let mut s3 = make_run_state("r_dd_sort3");
+        s3.due_date = Some("2026-06-15".into());
+        let s4 = make_run_state("r_dd_sort4"); // no due date — sorts last
+        store.save_run(&s1).unwrap();
+        store.save_run(&s2).unwrap();
+        store.save_run(&s3).unwrap();
+        store.save_run(&s4).unwrap();
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"limit": 50, "sortByDueDate": true}),
+            &store,
+        ).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        let ids: Vec<&str> = result.runs.iter().map(|r| r.run_id.as_str()).collect();
+        let pos1 = ids.iter().position(|&x| x == "r_dd_sort1").unwrap();
+        let pos2 = ids.iter().position(|&x| x == "r_dd_sort2").unwrap();
+        let pos3 = ids.iter().position(|&x| x == "r_dd_sort3").unwrap();
+        let pos4 = ids.iter().position(|&x| x == "r_dd_sort4").unwrap();
+        assert!(pos2 < pos3, "2026-01-01 should sort before 2026-06-15");
+        assert!(pos3 < pos1, "2026-06-15 should sort before 2026-12-31");
+        assert!(pos1 < pos4, "run with a date should sort before run with no date");
+    }
+
+    #[test]
+    fn run_set_due_date_does_not_change_status() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_dd_status");
+        state.status = "finalized:completed".into();
+        store.save_run(&state).unwrap();
+        let (val, _) = dispatch(
+            Method::RunSetDueDate,
+            serde_json::json!({"runId": "r_dd_status", "dueDate": "2026-07-04"}),
+            &store,
+        ).unwrap();
+        let result: RunSetDueDateResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.status, "finalized:completed");
+    }
+
+    #[test]
+    fn run_get_includes_due_date() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_dd_get");
+        state.due_date = Some("2026-11-01".into());
+        store.save_run(&state).unwrap();
+        let (val, _) = dispatch(
+            Method::RunGet,
+            serde_json::json!({"runId": "r_dd_get"}),
+            &store,
+        ).unwrap();
+        let result: RunGetResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.due_date.as_deref(), Some("2026-11-01"));
     }
 }

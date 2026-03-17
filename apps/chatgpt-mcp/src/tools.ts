@@ -38,6 +38,9 @@ import {
   UnpinRunInput,
   SnoozeRunInput,
   UnsnoozeRunInput,
+  SetRunPriorityInput,
+  AssignRunOwnerInput,
+  SetRunDueDateInput,
 } from "./schemas.js";
 
 /**
@@ -96,6 +99,12 @@ export const REGISTERED_TOOL_NAMES = [
   // Milestone 17: deterministic run snoozing
   "snooze_run",
   "unsnooze_run",
+  // Milestone 18: deterministic run priority
+  "set_run_priority",
+  // Milestone 19: deterministic run ownership
+  "assign_run_owner",
+  // Milestone 20: deterministic run due dates
+  "set_run_due_date",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -288,10 +297,10 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
     },
   );
 
-  // ---- list_runs (Milestone 7; extended in Milestone 13, 15, 16, 17) ----
+  // ---- list_runs (Milestone 7; extended in Milestone 13, 15, 16, 17, 20) ----
   server.tool(
     "list_runs",
-    "List known runs with status and metadata (read-only). Supports archive filtering via optional parameters: set includeArchived=true to include archived runs, or archivedOnly=true to return only archived runs. Use label= to filter by exact normalized label. Use pinnedOnly=true to return only pinned runs. Pinned runs appear first by default. Snoozed runs are excluded by default; use includeSnoozed=true to include them or snoozedOnly=true to return only snoozed runs.",
+    "List known runs with status and metadata (read-only). Supports archive filtering via optional parameters: set includeArchived=true to include archived runs, or archivedOnly=true to return only archived runs. Use label= to filter by exact normalized label. Use pinnedOnly=true to return only pinned runs. Pinned runs appear first by default. Snoozed runs are excluded by default; use includeSnoozed=true to include them or snoozedOnly=true to return only snoozed runs. Use dueOnOrBefore=YYYY-MM-DD to filter by due date. Use sortByDueDate=true to sort ascending by due date (soonest first; undated runs last).",
     ListRunsInput,
     async (params) => {
       const result = await client.call("runs.list", {
@@ -304,6 +313,8 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
         pinnedOnly: params.pinnedOnly,
         includeSnoozed: params.includeSnoozed,
         snoozedOnly: params.snoozedOnly,
+        dueOnOrBefore: params.dueOnOrBefore,
+        sortByDueDate: params.sortByDueDate,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -553,6 +564,65 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
       const result = await client.call("run.unsnooze", {
         runId: params.runId,
         reason: params.reason,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- set_run_priority (Milestone 18) ----
+  server.tool(
+    "set_run_priority",
+    "Explicitly set the priority level of a run. " +
+      "Valid levels are: critical, high, normal, low. " +
+      "Priority is deterministic and audited. " +
+      "It changes only priority metadata and does not execute work, change lifecycle status, replan, reopen, finalize, archive, unarchive, snooze, or supersede the run.",
+    SetRunPriorityInput,
+    async (params) => {
+      const result = await client.call("run.set_priority", {
+        runId: params.runId,
+        priority: params.priority,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- assign_run_owner (Milestone 19) ----
+  server.tool(
+    "assign_run_owner",
+    "Explicitly assign or clear the owner (assignee) and optional ownership note of a run. " +
+      "Ownership assignment is deterministic and audited. " +
+      "It changes only owner/note metadata and does not execute work, change lifecycle status, replan, reopen, finalize, archive, unarchive, snooze, or supersede the run. " +
+      "Pass assignee=null to clear the assignee. Pass ownershipNote=null to clear the note.",
+    AssignRunOwnerInput,
+    async (params) => {
+      const result = await client.call("run.assign_owner", {
+        runId: params.runId,
+        assignee: params.assignee,
+        ownershipNote: params.ownershipNote,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- set_run_due_date (Milestone 20) ----
+  server.tool(
+    "set_run_due_date",
+    "Explicitly set or clear the due date of a run. " +
+      "The due date is an ISO YYYY-MM-DD string with no time-of-day or timezone semantics. " +
+      "Due-date assignment is deterministic and audited. " +
+      "It changes only due-date metadata and does not execute work, change lifecycle status, replan, reopen, finalize, archive, unarchive, snooze, prioritize, or supersede the run. " +
+      "Pass dueDate=null to clear the due date.",
+    SetRunDueDateInput,
+    async (params) => {
+      const result = await client.call("run.set_due_date", {
+        runId: params.runId,
+        dueDate: params.dueDate,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
