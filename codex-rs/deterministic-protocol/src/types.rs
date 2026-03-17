@@ -734,6 +734,10 @@ pub struct RunState {
     /// No time-of-day or timezone semantics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_date: Option<String>,
+    /// Explicit list of run IDs that this run is blocked by (Milestone 21).
+    /// An empty list means the run is not blocked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by_run_ids: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -812,6 +816,12 @@ pub struct RunSummary {
     /// Explicit due date in ISO `YYYY-MM-DD` format, if set (Milestone 20).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_date: Option<String>,
+    /// Whether this run is currently blocked by one or more other runs (Milestone 21).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_blocked: Option<bool>,
+    /// Number of runs explicitly blocking this run (Milestone 21).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_by_count: Option<usize>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -871,6 +881,13 @@ pub struct RunsListParams {
     /// primary sort key, before pinned-first / priority / updated_at (Milestone 20).
     #[serde(default)]
     pub sort_by_due_date: Option<bool>,
+    /// When true, return only runs that are explicitly blocked by at least one
+    /// other run (Milestone 21).
+    #[serde(default)]
+    pub blocked_only: Option<bool>,
+    /// Filter to runs explicitly blocked by this specific run ID (Milestone 21).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_by_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -952,6 +969,9 @@ pub struct RunGetResult {
     /// Explicit due date in ISO `YYYY-MM-DD` format, if set (Milestone 20).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_date: Option<String>,
+    /// Explicit list of run IDs that this run is blocked by (Milestone 21).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by_run_ids: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1606,6 +1626,47 @@ pub struct RunSetDueDateResult {
     /// The new due date after the update, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_date: Option<String>,
+    /// ISO 8601 timestamp of when this update was applied.
+    pub updated_at: String,
+    /// Short confirmation message.
+    pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// run.set_dependencies  (Milestone 21)
+// ---------------------------------------------------------------------------
+
+/// Maximum number of blocker run IDs a single run may reference.
+pub const MAX_DEPENDENCY_COUNT: usize = 32;
+
+/// Parameters for `run.set_dependencies` — explicit deterministic dependency update.
+///
+/// Providing an empty list clears all dependency links.
+/// Providing a non-empty list replaces the current dependency set entirely.
+/// Ordering in the provided list is normalized deterministically (sorted) before storage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSetDependenciesParams {
+    /// ID of the run whose dependencies are being updated.
+    pub run_id: String,
+    /// The new set of run IDs that block this run.
+    /// Pass an empty array to clear all dependencies.
+    #[serde(default)]
+    pub blocked_by_run_ids: Vec<String>,
+}
+
+/// Result of `run.set_dependencies`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSetDependenciesResult {
+    pub run_id: String,
+    pub status: String,
+    /// The updated (normalized) blocker run ID list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by_run_ids: Vec<String>,
+    /// The previous blocker run ID list before this update.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous_blocked_by_run_ids: Vec<String>,
     /// ISO 8601 timestamp of when this update was applied.
     pub updated_at: String,
     /// Short confirmation message.

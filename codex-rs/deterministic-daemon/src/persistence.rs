@@ -141,6 +141,8 @@ impl Store {
             ("runs", "ownership_note", "TEXT"),
             // Milestone 20 columns
             ("runs", "due_date", "TEXT"),
+            // Milestone 21 columns
+            ("runs", "blocked_by_run_ids", "TEXT NOT NULL DEFAULT '[]'"),
         ];
 
         for (table, column, def) in migrations {
@@ -254,6 +256,9 @@ impl Store {
             .context("failed to serialise snooze_metadata")?;
         // Milestone 18: persist priority as string.
         let priority_str = state.priority.as_str();
+        // Milestone 21: persist blocked_by_run_ids as JSON array.
+        let blocked_by_run_ids_json = serde_json::to_string(&state.blocked_by_run_ids)
+            .context("failed to serialise blocked_by_run_ids")?;
         conn.execute(
             "INSERT OR REPLACE INTO runs
                 (run_id, workspace_id, user_goal, status, plan, current_step,
@@ -265,9 +270,9 @@ impl Store {
                  supersession_reason, superseded_at, is_archived, archive_metadata,
                  unarchive_metadata, annotation, pin_metadata,
                  is_snoozed, snooze_metadata, priority,
-                 assignee, ownership_note, due_date,
+                 assignee, ownership_note, due_date, blocked_by_run_ids,
                  created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -305,6 +310,7 @@ impl Store {
                 state.assignee,
                 state.ownership_note,
                 state.due_date,
+                blocked_by_run_ids_json,
                 state.created_at,
                 state.updated_at,
             ],
@@ -328,7 +334,7 @@ impl Store {
                         supersession_reason, superseded_at, archive_metadata,
                         unarchive_metadata, annotation, pin_metadata,
                         snooze_metadata, priority,
-                        assignee, ownership_note, due_date,
+                        assignee, ownership_note, due_date, blocked_by_run_ids,
                         created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
@@ -533,6 +539,17 @@ impl Store {
                 // Milestone 20: due date.
                 let due_date: Option<String> = row.get(32)?;
 
+                // Milestone 21: blocked_by_run_ids — JSON array, default empty.
+                let blocked_by_run_ids_json: String = row.get(33).unwrap_or_else(|_| "[]".to_string());
+                let blocked_by_run_ids: Vec<String> =
+                    serde_json::from_str(&blocked_by_run_ids_json).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            33,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+
                 Ok(RunState {
                     run_id: row.get(0)?,
                     workspace_id: row.get(1)?,
@@ -567,8 +584,9 @@ impl Store {
                     assignee,
                     ownership_note,
                     due_date,
-                    created_at: row.get(33)?,
-                    updated_at: row.get(34)?,
+                    blocked_by_run_ids,
+                    created_at: row.get(34)?,
+                    updated_at: row.get(35)?,
                 })
             })
             .context("failed to query run")?;

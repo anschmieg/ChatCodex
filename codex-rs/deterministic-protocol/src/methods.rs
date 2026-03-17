@@ -51,6 +51,8 @@ pub enum Method {
     RunAssignOwner,
     // Milestone 20: deterministic run due dates
     RunSetDueDate,
+    // Milestone 21: deterministic run dependency links
+    RunSetDependencies,
 }
 
 impl Method {
@@ -99,6 +101,8 @@ impl Method {
             Self::RunAssignOwner => "run.assign_owner",
             // Milestone 20
             Self::RunSetDueDate => "run.set_due_date",
+            // Milestone 21
+            Self::RunSetDependencies => "run.set_dependencies",
         }
     }
 
@@ -147,6 +151,8 @@ impl Method {
             "run.assign_owner" => Some(Self::RunAssignOwner),
             // Milestone 20
             "run.set_due_date" => Some(Self::RunSetDueDate),
+            // Milestone 21
+            "run.set_dependencies" => Some(Self::RunSetDependencies),
             _ => None,
         }
     }
@@ -196,6 +202,8 @@ impl Method {
             Self::RunAssignOwner,
             // Milestone 20
             Self::RunSetDueDate,
+            // Milestone 21
+            Self::RunSetDependencies,
         ]
     }
 }
