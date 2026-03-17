@@ -493,7 +493,7 @@ Acceptance:
 
 ---
 
-## Milestone 14: Deterministic Run Unarchiving and Archive Restoration Controls
+## Milestone 14: Deterministic Run Unarchiving and Archive Restoration Controls ✅
 
 **Protocol (`deterministic-protocol`):**
 
@@ -540,6 +540,305 @@ Acceptance:
 - ✅ Daemon handlers: M14 tests for unarchive completed/failed, rejection for non-archived/unknown, audit trail, list restoration, archived_only exclusion, run.get visibility, persistence roundtrip
 - ✅ Persistence: unarchive metadata roundtrip, defaults to None, restored run in default list, excluded from archived_only, summary fields, migration from M13 schema
 - ✅ TypeScript: `UnarchiveRunInput` schema validation, no-hidden-agent regression, exact registry test updated
+
+---
+
+## Milestone 15: deterministic run labeling and annotation metadata ✅
+
+**Goal:** Let ChatGPT explicitly attach organization metadata (labels and an operator note) to a run.
+
+**Protocol (`deterministic-protocol`):**
+
+- ✅ `RunAnnotation` struct: `labels: Vec<String>`, `operator_note: Option<String>`
+- ✅ `LABEL_MAX_LEN = 64`, `LABEL_MAX_COUNT = 16`, `OPERATOR_NOTE_MAX_LEN = 1000` constants
+- ✅ `RunAnnotateParams` struct: `run_id`, `labels: Option<Vec<String>>`, `operator_note: Option<String>`
+- ✅ `RunAnnotateResult` struct: `run_id`, `status`, `annotation: RunAnnotation`, `updated_at`, `message`
+- ✅ `annotation: Option<RunAnnotation>` field on `RunState` and `RunGetResult`
+- ✅ `labels`, `operator_note` fields on `RunSummary`
+- ✅ `label_filter: Option<String>` added to `RunsListParams`
+- ✅ `Method::RunAnnotate` (`run.annotate`) added to methods enum
+
+**Core (`deterministic-core`):**
+
+- ✅ `deterministic_core::run_annotate` module: `normalize_labels()` and `annotate()` functions
+- ✅ Labels are trimmed, lowercased, deduplicated (first wins), and sorted deterministically
+- ✅ Each label: non-empty, `[a-z0-9_-]` only, bounded to `LABEL_MAX_LEN`
+- ✅ Total label count bounded to `LABEL_MAX_COUNT`
+- ✅ Operator note bounded to `OPERATOR_NOTE_MAX_LEN`
+- ✅ At least one of `labels` or `operator_note` must be provided
+- ✅ Annotating does not execute work, change status, plan, or any lifecycle field
+
+**Daemon (`deterministic-daemon`):**
+
+- ✅ `handle_run_annotate` handler dispatched from `Method::RunAnnotate`
+- ✅ Audit entry `run_annotated` appended with label count and note presence
+- ✅ `handle_run_get` exposes `annotation` in `RunGetResult`
+- ✅ SQLite persistence: `annotation` TEXT column added with safe migration
+- ✅ `handle_runs_list` supports `label_filter` (exact post-query Rust filtering)
+- ✅ `RunSummary` carries `labels` and `operator_note` fields from persistence
+
+**TypeScript (MCP gateway):**
+
+- ✅ `AnnotateRunInput` Zod schema added to `schemas.ts` (`runId`, `labels?: string[]`, `operatorNote?: string`)
+- ✅ `ListRunsInput` extended with `labelFilter?: string` optional field
+- ✅ `annotate_run` added to `REGISTERED_TOOL_NAMES`
+- ✅ `annotate_run` tool registered: validates inputs, calls `run.annotate`, returns result
+- ✅ TypeScript remains thin: validation + mapping + daemon calls only
+
+**Tests:**
+
+- ✅ Core: label normalization, deduplication, sort, invalid character rejection, length bounds, operator note update, at-least-one requirement
+- ✅ Daemon handlers: M15 tests for annotating runs, label filter in list, audit trail, run.get visibility
+- ✅ Persistence: annotation roundtrip, defaults to None, label filter in list, summary fields, migration
+- ✅ TypeScript: `AnnotateRunInput` schema validation, `ListRunsInput` label filter, no-hidden-agent regression, exact registry test updated
+
+---
+
+## Milestone 16: deterministic run pinning and working-set prioritization ✅
+
+**Goal:** Let ChatGPT explicitly pin runs to mark them as prominent in the visible working set.
+
+**Protocol (`deterministic-protocol`):**
+
+- ✅ `PinMetadata` struct: `reason`, `pinned_at`
+- ✅ `PIN_REASON_MAX_LEN = 500` constant
+- ✅ `RunPinParams` struct: `run_id`, `reason`
+- ✅ `RunPinResult` struct: `run_id`, `status`, `pinned_at`, `reason`, `message`
+- ✅ `RunUnpinParams` struct: `run_id`, `reason`
+- ✅ `RunUnpinResult` struct: `run_id`, `status`, `unpinned_at`, `reason`, `message`
+- ✅ `pin_metadata: Option<PinMetadata>` field on `RunState` and `RunGetResult`
+- ✅ `is_pinned`, `pin_reason`, `pinned_at` fields on `RunSummary`
+- ✅ `pinned_only: Option<bool>` added to `RunsListParams`
+- ✅ `Method::RunPin` (`run.pin`) and `Method::RunUnpin` (`run.unpin`) added to methods enum
+
+**Core (`deterministic-core`):**
+
+- ✅ `deterministic_core::run_pin` module: `pin()` function
+- ✅ `deterministic_core::run_unpin` module: `unpin()` function
+- ✅ Any run (regardless of status) may be pinned; re-pinning replaces metadata (idempotent)
+- ✅ Only pinned runs may be unpinned; non-pinned runs are rejected
+- ✅ Pinning/unpinning does not execute work, change status, plan, or any lifecycle field
+
+**Daemon (`deterministic-daemon`):**
+
+- ✅ `handle_run_pin` / `handle_run_unpin` handlers dispatched from respective methods
+- ✅ Audit entries `run_pinned` / `run_unpinned` appended with reason
+- ✅ SQLite persistence: `pin_metadata` TEXT column added with safe migration
+- ✅ `is_pinned` flag: set when `pin_metadata` is present
+- ✅ Pinned runs sort first in the default `list_runs` ordering
+- ✅ `pinned_only=true` filter returns only currently pinned runs
+- ✅ `RunSummary` carries pin fields from persistence
+
+**TypeScript (MCP gateway):**
+
+- ✅ `PinRunInput` / `UnpinRunInput` Zod schemas added to `schemas.ts`
+- ✅ `ListRunsInput` extended with `pinnedOnly?: boolean`
+- ✅ `pin_run`, `unpin_run` added to `REGISTERED_TOOL_NAMES`
+- ✅ Tools registered: validate inputs, call daemon, return results
+- ✅ TypeScript remains thin: validation + mapping + daemon calls only
+
+**Tests:**
+
+- ✅ Core: pinning any status run, re-pin replaces metadata, unpin pinned run, reject unpin of non-pinned
+- ✅ Daemon handlers: M16 tests for pin/unpin operations, pinned_only filter, audit trail, persistence
+- ✅ Persistence: pin metadata roundtrip, defaults to None, pinned_only filter, summary fields, migration
+- ✅ TypeScript: schema validation, no-hidden-agent regression, exact registry test updated
+
+---
+
+## Milestone 17: deterministic run snoozing and deferred visibility ✅
+
+**Goal:** Let ChatGPT explicitly snooze runs to temporarily defer them out of the default visible working set without archiving.
+
+**Protocol (`deterministic-protocol`):**
+
+- ✅ `SnoozeMetadata` struct: `reason`, `snoozed_at`
+- ✅ `SNOOZE_REASON_MAX_LEN = 500` constant
+- ✅ `RunSnoozeParams` struct: `run_id`, `reason`
+- ✅ `RunSnoozeResult` struct: `run_id`, `status`, `snoozed_at`, `reason`, `message`
+- ✅ `RunUnsnoozeParams` struct: `run_id`, `reason`
+- ✅ `RunUnsnoozeResult` struct: `run_id`, `status`, `unsnoozed_at`, `reason`, `message`
+- ✅ `snooze_metadata: Option<SnoozeMetadata>` field on `RunState`
+- ✅ `is_snoozed`, `snooze_reason`, `snoozed_at` fields on `RunSummary`
+- ✅ `include_snoozed` / `snoozed_only` added to `RunsListParams`
+- ✅ `Method::RunSnooze` (`run.snooze`) and `Method::RunUnsnooze` (`run.unsnooze`) added to methods enum
+
+**Core (`deterministic-core`):**
+
+- ✅ `deterministic_core::run_snooze` module: `snooze()` function
+- ✅ `deterministic_core::run_unsnooze` module: `unsnooze()` function
+- ✅ Any run (regardless of status) may be snoozed; re-snoozing replaces metadata
+- ✅ Only snoozed runs may be unsnoozed; non-snoozed runs are rejected
+- ✅ Snoozing/unsnoozing does not execute work, change status, plan, or any lifecycle field
+
+**Daemon (`deterministic-daemon`):**
+
+- ✅ `handle_run_snooze` / `handle_run_unsnooze` handlers dispatched from respective methods
+- ✅ Audit entries `run_snoozed` / `run_unsnoozed` appended with reason
+- ✅ SQLite persistence: `snooze_metadata` TEXT column added with safe migration
+- ✅ `is_snoozed` flag: set when `snooze_metadata` is present
+- ✅ `list_runs` excludes snoozed runs by default; `include_snoozed=true` includes them; `snoozed_only=true` returns only snoozed
+- ✅ `RunSummary` carries snooze fields from persistence
+
+**TypeScript (MCP gateway):**
+
+- ✅ `SnoozeRunInput` / `UnsnoozeRunInput` Zod schemas added to `schemas.ts` (reason 1–500 chars)
+- ✅ `ListRunsInput` extended with `includeSnoozed?: boolean`, `snoozedOnly?: boolean`
+- ✅ `snooze_run`, `unsnooze_run` added to `REGISTERED_TOOL_NAMES`
+- ✅ Tools registered: validate inputs, call daemon, return results
+- ✅ TypeScript remains thin: validation + mapping + daemon calls only
+
+**Tests:**
+
+- ✅ Core: snoozing any status run, re-snooze replaces metadata, unsnooze snoozed run, reject unsnooze of non-snoozed
+- ✅ Daemon handlers: M17 tests for snooze/unsnooze operations, filtering, audit trail, persistence
+- ✅ Persistence: snooze metadata roundtrip, list filtering (default excludes, include_snoozed, snoozed_only), migration
+- ✅ TypeScript: schema validation, ListRunsInput snooze filter, no-hidden-agent regression, registry test updated
+
+---
+
+## Milestone 18: deterministic run priority levels and queue ordering ✅
+
+**Goal:** Let ChatGPT explicitly classify runs by urgency within the visible working set.
+
+**Protocol (`deterministic-protocol`):**
+
+- ✅ `RunPriority` enum: `Low`, `Normal`, `High`, `Critical` (serialized as `"low"`, `"normal"`, `"high"`, `"critical"`)
+- ✅ `PRIORITY_REASON_MAX_LEN = 500` constant
+- ✅ `RunSetPriorityParams` struct: `run_id`, `priority: RunPriority`, `reason`
+- ✅ `RunSetPriorityResult` struct: `run_id`, `status`, `previous_priority`, `priority`, `reason`, `updated_at`, `message`
+- ✅ `priority: RunPriority` field on `RunState`, `RunSummary`, and `RunGetResult` (default: `Normal`)
+- ✅ `priority_filter: Option<RunPriority>` added to `RunsListParams`
+- ✅ `sort_by_priority: Option<bool>` added to `RunsListParams`
+- ✅ `Method::RunSetPriority` (`run.set_priority`) added to methods enum
+
+**Core (`deterministic-core`):**
+
+- ✅ `deterministic_core::run_set_priority` module: `set_priority()` function
+- ✅ Any run (regardless of status) may have priority updated
+- ✅ Reason must be non-empty and ≤ `PRIORITY_REASON_MAX_LEN`
+- ✅ Setting priority does not execute work, change status, plan, or any lifecycle field
+- ✅ Previous and new priority recorded in result for audit visibility
+
+**Daemon (`deterministic-daemon`):**
+
+- ✅ `handle_run_set_priority` handler dispatched from `Method::RunSetPriority`
+- ✅ Audit entry `run_priority_set` appended with previous and new priority
+- ✅ SQLite persistence: `priority` TEXT column added with safe migration (defaults to `"normal"`)
+- ✅ `list_runs` supports `priority_filter` (exact match) and `sort_by_priority` (high→low, ties broken by pinned-first/updated_at)
+- ✅ `RunSummary` carries `priority` field from persistence
+
+**TypeScript (MCP gateway):**
+
+- ✅ `SetRunPriorityInput` Zod schema: `runId`, `priority` enum `["critical","high","normal","low"]`, `reason`
+- ✅ `ListRunsInput` extended with `priorityFilter?: string`, `sortByPriority?: boolean`
+- ✅ `set_run_priority` added to `REGISTERED_TOOL_NAMES`
+- ✅ Tool registered: validates inputs, calls `run.set_priority`, returns result
+- ✅ TypeScript remains thin: validation + mapping + daemon calls only
+
+**Tests:**
+
+- ✅ Core: setting each priority level, reason validation, status unchanged, previous/new priority in result
+- ✅ Daemon handlers: M18 tests for priority set/update, priority_filter, sort_by_priority, audit trail
+- ✅ Persistence: priority roundtrip, default Normal, filter and sort tests, migration from M17 schema
+- ✅ TypeScript: `SetRunPriorityInput` schema accepts valid levels, rejects unknown, registry check
+
+---
+
+## Milestone 19: deterministic run ownership assignment ✅
+
+**Goal:** Let ChatGPT explicitly assign ownership and coordination metadata to runs.
+
+**Protocol (`deterministic-protocol`):**
+
+- ✅ `ASSIGNEE_MAX_LEN = 64`, `OWNERSHIP_NOTE_MAX_LEN = 500` constants
+- ✅ `RunAssignOwnerParams` struct: `run_id`, `assignee: Option<String>` (nullable to clear), `ownership_note: Option<String>`
+- ✅ `RunAssignOwnerResult` struct: `run_id`, `status`, `previous_assignee`, `assignee`, `ownership_note`, `updated_at`, `message`
+- ✅ `assignee: Option<String>` and `ownership_note: Option<String>` fields on `RunState`
+- ✅ `assignee: Option<String>` on `RunSummary` and `RunGetResult`
+- ✅ `assignee_filter: Option<String>` added to `RunsListParams`
+- ✅ `Method::RunAssignOwner` (`run.assign_owner`) added to methods enum
+
+**Core (`deterministic-core`):**
+
+- ✅ `deterministic_core::run_assign_owner` module: `normalize_assignee()` and `assign_owner()` functions
+- ✅ Assignee normalized: trimmed, lowercased, `[a-z0-9._-]` only, bounded to `ASSIGNEE_MAX_LEN`
+- ✅ `assignee=null` clears ownership
+- ✅ Ownership note bounded to `OWNERSHIP_NOTE_MAX_LEN`
+- ✅ At least one of `assignee` or `ownership_note` must be provided
+- ✅ Assigning does not execute work, change status, plan, or any lifecycle field
+
+**Daemon (`deterministic-daemon`):**
+
+- ✅ `handle_run_assign_owner` handler dispatched from `Method::RunAssignOwner`
+- ✅ Audit entry `run_owner_assigned` (or `run_owner_cleared`) appended
+- ✅ SQLite persistence: `assignee` and `ownership_note` TEXT columns added with safe migration
+- ✅ `list_runs` supports `assignee_filter` (exact normalized match)
+- ✅ `RunSummary` carries `assignee` field from persistence
+
+**TypeScript (MCP gateway):**
+
+- ✅ `AssignRunOwnerInput` Zod schema: `runId`, `assignee?: string | null`, `ownershipNote?: string`
+- ✅ `ListRunsInput` extended with `assigneeFilter?: string`
+- ✅ `assign_run_owner` added to `REGISTERED_TOOL_NAMES`
+- ✅ Tool registered: validates inputs, calls `run.assign_owner`, returns result
+- ✅ TypeScript remains thin: validation + mapping + daemon calls only
+
+**Tests:**
+
+- ✅ Core: assign owner, clear owner, normalize assignee, note update, invalid characters rejected
+- ✅ Daemon handlers: M19 tests for owner assignment, assignee_filter, audit trail
+- ✅ Persistence: assignee roundtrip, clear, filter, migration from M18 schema
+- ✅ TypeScript: `AssignRunOwnerInput` schema accepts assignee and null-clear, registry check
+
+---
+
+## Milestone 20: deterministic run due dates and deadline scheduling metadata ✅
+
+**Goal:** Let ChatGPT explicitly track target dates for runs without introducing backend autonomy.
+
+**Protocol (`deterministic-protocol`):**
+
+- ✅ `due_date: Option<String>` (ISO `YYYY-MM-DD`) field on `RunState`, `RunSummary`, and `RunGetResult`
+- ✅ `RunSetDueDateParams` struct: `run_id`, `due_date: Option<Option<String>>` (outer `None` = no-op, inner `None` = clear)
+- ✅ `RunSetDueDateResult` struct: `run_id`, `status`, `previous_due_date`, `due_date`, `updated_at`, `message`
+- ✅ `due_on_or_before: Option<String>` and `sort_by_due_date: Option<bool>` added to `RunsListParams`
+- ✅ `Method::RunSetDueDate` (`run.set_due_date`) added to methods enum
+
+**Core (`deterministic-core`):**
+
+- ✅ `deterministic_core::run_set_due_date` module: `validate_due_date()` and `set_due_date()` functions
+- ✅ `validate_due_date`: exactly 10 chars, `YYYY-MM-DD` format, digit positions, `-` separators, month 01–12, day 01–31
+- ✅ `set_due_date`: set, replace, or clear due date; preserves all other state
+- ✅ Setting due date does not execute work, change status, plan, or any lifecycle field
+- ✅ Previous and new due date recorded in result for audit visibility
+
+**Daemon (`deterministic-daemon`):**
+
+- ✅ `handle_run_set_due_date` handler dispatched from `Method::RunSetDueDate`
+- ✅ Audit entry `run_due_date_set` appended with previous and new due date
+- ✅ SQLite persistence: `due_date` TEXT column added with safe migration
+- ✅ `list_runs` supports `due_on_or_before` filter (lexicographic ISO date comparison)
+- ✅ `list_runs` supports `sort_by_due_date=true` (soonest first; runs without due date sort last)
+- ✅ `RunSummary` carries `due_date` field from persistence
+- ✅ `handle_run_get` exposes `due_date` in `RunGetResult`
+
+**TypeScript (MCP gateway):**
+
+- ✅ `SetRunDueDateInput` Zod schema: `runId`, `dueDate?: string | null` (regex `^\d{4}-\d{2}-\d{2}$`, nullable to clear)
+- ✅ `ListRunsInput` extended with `dueOnOrBefore?: string`, `sortByDueDate?: boolean`
+- ✅ `set_run_due_date` added to `REGISTERED_TOOL_NAMES`
+- ✅ Tool registered: validates inputs, calls `run.set_due_date`, returns result
+- ✅ TypeScript remains thin: validation + mapping + daemon calls only
+
+**Tests:**
+
+- ✅ Core: valid date accepted, trimming, invalid length/separators/digits/month/day rejected, set/replace/clear, status unchanged, message content
+- ✅ Daemon handlers: M20 tests for set date, persist and reload, clear date, invalid format rejection, list filtering, sort by due date, audit trail
+- ✅ Persistence: due date roundtrip, clear roundtrip, list summary carries due_date, migration from M19 schema
+- ✅ TypeScript: `SetRunDueDateInput` schema accepts valid date/null/absent, rejects malformed; `ListRunsInput` dueOnOrBefore/sortByDueDate; registry check; no-hidden-agent regression
+
+---
 
 ## Out of scope
 

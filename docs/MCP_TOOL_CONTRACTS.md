@@ -574,6 +574,109 @@ Explicitly unarchive (restore) an archived run so it returns to the default acti
 - `archivedOnly=true` excludes restored (unarchived) runs
 - Unarchived runs remain fully inspectable via `get_run_state` and `get_run_history`
 
+## annotate_run (Milestone 15)
+
+Attach or replace organization metadata (labels and/or an operator note) on any run.
+
+### Input
+
+- `runId`: string — Run ID to annotate
+- `labels`: string[] (optional) — replaces the entire label set; each label must be `[a-z0-9_-]`, max 64 chars, max 16 labels total
+- `operatorNote`: string (optional) — replaces the operator note; empty string clears it
+
+At least one of `labels` or `operatorNote` must be provided.
+
+### Returns
+
+- `runId` — the annotated run ID
+- `status` — the run status (unchanged)
+- `annotation.labels` — normalized (trimmed, lowercased, deduped, sorted) label set
+- `annotation.operatorNote` — current operator note (null if cleared)
+- `updatedAt` — ISO 8601 timestamp
+- `message` — human-readable confirmation
+
+### Behavior
+
+- Any run regardless of lifecycle status may be annotated
+- Labels are normalized: trimmed, lowercased, deduplicated (first wins), sorted deterministically
+- Labels must contain only lowercase ASCII letters, digits, hyphens, and underscores
+- Providing `labels` replaces the entire label set; omitting `labels` preserves existing labels
+- Providing `operatorNote` replaces it; omitting `operatorNote` preserves existing note
+- Annotating does **not** execute work, change lifecycle status, plan, or any other field
+- Appends `run_annotated` audit entry
+- Annotation metadata is visible in `get_run_state`, `refresh_run_state`, and `list_runs`
+
+### `list_runs` label filtering (Milestone 15 extension)
+
+The `list_runs` tool accepts an optional parameter:
+
+- `labelFilter` (string) — exact normalized label match; only runs that have this label in their annotation are returned
+
+---
+
+## pin_run (Milestone 16)
+
+Explicitly pin a run to mark it as prominent in the visible working set.
+
+### Input
+
+- `runId`: string — Run ID to pin
+- `reason`: string — human-readable reason for pinning (required, 1–500 chars)
+
+### Returns
+
+- `runId` — the pinned run ID
+- `status` — the run status (unchanged)
+- `pinnedAt` — ISO 8601 timestamp of pinning
+- `reason` — the reason provided
+- `message` — human-readable confirmation
+
+### Behavior
+
+- Any run regardless of lifecycle status may be pinned
+- Re-pinning a pinned run replaces the existing pin metadata (idempotent)
+- Pinning does **not** execute work, change lifecycle status, plan, or any lifecycle field
+- `pinMetadata` is added to the run state and persisted in SQLite
+- Appends `run_pinned` audit entry with the pin reason
+- Pinned runs sort first in the default `list_runs` ordering
+- `pinnedOnly=true` filter returns only currently pinned runs
+- Pin metadata is visible in `get_run_state`, `refresh_run_state`, and `list_runs`
+
+---
+
+## unpin_run (Milestone 16)
+
+Explicitly unpin a pinned run.
+
+### Input
+
+- `runId`: string — Run ID to unpin (must currently be pinned)
+- `reason`: string — human-readable reason for unpinning (required, 1–500 chars)
+
+### Returns
+
+- `runId` — the unpinned run ID
+- `status` — the run status (unchanged)
+- `unpinnedAt` — ISO 8601 timestamp of unpinning
+- `reason` — the reason provided
+- `message` — human-readable confirmation
+
+### Behavior
+
+- Only pinned runs may be unpinned; non-pinned runs are rejected deterministically
+- Unpinning does **not** execute work, change lifecycle status, plan, or any lifecycle field
+- `pinMetadata` is cleared from the run state
+- Appends `run_unpinned` audit entry with the unpin reason
+- After unpinning, the run returns to standard ordering in `list_runs`
+
+### `list_runs` pin filtering (Milestone 16 extension)
+
+The `list_runs` tool accepts an optional parameter:
+
+- `pinnedOnly` (boolean, default: false) — when `true`, return only currently pinned runs
+
+---
+
 ## snooze_run (Milestone 17)
 
 Explicitly snooze a run to temporarily defer it out of the default visible working set without archiving it.
@@ -638,6 +741,123 @@ Explicitly unsnooze a snoozed run to restore it to the default visible working s
 - Appends `run_unsnoozed` audit entry with the unsnooze reason
 - After unsnoozing, the run reappears in the default `list_runs` visible set
 - `snoozedOnly=true` excludes unsnooozed runs
+
+- `snoozedOnly=true` excludes unsnooozed runs
+
+---
+
+## set_run_priority (Milestone 18)
+
+Explicitly classify a run by urgency within the visible working set.
+
+### Input
+
+- `runId`: string — Run ID whose priority should be updated
+- `priority`: `"critical" | "high" | "normal" | "low"` — new priority level
+- `reason`: string — human-readable reason for the change (required, 1–500 chars)
+
+### Returns
+
+- `runId` — the updated run ID
+- `status` — the run status (unchanged)
+- `previousPriority` — prior priority level
+- `priority` — new priority level
+- `reason` — the reason provided
+- `updatedAt` — ISO 8601 timestamp
+- `message` — human-readable confirmation
+
+### Behavior
+
+- Any run regardless of lifecycle status may have its priority updated
+- Setting priority does **not** execute work, change lifecycle status, plan, or any lifecycle field
+- Appends `run_priority_set` audit entry with previous and new priority
+- Priority is visible in `get_run_state`, `refresh_run_state`, and `list_runs`
+- Default priority for all runs is `"normal"`
+
+### `list_runs` priority filtering and sorting (Milestone 18 extension)
+
+The `list_runs` tool accepts optional parameters:
+
+- `priorityFilter` (`"critical" | "high" | "normal" | "low"`) — return only runs with this exact priority level
+- `sortByPriority` (boolean, default: false) — when `true`, sort by priority descending (critical first), with pinned-first/updated_at as tiebreakers
+
+---
+
+## assign_run_owner (Milestone 19)
+
+Explicitly assign or clear ownership and coordination metadata on a run.
+
+### Input
+
+- `runId`: string — Run ID whose ownership should be updated
+- `assignee`: string or null (optional) — assignee identifier (`[a-z0-9._-]`, max 64 chars); pass `null` to clear
+- `ownershipNote`: string (optional, max 500 chars) — free-text coordination note
+
+At least one of `assignee` or `ownershipNote` must be provided.
+
+### Returns
+
+- `runId` — the updated run ID
+- `status` — the run status (unchanged)
+- `previousAssignee` — prior assignee (null if unset)
+- `assignee` — new assignee (null if cleared)
+- `ownershipNote` — current ownership note (null if cleared)
+- `updatedAt` — ISO 8601 timestamp
+- `message` — human-readable confirmation
+
+### Behavior
+
+- Any run regardless of lifecycle status may have ownership updated
+- Assignee is normalized: trimmed, lowercased, `[a-z0-9._-]` characters only
+- Passing `assignee=null` clears ownership
+- Assigning does **not** execute work, change lifecycle status, plan, or any lifecycle field
+- Appends `run_owner_assigned` (or `run_owner_cleared`) audit entry
+- Ownership metadata is visible in `get_run_state`, `refresh_run_state`, and `list_runs`
+
+### `list_runs` assignee filtering (Milestone 19 extension)
+
+The `list_runs` tool accepts an optional parameter:
+
+- `assigneeFilter` (string) — exact normalized assignee match; only runs assigned to this person are returned
+
+---
+
+## set_run_due_date (Milestone 20)
+
+Explicitly set, replace, or clear the due date of a run.
+
+### Input
+
+- `runId`: string — Run ID whose due date should be updated
+- `dueDate`: string or null (optional) — ISO `YYYY-MM-DD` date string; pass `null` to clear; omit to preserve current
+
+### Returns
+
+- `runId` — the updated run ID
+- `status` — the run status (unchanged)
+- `previousDueDate` — prior due date (null if unset)
+- `dueDate` — new due date (null if cleared)
+- `updatedAt` — ISO 8601 timestamp
+- `message` — human-readable confirmation
+
+### Behavior
+
+- Any run regardless of lifecycle status may have its due date updated
+- `dueDate` must be exactly `YYYY-MM-DD` format; month 01–12, day 01–31
+- No time-of-day or timezone semantics; the backend stores the date string as-is
+- Passing `dueDate=null` clears the due date
+- Setting due date does **not** execute work, change lifecycle status, plan, or any lifecycle field
+- Appends `run_due_date_set` audit entry with previous and new due date
+- Due date is visible in `get_run_state`, `refresh_run_state`, and `list_runs`
+
+### `list_runs` due date filtering and sorting (Milestone 20 extension)
+
+The `list_runs` tool accepts optional parameters:
+
+- `dueOnOrBefore` (string `YYYY-MM-DD`) — return only runs with a due date ≤ this value (lexicographic ISO date comparison); runs without a due date are excluded
+- `sortByDueDate` (boolean, default: false) — when `true`, sort by due date ascending (soonest first); runs without a due date sort last; due date is the primary sort key before pinned-first/priority/updated_at
+
+---
 
 ## Forbidden public tools
 
