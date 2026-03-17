@@ -58,6 +58,8 @@ pub fn dispatch(
         Method::RunAssignOwner => handle_run_assign_owner(params, store),
         // Milestone 20: deterministic run due dates
         Method::RunSetDueDate => handle_run_set_due_date(params, store),
+        // Milestone 21: deterministic run dependency links
+        Method::RunSetDependencies => handle_run_set_dependencies(params, store),
     }
 }
 
@@ -489,6 +491,26 @@ fn handle_runs_list(
             (None, None) => std::cmp::Ordering::Equal,
         });
     }
+    // Milestone 21: blocked_only filter — keep only runs with at least one blocker.
+    if p.blocked_only.unwrap_or(false) {
+        runs.retain(|r| r.is_blocked.unwrap_or(false));
+    }
+    // Milestone 21: blocked_by_run_id filter — keep only runs blocked by a specific run ID.
+    // We need the full blocked_by_run_ids list for this; fetch via get_run per candidate.
+    if let Some(ref blocker_id) = p.blocked_by_run_id {
+        runs.retain(|r| {
+            // Only runs already known to be blocked are candidates.
+            if !r.is_blocked.unwrap_or(false) {
+                return false;
+            }
+            store
+                .get_run(&r.run_id)
+                .ok()
+                .flatten()
+                .map(|state| state.blocked_by_run_ids.contains(blocker_id))
+                .unwrap_or(false)
+        });
+    }
     let count = runs.len();
     let result = RunsListResult { runs, count };
     Ok((serde_json::to_value(result)?, None))
@@ -523,6 +545,7 @@ fn handle_run_get(
     let pin_metadata = state.pin_metadata.clone();
     let priority = state.priority;
     let due_date = state.due_date.clone();
+    let blocked_by_run_ids = state.blocked_by_run_ids.clone();
 
     let result = RunGetResult {
         run_state: state.clone(),
@@ -546,6 +569,7 @@ fn handle_run_get(
         pin_metadata,
         priority,
         due_date,
+        blocked_by_run_ids,
     };
     Ok((serde_json::to_value(result)?, Some(state)))
 }
@@ -1167,11 +1191,56 @@ fn handle_run_set_due_date(
     Ok((serde_json::to_value(result)?, Some(state)))
 }
 
+// ---- Milestone 21: deterministic run dependency links ----
+
+fn handle_run_set_dependencies(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunSetDependenciesParams = serde_json::from_value(params)?;
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    // Collect all known run IDs for existence validation.
+    let all_runs = store.list_runs(
+        usize::MAX,
+        None,
+        None,
+        true, // include_archived
+        false,
+        None,
+        false,
+        true, // include_snoozed
+        false,
+    )?;
+    let known_ids: Vec<String> = all_runs.into_iter().map(|r| r.run_id).collect();
+
+    let result = deterministic_core::run_set_dependencies::set_dependencies(&p, &mut state, &known_ids)?;
+    store.save_run(&state)?;
+
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "run_dependencies_set",
+        &result.message,
+        Some(
+            &serde_json::json!({
+                "previous_blocked_by_run_ids": result.previous_blocked_by_run_ids,
+                "blocked_by_run_ids": result.blocked_by_run_ids,
+                "updated_at": result.updated_at,
+            })
+            .to_string(),
+        ),
+    );
+
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::persistence::Store;
-    use deterministic_protocol::{RunPolicy, RunPriority};
+    use deterministic_protocol::{RunPolicy, RunPriority, RunSetDependenciesResult, RunsListResult};
 
     fn make_run_state(run_id: &str) -> RunState {
         RunState {
@@ -1208,6 +1277,7 @@ mod tests {
             assignee: None,
             ownership_note: None,
             due_date: None,
+            blocked_by_run_ids: vec![],
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
@@ -3153,5 +3223,248 @@ mod tests {
         ).unwrap();
         let result: RunGetResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.due_date.as_deref(), Some("2026-11-01"));
+    }
+
+    // ----- Milestone 21: run.set_dependencies -----
+
+    #[test]
+    fn run_set_dependencies_sets_blockers() {
+        let store = Store::open_in_memory().unwrap();
+        let run_a = make_run_state("r_dep_a");
+        let run_b = make_run_state("r_dep_b");
+        store.save_run(&run_a).unwrap();
+        store.save_run(&run_b).unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunSetDependencies,
+            serde_json::json!({"runId": "r_dep_a", "blockedByRunIds": ["r_dep_b"]}),
+            &store,
+        )
+        .unwrap();
+        let result: RunSetDependenciesResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.blocked_by_run_ids, vec!["r_dep_b"]);
+        assert!(result.previous_blocked_by_run_ids.is_empty());
+    }
+
+    #[test]
+    fn run_set_dependencies_persists() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_dp_a")).unwrap();
+        store.save_run(&make_run_state("r_dp_b")).unwrap();
+
+        dispatch(
+            Method::RunSetDependencies,
+            serde_json::json!({"runId": "r_dp_a", "blockedByRunIds": ["r_dp_b"]}),
+            &store,
+        )
+        .unwrap();
+
+        let loaded = store.get_run("r_dp_a").unwrap().unwrap();
+        assert_eq!(loaded.blocked_by_run_ids, vec!["r_dp_b"]);
+    }
+
+    #[test]
+    fn run_set_dependencies_clears() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_dc_a");
+        state.blocked_by_run_ids = vec!["r_dc_b".to_string()];
+        store.save_run(&state).unwrap();
+        store.save_run(&make_run_state("r_dc_b")).unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunSetDependencies,
+            serde_json::json!({"runId": "r_dc_a", "blockedByRunIds": []}),
+            &store,
+        )
+        .unwrap();
+        let result: RunSetDependenciesResult = serde_json::from_value(val).unwrap();
+        assert!(result.blocked_by_run_ids.is_empty());
+        assert_eq!(result.previous_blocked_by_run_ids, vec!["r_dc_b"]);
+
+        let loaded = store.get_run("r_dc_a").unwrap().unwrap();
+        assert!(loaded.blocked_by_run_ids.is_empty());
+    }
+
+    #[test]
+    fn run_set_dependencies_rejects_self_dep() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_ds_a")).unwrap();
+
+        let err = dispatch(
+            Method::RunSetDependencies,
+            serde_json::json!({"runId": "r_ds_a", "blockedByRunIds": ["r_ds_a"]}),
+            &store,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("cannot depend on itself"), "{err}");
+    }
+
+    #[test]
+    fn run_set_dependencies_rejects_unknown_id() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_du_a")).unwrap();
+
+        let err = dispatch(
+            Method::RunSetDependencies,
+            serde_json::json!({"runId": "r_du_a", "blockedByRunIds": ["ghost-run"]}),
+            &store,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown run ID"), "{err}");
+    }
+
+    #[test]
+    fn run_set_dependencies_unknown_target_run_rejected() {
+        let store = Store::open_in_memory().unwrap();
+
+        let err = dispatch(
+            Method::RunSetDependencies,
+            serde_json::json!({"runId": "no-such-run", "blockedByRunIds": []}),
+            &store,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown run"), "{err}");
+    }
+
+    #[test]
+    fn run_set_dependencies_audit_entry() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_daud_a")).unwrap();
+        store.save_run(&make_run_state("r_daud_b")).unwrap();
+
+        dispatch(
+            Method::RunSetDependencies,
+            serde_json::json!({"runId": "r_daud_a", "blockedByRunIds": ["r_daud_b"]}),
+            &store,
+        )
+        .unwrap();
+
+        let entries = store.get_audit_entries("r_daud_a", 10).unwrap();
+        assert!(!entries.is_empty());
+        let last = entries.last().unwrap();
+        assert_eq!(last.event_kind, "run_dependencies_set");
+    }
+
+    #[test]
+    fn run_set_dependencies_deduplicates() {
+        let store = Store::open_in_memory().unwrap();
+        store.save_run(&make_run_state("r_ddd_a")).unwrap();
+        store.save_run(&make_run_state("r_ddd_b")).unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunSetDependencies,
+            serde_json::json!({"runId": "r_ddd_a", "blockedByRunIds": ["r_ddd_b", "r_ddd_b"]}),
+            &store,
+        )
+        .unwrap();
+        let result: RunSetDependenciesResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.blocked_by_run_ids, vec!["r_ddd_b"]);
+    }
+
+    #[test]
+    fn run_get_includes_blocked_by_run_ids() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_dbg_a");
+        state.blocked_by_run_ids = vec!["r_dbg_b".to_string()];
+        store.save_run(&state).unwrap();
+        store.save_run(&make_run_state("r_dbg_b")).unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunGet,
+            serde_json::json!({"runId": "r_dbg_a"}),
+            &store,
+        )
+        .unwrap();
+        let result: RunGetResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.blocked_by_run_ids, vec!["r_dbg_b"]);
+    }
+
+    #[test]
+    fn runs_list_blocked_only_filter() {
+        let store = Store::open_in_memory().unwrap();
+        let state_a = make_run_state("r_lbo_a");
+        let mut state_b = make_run_state("r_lbo_b");
+        state_b.blocked_by_run_ids = vec!["r_lbo_a".to_string()];
+        store.save_run(&state_a).unwrap();
+        store.save_run(&state_b).unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"blockedOnly": true}),
+            &store,
+        )
+        .unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.count, 1);
+        assert_eq!(result.runs[0].run_id, "r_lbo_b");
+    }
+
+    #[test]
+    fn runs_list_blocked_by_run_id_filter() {
+        let store = Store::open_in_memory().unwrap();
+        let state_a = make_run_state("r_lbbid_a");
+        let mut state_b = make_run_state("r_lbbid_b");
+        state_b.blocked_by_run_ids = vec!["r_lbbid_a".to_string()];
+        let mut state_c = make_run_state("r_lbbid_c");
+        state_c.blocked_by_run_ids = vec!["r_lbbid_a".to_string()];
+        let state_d = make_run_state("r_lbbid_d"); // unblocked
+        store.save_run(&state_a).unwrap();
+        store.save_run(&state_b).unwrap();
+        store.save_run(&state_c).unwrap();
+        store.save_run(&state_d).unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"blockedByRunId": "r_lbbid_a"}),
+            &store,
+        )
+        .unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.count, 2);
+        let ids: Vec<&str> = result.runs.iter().map(|r| r.run_id.as_str()).collect();
+        assert!(ids.contains(&"r_lbbid_b"), "{ids:?}");
+        assert!(ids.contains(&"r_lbbid_c"), "{ids:?}");
+    }
+
+    #[test]
+    fn runs_list_summary_shows_is_blocked() {
+        let store = Store::open_in_memory().unwrap();
+        let state_a = make_run_state("r_lsib_a");
+        let mut state_b = make_run_state("r_lsib_b");
+        state_b.blocked_by_run_ids = vec!["r_lsib_a".to_string()];
+        store.save_run(&state_a).unwrap();
+        store.save_run(&state_b).unwrap();
+
+        let (val, _) = dispatch(Method::RunsList, serde_json::json!({}), &store).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+
+        let summary_b = result.runs.iter().find(|r| r.run_id == "r_lsib_b").unwrap();
+        assert_eq!(summary_b.is_blocked, Some(true));
+        assert_eq!(summary_b.blocked_by_count, Some(1));
+
+        let summary_a = result.runs.iter().find(|r| r.run_id == "r_lsib_a").unwrap();
+        assert_eq!(summary_a.is_blocked, Some(false));
+        assert_eq!(summary_a.blocked_by_count, Some(0));
+    }
+
+    #[test]
+    fn run_set_dependencies_does_not_mutate_status() {
+        let store = Store::open_in_memory().unwrap();
+        let mut state = make_run_state("r_dns_a");
+        state.status = "finalized:completed".into();
+        store.save_run(&state).unwrap();
+        store.save_run(&make_run_state("r_dns_b")).unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunSetDependencies,
+            serde_json::json!({"runId": "r_dns_a", "blockedByRunIds": ["r_dns_b"]}),
+            &store,
+        )
+        .unwrap();
+        let result: RunSetDependenciesResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.status, "finalized:completed");
+
+        let loaded = store.get_run("r_dns_a").unwrap().unwrap();
+        assert_eq!(loaded.status, "finalized:completed");
     }
 }

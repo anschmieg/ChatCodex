@@ -129,6 +129,7 @@ mod tests {
             assignee: None,
             ownership_note: None,
             due_date: None,
+            blocked_by_run_ids: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }

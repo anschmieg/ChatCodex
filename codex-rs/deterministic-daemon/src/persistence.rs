@@ -801,7 +801,7 @@ impl Store {
                     created_at, updated_at, outcome_kind, reopen_metadata,
                     supersedes_run_id, superseded_by_run_id, is_archived, archive_metadata,
                     unarchive_metadata, annotation, pin_metadata, snooze_metadata, priority,
-                    assignee, due_date
+                    assignee, due_date, blocked_by_run_ids
              FROM runs {where_clause}
              ORDER BY CASE WHEN pin_metadata IS NOT NULL THEN 0 ELSE 1 END ASC, updated_at DESC
              LIMIT ?1"
@@ -817,7 +817,7 @@ impl Store {
             // 10: supersedes_run_id  11: superseded_by_run_id
             // 12: is_archived  13: archive_metadata  14: unarchive_metadata
             // 15: annotation  16: pin_metadata  17: snooze_metadata  18: priority
-            // 19: assignee  20: due_date
+            // 19: assignee  20: due_date  21: blocked_by_run_ids
             let plan_json: String = row.get(5)?;
             let total_steps: usize = serde_json::from_str::<Vec<String>>(&plan_json)
                 .map(|v| v.len())
@@ -876,6 +876,12 @@ impl Store {
                     format!("invalid run priority in SQLite: '{priority_str}'").into(),
                 )
             })?;
+            // Milestone 21: blocked_by_run_ids summary fields.
+            let blocked_by_run_ids_json: String = row.get(21).unwrap_or_else(|_| "[]".to_string());
+            let blocked_by_run_ids: Vec<String> =
+                serde_json::from_str(&blocked_by_run_ids_json).unwrap_or_default();
+            let blocked_by_count_val = blocked_by_run_ids.len();
+            let is_blocked_val = !blocked_by_run_ids.is_empty();
             Ok(RunSummary {
                 run_id: row.get(0)?,
                 workspace_id: row.get(1)?,
@@ -903,6 +909,8 @@ impl Store {
                 priority,
                 assignee: row.get(19)?,
                 due_date: row.get(20)?,
+                is_blocked: Some(is_blocked_val),
+                blocked_by_count: Some(blocked_by_count_val),
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
@@ -1046,6 +1054,7 @@ mod tests {
             assignee: None,
             ownership_note: None,
             due_date: None,
+            blocked_by_run_ids: vec![],
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
