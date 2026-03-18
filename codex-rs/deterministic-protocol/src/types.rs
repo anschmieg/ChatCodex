@@ -930,6 +930,77 @@ pub struct RunsListResult {
 }
 
 // ---------------------------------------------------------------------------
+// runs.overview (Milestone 24)
+
+/// Parameters for requesting a queue overview summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunsQueueOverviewParams {
+    /// Filter by workspace ID (optional).
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    /// When true, archived runs are included in counts (Milestone 13).
+    /// Default: false (archived runs are excluded from visible counts).
+    #[serde(default)]
+    pub include_archived: Option<bool>,
+    /// When true, snoozed runs are included in counts (Milestone 17).
+    /// Default: false (snoozed runs are excluded from visible counts).
+    #[serde(default)]
+    pub include_snoozed: Option<bool>,
+    /// ISO date (`YYYY-MM-DD`) for computing overdue counts (Milestone 20).
+    /// When provided, counts will include overdue status based on this date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub today: Option<String>,
+}
+
+/// Deterministic queue overview summary providing aggregate counts.
+///
+/// This is a read-only inspection operation that derives summary counts from
+/// existing run state without mutating anything.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunQueueOverview {
+    /// Total count of visible (non-archived) runs matching the filter.
+    pub total_visible: usize,
+    /// Count of runs that are ready to work on now.
+    pub ready_count: usize,
+    /// Count of runs that are blocked by at least one other run.
+    pub blocked_count: usize,
+    /// Count of runs that warrant operator attention.
+    pub needs_attention_count: usize,
+    /// Count of runs that are currently pinned.
+    pub pinned_count: usize,
+    /// Count of runs that are currently snoozed.
+    pub snoozed_count: usize,
+    /// Count of runs with a due date in the past (overdue).
+    /// Only included when `today` parameter is provided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overdue_count: Option<usize>,
+    /// Count of archived runs (only included when include_archived is true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_count: Option<usize>,
+    /// Counts grouped by priority level.
+    pub by_priority: PriorityCounts,
+    /// Counts grouped by assignee (key is assignee, value is count).
+    /// Unassigned runs are stored under key `"unassigned"`.
+    #[serde(default)]
+    pub by_assignee: std::collections::HashMap<String, usize>,
+    /// Counts grouped by status prefix (e.g., "awaiting_approval", "finalized", etc.).
+    #[serde(default)]
+    pub by_status: std::collections::HashMap<String, usize>,
+}
+
+/// Priority-level counts for queue overview.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PriorityCounts {
+    pub low: usize,
+    pub normal: usize,
+    pub high: usize,
+    pub urgent: usize,
+}
+
+// ---------------------------------------------------------------------------
 // run.get  (Milestone 7)
 // ---------------------------------------------------------------------------
 

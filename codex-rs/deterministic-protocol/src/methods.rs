@@ -53,7 +53,9 @@ pub enum Method {
     RunSetDueDate,
     // Milestone 21: deterministic run dependency links
     RunSetDependencies,
-    // Milestone 24: deterministic run effort estimates
+    // Milestone 24: deterministic queue overview
+    RunsQueueOverview,
+    // Milestone 25: deterministic run effort estimates
     RunSetEffort,
 }
 
@@ -106,6 +108,8 @@ impl Method {
             // Milestone 21
             Self::RunSetDependencies => "run.set_dependencies",
             // Milestone 24
+            Self::RunsQueueOverview => "runs.overview",
+            // Milestone 25
             Self::RunSetEffort => "run.set_effort",
         }
     }
@@ -158,7 +162,7 @@ impl Method {
             // Milestone 21
             "run.set_dependencies" => Some(Self::RunSetDependencies),
             // Milestone 24
-            "run.set_effort" => Some(Self::RunSetEffort),
+            "runs.overview" => Some(Self::RunsQueueOverview),
             _ => None,
         }
     }
@@ -211,7 +215,7 @@ impl Method {
             // Milestone 21
             Self::RunSetDependencies,
             // Milestone 24
-            Self::RunSetEffort,
+            Self::RunsQueueOverview,
         ]
     }
 }

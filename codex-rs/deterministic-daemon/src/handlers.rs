@@ -60,7 +60,9 @@ pub fn dispatch(
         Method::RunSetDueDate => handle_run_set_due_date(params, store),
         // Milestone 21: deterministic run dependency links
         Method::RunSetDependencies => handle_run_set_dependencies(params, store),
-        // Milestone 24: deterministic run effort estimates
+        // Milestone 24: deterministic queue overview
+        Method::RunsQueueOverview => handle_runs_queue_overview(params, store),
+        // Milestone 25: deterministic run effort estimates
         Method::RunSetEffort => handle_run_set_effort(params, store),
     }
 }
@@ -520,7 +522,7 @@ fn handle_runs_list(
         run.is_blocking = Some(count > 0);
         run.blocking_run_count = Some(count);
         run.blocking_reason = if count > 0 {
-            Some(format!("blocking {} run(s)", count))
+            Some(format!("blocking {count} run(s)"))
         } else {
             None
         };
@@ -591,7 +593,7 @@ fn handle_run_get(
     let is_blocking = Some(blocking_count > 0);
     let blocking_run_count = Some(blocking_count);
     let blocking_reason = if blocking_count > 0 {
-        Some(format!("blocking {} run(s)", blocking_count))
+        Some(format!("blocking {blocking_count} run(s)"))
     } else {
         None
     };
@@ -1289,7 +1291,7 @@ fn handle_run_set_dependencies(
     Ok((serde_json::to_value(result)?, Some(state)))
 }
 
-// ---- Milestone 24: deterministic run effort estimates ----
+// ---- Milestone 25: deterministic run effort estimates ----
 
 fn handle_run_set_effort(
     params: serde_json::Value,
@@ -1318,6 +1320,162 @@ fn handle_run_set_effort(
     );
 
     Ok((serde_json::to_value(result)?, Some(state)))
+}
+
+// ---------------------------------------------------------------------------
+// runs.overview (Milestone 24)
+
+#[allow(clippy::collapsible_if)]
+/// Handle the runs.overview method - deterministic queue overview.
+fn handle_runs_queue_overview(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunsQueueOverviewParams = serde_json::from_value(params)?;
+
+    let include_archived = p.include_archived.unwrap_or(false);
+    let include_snoozed = p.include_snoozed.unwrap_or(false);
+    let today = p.today.as_deref();
+
+    // Use list_runs with high limit to get all runs for overview
+    // This uses the existing filter semantics from RunsListParams
+    let archived_only = false; // We handle filtering ourselves
+    let all_runs = store.list_runs(
+        10000, // High limit to get all runs
+        p.workspace_id.as_deref(),
+        None, // status_filter - none for overview
+        include_archived,
+        archived_only,
+        None, // label_filter
+        false, // pinned_only
+        include_snoozed,
+        false, // snoozed_only
+    )?;
+
+    // Use run_readiness module to derive readiness
+    use deterministic_core::run_readiness::derive_readiness;
+
+    let mut total_count = 0;
+    let mut ready_count = 0;
+    let mut blocked_count = 0;
+    let mut attention_count = 0;
+    let mut pinned_count = 0;
+    let mut snoozed_count = 0;
+    let mut overdue_count = 0;
+    let archived_count = 0;
+
+    let mut priority_counts = std::collections::HashMap::new();
+    let mut assignee_counts = std::collections::HashMap::new();
+    let mut status_counts = std::collections::HashMap::new();
+
+    for run in &all_runs {
+        let is_archived = run.is_archived.unwrap_or(false);
+        let is_snoozed = run.is_snoozed.unwrap_or(false);
+        let is_pinned = run.is_pinned.unwrap_or(false);
+        let blocked_by_count = run.blocked_by_count.unwrap_or(0);
+
+        // Skip based on filters (list_runs handles SQL-level, we handle in-memory)
+        if is_snoozed && !include_snoozed {
+            continue;
+        }
+
+        // Count snoozed
+        if is_snoozed {
+            snoozed_count += 1;
+        }
+
+        // Count pinned
+        if is_pinned {
+            pinned_count += 1;
+        }
+
+        // Count blocked
+        if blocked_by_count > 0 {
+            blocked_count += 1;
+        }
+
+        // Derive readiness using the deterministic function
+        let readiness = derive_readiness(
+            &run.status,
+            is_archived,
+            is_snoozed,
+            blocked_by_count,
+            run.priority,
+            run.due_date.as_deref(),
+            is_pinned,
+            today,
+        );
+
+        // Count ready
+        if readiness.is_ready {
+            ready_count += 1;
+            total_count += 1;
+        } else {
+            total_count += 1;
+        }
+
+        // Count needs attention
+        if readiness.needs_attention {
+            attention_count += 1;
+        }
+
+        // Count overdue
+        if today.is_some() {
+            if let Some(due) = &run.due_date {
+                if let Some(t) = today {
+                    if due.as_str() < t {
+                        overdue_count += 1;
+                    }
+                }
+            }
+        }
+
+        // Priority counts
+        let priority_str = match run.priority {
+            deterministic_protocol::RunPriority::Low => "low",
+            deterministic_protocol::RunPriority::Normal => "normal",
+            deterministic_protocol::RunPriority::High => "high",
+            deterministic_protocol::RunPriority::Urgent => "urgent",
+        };
+        *priority_counts.entry(priority_str.to_string()).or_insert(0) += 1;
+
+        // Assignee counts
+        let assignee = run.assignee.clone().unwrap_or_else(|| "unassigned".to_string());
+        *assignee_counts.entry(assignee).or_insert(0) += 1;
+
+        // Status counts - use prefix
+        let status_prefix = if run.status.starts_with("finalized:") {
+            "finalized"
+        } else if run.status.starts_with("awaiting_approval:") {
+            "awaiting_approval"
+        } else if run.status.starts_with("pending:") {
+            "pending"
+        } else {
+            &run.status
+        };
+        *status_counts.entry(status_prefix.to_string()).or_insert(0) += 1;
+    }
+
+    let result = RunQueueOverview {
+        total_visible: total_count,
+        ready_count,
+        blocked_count,
+        needs_attention_count: attention_count,
+        pinned_count,
+        snoozed_count,
+        overdue_count: if today.is_some() { Some(overdue_count) } else { None },
+        archived_count: if include_archived { Some(archived_count) } else { None },
+        by_priority: PriorityCounts {
+            low: *priority_counts.get("low").unwrap_or(&0),
+            normal: *priority_counts.get("normal").unwrap_or(&0),
+            high: *priority_counts.get("high").unwrap_or(&0),
+            urgent: *priority_counts.get("urgent").unwrap_or(&0),
+        },
+        by_assignee: assignee_counts,
+        by_status: status_counts,
+    };
+
+    Ok((serde_json::to_value(result)?, None))
 }
 
 #[cfg(test)]
