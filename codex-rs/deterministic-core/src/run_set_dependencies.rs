@@ -134,7 +134,7 @@ mod tests {
     }
 
     fn known(ids: &[&str]) -> Vec<String> {
-        ids.iter().map(|s| s.to_string()).collect()
+        ids.iter().map(std::string::ToString::to_string).collect()
     }
 
     // ---- happy path ----
