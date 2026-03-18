@@ -53,6 +53,8 @@ pub enum Method {
     RunSetDueDate,
     // Milestone 21: deterministic run dependency links
     RunSetDependencies,
+    // Milestone 24: deterministic queue overview
+    RunsQueueOverview,
 }
 
 impl Method {
@@ -103,6 +105,8 @@ impl Method {
             Self::RunSetDueDate => "run.set_due_date",
             // Milestone 21
             Self::RunSetDependencies => "run.set_dependencies",
+            // Milestone 24
+            Self::RunsQueueOverview => "runs.overview",
         }
     }
 
@@ -153,6 +157,8 @@ impl Method {
             "run.set_due_date" => Some(Self::RunSetDueDate),
             // Milestone 21
             "run.set_dependencies" => Some(Self::RunSetDependencies),
+            // Milestone 24
+            "runs.overview" => Some(Self::RunsQueueOverview),
             _ => None,
         }
     }
@@ -204,6 +210,8 @@ impl Method {
             Self::RunSetDueDate,
             // Milestone 21
             Self::RunSetDependencies,
+            // Milestone 24
+            Self::RunsQueueOverview,
         ]
     }
 }

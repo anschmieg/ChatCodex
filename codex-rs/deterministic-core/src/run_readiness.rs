@@ -41,6 +41,7 @@ pub struct RunReadinessSummary {
 /// - Overdue visible run (requires `today` date for comparison) → `"overdue"`
 ///
 /// No timers, notifications, escalations, or state mutations are performed.
+#[allow(clippy::too_many_arguments, clippy::collapsible_if)]
 pub fn derive_readiness(
     status: &str,
     is_archived: bool,
@@ -62,7 +63,7 @@ pub fn derive_readiness(
         let reason = if blocked_by_count == 1 {
             "blocked by 1 run".to_string()
         } else {
-            format!("blocked by {} runs", blocked_by_count)
+            format!("blocked by {blocked_by_count} runs")
         };
         (false, Some(reason))
     } else {
