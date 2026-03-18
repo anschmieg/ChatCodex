@@ -611,3 +611,28 @@ export const SetRunDueDateInput = {
         "No time-of-day or timezone semantics; the backend stores the date string as-is.",
     ),
 };
+
+// ---------------------------------------------------------------
+// GetQueueOverviewInput  (Milestone 24)
+// ---------------------------------------------------------------
+
+/** Input schema for `get_run_queue_overview`. */
+export const GetQueueOverviewInput = {
+  workspaceId: z
+    .string()
+    .optional()
+    .describe("Filter by workspace path"),
+  includeArchived: z
+    .boolean()
+    .optional()
+    .describe("When true, archived runs are included in counts (default: false)"),
+  includeSnoozed: z
+    .boolean()
+    .optional()
+    .describe("When true, snoozed runs are included in counts (default: false)"),
+  today: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "must be YYYY-MM-DD")
+    .optional()
+    .describe("ISO date for computing overdue counts"),
+};

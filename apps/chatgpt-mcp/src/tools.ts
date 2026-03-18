@@ -41,6 +41,7 @@ import {
   SetRunPriorityInput,
   AssignRunOwnerInput,
   SetRunDueDateInput,
+  GetQueueOverviewInput,
 } from "./schemas.js";
 
 /**
@@ -625,6 +626,26 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
       const result = await client.call("run.set_due_date", {
         runId: params.runId,
         dueDate: params.dueDate,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // runs.overview (Milestone 24/28)
+  server.tool(
+    "get_run_queue_overview",
+    "Get a deterministic queue overview summary with compact counts: " +
+      "total visible runs, ready, blocked, deferred, done, attention, urgent, overdue, stale, pinned, assigned vs unassigned. " +
+      "This is a read-only inspection operation that derives summary counts from existing run state without mutating anything.",
+    GetQueueOverviewInput,
+    async (params) => {
+      const result = await client.call("runs.overview", {
+        workspaceId: params.workspaceId,
+        includeArchived: params.includeArchived,
+        includeSnoozed: params.includeSnoozed,
+        today: params.today,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
