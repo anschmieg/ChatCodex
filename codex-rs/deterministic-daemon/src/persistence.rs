@@ -933,6 +933,11 @@ impl Store {
                 blocking_run_count: None,
                 blocking_reason: None,
                 effort,
+                // Milestone 26: staleness fields populated by handler
+                age_days: None,
+                is_stale: None,
+                staleness_reason: None,
+                staleness_bucket: None,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })

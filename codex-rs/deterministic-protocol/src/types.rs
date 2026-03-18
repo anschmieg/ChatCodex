@@ -838,6 +838,18 @@ pub struct RunSummary {
     /// Explicit effort bucket for this run (Milestone 24).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<RunEffort>,
+    /// Number of days since last update (Milestone 26).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_days: Option<u32>,
+    /// Whether this run is stale (>7 days since update) (Milestone 26).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_stale: Option<bool>,
+    /// Reason for staleness classification (Milestone 26).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staleness_reason: Option<String>,
+    /// Staleness bucket: fresh/aging/stale (Milestone 26).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staleness_bucket: Option<RunStaleness>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -919,6 +931,18 @@ pub struct RunsListParams {
     /// Runs with no effort sort last.
     #[serde(default)]
     pub sort_by_effort: Option<bool>,
+    /// When true, return only stale runs (>7 days since update) (Milestone 26).
+    #[serde(default)]
+    pub stale_only: Option<bool>,
+    /// When true, return only fresh runs (<=3 days since update) (Milestone 26).
+    #[serde(default)]
+    pub fresh_only: Option<bool>,
+    /// Sort by staleness (stale → aging → fresh) (Milestone 26).
+    #[serde(default)]
+    pub sort_by_staleness: Option<bool>,
+    /// Reference date for staleness calculation (Milestone 26).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub today: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1844,6 +1868,58 @@ impl fmt::Display for RunEffort {
     }
 }
 
+/// Staleness bucket derived from `updated_at` timestamp (Milestone 26).
+///
+/// - `fresh`: updated within 3 days
+/// - `aging`: updated 4-7 days ago
+/// - `stale`: updated more than 7 days ago
+///
+/// Derived deterministically from `updated_at` against a reference date.
+/// No background computation, no state mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunStaleness {
+    Fresh,
+    Aging,
+    Stale,
+}
+
+impl RunStaleness {
+    /// Canonical string representation used on the wire.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Aging => "aging",
+            Self::Stale => "stale",
+        }
+    }
+
+    /// Parse a string into a [`RunStaleness`].
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "fresh" => Some(Self::Fresh),
+            "aging" => Some(Self::Aging),
+            "stale" => Some(Self::Stale),
+            _ => None,
+        }
+    }
+
+    /// Numeric sort key: higher value = staler (for SQL ORDER BY descending).
+    pub fn sort_key(self) -> i64 {
+        match self {
+            Self::Fresh => 0,
+            Self::Aging => 1,
+            Self::Stale => 2,
+        }
+    }
+}
+
+impl fmt::Display for RunStaleness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Parameters for `run.set_effort` — explicit deterministic run effort update.
 ///
 /// Setting effort is deterministic, explicit, and audited. It updates only
@@ -1884,3 +1960,4 @@ pub struct RunSetEffortResult {
     /// Confirmation message.
     pub message: String,
 }
+
