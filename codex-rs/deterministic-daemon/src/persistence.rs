@@ -1023,6 +1023,7 @@ impl Store {
     ///
     /// This is used by handlers to compute deterministic blocker-impact summaries (Milestone 23).
     /// The map only contains run IDs that appear as blockers (count ≥ 1); absent entries mean zero.
+    #[allow(clippy::unwrap_used)]
     pub fn get_blocker_impact_map(&self) -> Result<std::collections::HashMap<String, usize>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
