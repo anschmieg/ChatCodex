@@ -1568,6 +1568,13 @@ lazy_static::lazy_static! {
         Mutex::new(HashMap::new());
 }
 
+/// Clear all queue views (test helper)
+#[cfg(test)]
+fn clear_queue_views_for_test() {
+    let mut views = QUEUE_VIEWS.lock().unwrap();
+    views.clear();
+}
+
 fn handle_queue_view_create(
     params: serde_json::Value,
     _store: &Store,
@@ -4120,5 +4127,269 @@ mod tests {
 
         let loaded = store.get_run("r_dns_a").unwrap().unwrap();
         assert_eq!(loaded.status, "finalized:completed");
+    }
+
+    // =========================================================================
+    // M32: Integration-style workflow tests
+    // =========================================================================
+
+    #[test]
+    fn lifecycle_prepare_finalize() {
+        // V1: Happy path - prepare and finalize
+        let store = Store::open_in_memory().unwrap();
+
+        // Prepare run
+        let (val, _) = dispatch(
+            Method::RunPrepare,
+            serde_json::json!({
+                "workspaceId": "/test/ws",
+                "userGoal": "test goal",
+                "plan": ["step 1", "step 2"]
+            }),
+            &store,
+        )
+        .unwrap();
+        let result: RunPrepareResult = serde_json::from_value(val).unwrap();
+        assert!(!result.run_id.is_empty());
+        let run_id = result.run_id;
+
+        // Verify initial state
+        let loaded = store.get_run(&run_id).unwrap().unwrap();
+        assert_eq!(loaded.status, "prepared");
+
+        // Finalize as completed
+        let (val, _) = dispatch(
+            Method::RunFinalize,
+            serde_json::json!({
+                "runId": run_id,
+                "outcomeKind": "completed",
+                "summary": "test completed"
+            }),
+            &store,
+        )
+        .unwrap();
+        let result: RunFinalizeResult = serde_json::from_value(val).unwrap();
+        assert!(result.status.starts_with("finalized:"));
+    }
+
+    #[test]
+    fn lifecycle_finalize_reopen_finalize() {
+        // V4: Recovery - finalize, reopen, finalize again
+        let store = Store::open_in_memory().unwrap();
+
+        // Prepare and finalize
+        let (val, _) = dispatch(
+            Method::RunPrepare,
+            serde_json::json!({
+                "workspaceId": "/test/ws",
+                "userGoal": "test goal",
+                "plan": ["step 1"]
+            }),
+            &store,
+        )
+        .unwrap();
+        let result: RunPrepareResult = serde_json::from_value(val).unwrap();
+        let run_id = result.run_id;
+
+        dispatch(
+            Method::RunFinalize,
+            serde_json::json!({
+                "runId": &run_id,
+                "outcomeKind": "completed",
+                "summary": "done"
+            }),
+            &store,
+        )
+        .unwrap();
+
+        // Verify finalized
+        let loaded = store.get_run(&run_id).unwrap().unwrap();
+        assert!(loaded.status.starts_with("finalized:"));
+        assert!(loaded.finalized_outcome.is_some());
+
+        // Reopen
+        let (val, _) = dispatch(
+            Method::RunReopen,
+            serde_json::json!({
+                "runId": &run_id,
+                "reason": "need more changes"
+            }),
+            &store,
+        )
+        .unwrap();
+        let result: RunReopenResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.status, "active");
+
+        // Verify reopened
+        let loaded = store.get_run(&run_id).unwrap().unwrap();
+        assert_eq!(loaded.status, "active");
+        assert!(loaded.reopen_metadata.is_some());
+
+        // Finalize again
+        dispatch(
+            Method::RunFinalize,
+            serde_json::json!({
+                "runId": &run_id,
+                "outcomeKind": "completed",
+                "summary": "really done now"
+            }),
+            &store,
+        )
+        .unwrap();
+
+        let loaded = store.get_run(&run_id).unwrap().unwrap();
+        assert!(loaded.status.starts_with("finalized:"));
+    }
+
+    #[test]
+    fn lifecycle_finalize_supersede() {
+        // V4: Recovery - finalize and supersede
+        let store = Store::open_in_memory().unwrap();
+
+        // Prepare and finalize
+        let (val, _) = dispatch(
+            Method::RunPrepare,
+            serde_json::json!({
+                "workspaceId": "/test/ws",
+                "userGoal": "original goal",
+                "plan": ["step 1"]
+            }),
+            &store,
+        )
+        .unwrap();
+        let result: RunPrepareResult = serde_json::from_value(val).unwrap();
+        let original_id = result.run_id;
+
+        dispatch(
+            Method::RunFinalize,
+            serde_json::json!({
+                "runId": &original_id,
+                "outcomeKind": "completed",
+                "summary": "done but wrong approach"
+            }),
+            &store,
+        )
+        .unwrap();
+
+        // Supersede
+        let (val, _) = dispatch(
+            Method::RunSupersede,
+            serde_json::json!({
+                "runId": &original_id,
+                "newUserGoal": "better approach",
+                "reason": "original approach was wrong"
+            }),
+            &store,
+        )
+        .unwrap();
+        let result: RunSupersedeResult = serde_json::from_value(val).unwrap();
+        let successor_id = result.successor_run_id;
+
+        // Verify lineage
+        let original = store.get_run(&original_id).unwrap().unwrap();
+        assert_eq!(original.superseded_by_run_id, Some(successor_id.clone()));
+
+        let successor = store.get_run(&successor_id).unwrap().unwrap();
+        assert_eq!(successor.supersedes_run_id, Some(original_id));
+        assert_eq!(successor.status, "prepared");
+    }
+
+    #[test]
+    fn queue_create_list_get_view() {
+        // V7: Saved views CRUD
+        clear_queue_views_for_test(); // Ensure test isolation
+        let store = Store::open_in_memory().unwrap();
+
+        // Create view
+        let (val, _) = dispatch(
+            Method::QueueViewCreate,
+            serde_json::json!({
+                "name": "test-view",
+                "description": "a test view",
+                "filters": {"status": "active"}
+            }),
+            &store,
+        )
+        .unwrap();
+        let result: CreateQueueViewResult = serde_json::from_value(val).unwrap();
+        assert!(result.view.view_id.starts_with("qv-"));
+        let view_id = result.view.view_id;
+
+        // List views
+        let (val, _) = dispatch(Method::QueueViewList, serde_json::json!({}), &store).unwrap();
+        let result: ListQueueViewsResult = serde_json::from_value(val).unwrap();
+        assert!(result.count >= 1, "Expected at least 1 view, got {}", result.count);
+        let found = result.views.iter().find(|v| v.name == "test-view");
+        assert!(found.is_some(), "Expected to find 'test-view' in views list");
+
+        // Get view
+        let (val, _) = dispatch(
+            Method::QueueViewGet,
+            serde_json::json!({"viewId": view_id}),
+            &store,
+        )
+        .unwrap();
+        let view: QueueView = serde_json::from_value(val).unwrap();
+        assert_eq!(view.name, "test-view");
+
+        // Update view
+        let (val, _) = dispatch(
+            Method::QueueViewUpdate,
+            serde_json::json!({
+                "viewId": view_id,
+                "name": "renamed-view"
+            }),
+            &store,
+        )
+        .unwrap();
+        let result: UpdateQueueViewResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.view.name, "renamed-view");
+
+        // Delete view
+        let (val, _) = dispatch(
+            Method::QueueViewDelete,
+            serde_json::json!({"viewId": view_id}),
+            &store,
+        )
+        .unwrap();
+        let result: DeleteQueueViewResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.deleted_view_id, view_id);
+
+        // Verify deleted
+        let (val, _) = dispatch(Method::QueueViewList, serde_json::json!({}), &store).unwrap();
+        let result: ListQueueViewsResult = serde_json::from_value(val).unwrap();
+        let still_exists = result.views.iter().any(|v| v.view_id == view_id);
+        assert!(!still_exists, "View should have been deleted");
+    }
+
+    #[test]
+    fn queue_view_name_uniqueness() {
+        // V7: Name uniqueness enforcement
+        clear_queue_views_for_test(); // Ensure test isolation
+        let store = Store::open_in_memory().unwrap();
+
+        // Create first view
+        dispatch(
+            Method::QueueViewCreate,
+            serde_json::json!({"name": "unique-name", "filters": {}}),
+            &store,
+        )
+        .unwrap();
+
+        // Try to create duplicate
+        let result = dispatch(
+            Method::QueueViewCreate,
+            serde_json::json!({"name": "unique-name", "filters": {}}),
+            &store,
+        );
+        assert!(result.is_err());
+
+        // Case-insensitive check
+        let result = dispatch(
+            Method::QueueViewCreate,
+            serde_json::json!({"name": "UNIQUE-NAME", "filters": {}}),
+            &store,
+        );
+        assert!(result.is_err());
     }
 }
