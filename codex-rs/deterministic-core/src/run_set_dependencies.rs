@@ -172,7 +172,6 @@ mod tests {
         let params = RunSetDependenciesParams {
             run_id: "run-a".to_string(),
             blocked_by_run_ids: vec![],
-            effort: None,
         };
         let result = set_dependencies(&params, &mut state, &[]).unwrap();
         assert!(result.blocked_by_run_ids.is_empty());
@@ -330,7 +329,6 @@ mod tests {
         let params = RunSetDependenciesParams {
             run_id: "run-a".to_string(),
             blocked_by_run_ids: vec![],
-            effort: None,
         };
         let result = set_dependencies(&params, &mut state, &[]).unwrap();
         assert!(result.message.contains("cleared"), "{}", result.message);
@@ -342,7 +340,6 @@ mod tests {
         let params = RunSetDependenciesParams {
             run_id: "run-a".to_string(),
             blocked_by_run_ids: vec![],
-            effort: None,
         };
         let result = set_dependencies(&params, &mut state, &[]).unwrap();
         assert!(result.message.contains("unchanged"), "{}", result.message);

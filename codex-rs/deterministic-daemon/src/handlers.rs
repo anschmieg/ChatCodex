@@ -1311,8 +1311,8 @@ fn handle_run_set_effort(
         &result.message,
         Some(
             &serde_json::json!({
-                "previous_effort": result.previous_effort.map(|e| e.as_str()),
-                "effort": result.effort.map(|e| e.as_str()),
+                "previous_effort": result.previous_effort.map(deterministic_protocol::RunEffort::as_str),
+                "effort": result.effort.map(deterministic_protocol::RunEffort::as_str),
                 "updated_at": result.updated_at,
             })
             .to_string(),
