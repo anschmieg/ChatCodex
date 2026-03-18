@@ -57,6 +57,12 @@ pub enum Method {
     RunsQueueOverview,
     // Milestone 25: deterministic run effort estimates
     RunSetEffort,
+    // Milestone 29: deterministic saved queue views
+    QueueViewCreate,
+    QueueViewUpdate,
+    QueueViewDelete,
+    QueueViewGet,
+    QueueViewList,
 }
 
 impl Method {
@@ -111,6 +117,12 @@ impl Method {
             Self::RunsQueueOverview => "runs.overview",
             // Milestone 25
             Self::RunSetEffort => "run.set_effort",
+            // Milestone 29
+            Self::QueueViewCreate => "queue_view.create",
+            Self::QueueViewUpdate => "queue_view.update",
+            Self::QueueViewDelete => "queue_view.delete",
+            Self::QueueViewGet => "queue_view.get",
+            Self::QueueViewList => "queue_view.list",
         }
     }
 
@@ -163,6 +175,12 @@ impl Method {
             "run.set_dependencies" => Some(Self::RunSetDependencies),
             // Milestone 24
             "runs.overview" => Some(Self::RunsQueueOverview),
+            // Milestone 29
+            "queue_view.create" => Some(Self::QueueViewCreate),
+            "queue_view.update" => Some(Self::QueueViewUpdate),
+            "queue_view.delete" => Some(Self::QueueViewDelete),
+            "queue_view.get" => Some(Self::QueueViewGet),
+            "queue_view.list" => Some(Self::QueueViewList),
             _ => None,
         }
     }

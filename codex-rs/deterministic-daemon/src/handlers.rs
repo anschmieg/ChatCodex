@@ -66,6 +66,12 @@ pub fn dispatch(
         Method::RunsQueueOverview => handle_runs_queue_overview(params, store),
         // Milestone 25: deterministic run effort estimates
         Method::RunSetEffort => handle_run_set_effort(params, store),
+        // Milestone 29: deterministic saved queue views
+        Method::QueueViewCreate => handle_queue_view_create(params, store),
+        Method::QueueViewUpdate => handle_queue_view_update(params, store),
+        Method::QueueViewDelete => handle_queue_view_delete(params, store),
+        Method::QueueViewGet => handle_queue_view_get(params, store),
+        Method::QueueViewList => handle_queue_view_list(params, store),
     }
 }
 
@@ -1550,6 +1556,189 @@ fn handle_runs_queue_overview(
     Ok((serde_json::to_value(result)?, None))
 }
 
+// ---------------------------------------------------------------------------
+// queue_view CRUD (Milestone 29)
+// ---------------------------------------------------------------------------
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+lazy_static::lazy_static! {
+    static ref QUEUE_VIEWS: Mutex<HashMap<String, deterministic_protocol::types::QueueView>> =
+        Mutex::new(HashMap::new());
+}
+
+fn handle_queue_view_create(
+    params: serde_json::Value,
+    _store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    use deterministic_protocol::types::*;
+
+    let p: CreateQueueViewParams = serde_json::from_value(params)?;
+
+    let name = p.name.trim().to_string();
+    if name.is_empty() {
+        anyhow::bail!("view name cannot be empty");
+    }
+
+    // Check for duplicate name
+    {
+        let views = QUEUE_VIEWS.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+        for v in views.values() {
+            if v.name.to_lowercase() == name.to_lowercase() {
+                anyhow::bail!("a view with this name already exists");
+            }
+        }
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let view_id = format!("qv-{}", uuid::Uuid::new_v4());
+
+    let view = QueueView {
+        view_id: view_id.clone(),
+        name,
+        description: p.description,
+        filters: p.filters,
+        sort: p.sort,
+        limit: p.limit,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    {
+        let mut views = QUEUE_VIEWS.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+        views.insert(view_id, view.clone());
+    }
+
+    let result = CreateQueueViewResult { view };
+    Ok((serde_json::to_value(result)?, None))
+}
+
+fn handle_queue_view_update(
+    params: serde_json::Value,
+    _store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    use deterministic_protocol::types::*;
+
+    let p: UpdateQueueViewParams = serde_json::from_value(params)?;
+
+    let mut views = QUEUE_VIEWS.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+
+    // Check if view exists
+    if !views.contains_key(&p.view_id) {
+        anyhow::bail!("view not found: {}", p.view_id);
+    }
+
+    // Validate name uniqueness if updating name
+    if let Some(ref name) = p.name {
+        let trimmed = name.trim().to_string();
+        if trimmed.is_empty() {
+            anyhow::bail!("view name cannot be empty");
+        }
+        for v in views.values() {
+            if v.view_id != p.view_id && v.name.to_lowercase() == trimmed.to_lowercase() {
+                anyhow::bail!("a view with this name already exists");
+            }
+        }
+    }
+
+    // Now get mutable reference and update
+    let view = views.get_mut(&p.view_id).ok_or_else(|| anyhow::anyhow!("view not found: {view_id}", view_id = p.view_id))?;
+
+    if let Some(name) = p.name {
+        view.name = name.trim().to_string();
+    }
+
+    if let Some(desc) = p.description {
+        view.description = desc;
+    }
+
+    if let Some(filters) = p.filters {
+        view.filters = filters;
+    }
+
+    if let Some(sort) = p.sort {
+        view.sort = sort;
+    }
+
+    if let Some(limit) = p.limit {
+        view.limit = limit;
+    }
+
+    view.updated_at = chrono::Utc::now().to_rfc3339();
+
+    let result = UpdateQueueViewResult {
+        view: view.clone(),
+    };
+    Ok((serde_json::to_value(result)?, None))
+}
+
+fn handle_queue_view_delete(
+    params: serde_json::Value,
+    _store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    use deterministic_protocol::types::*;
+
+    let p: DeleteQueueViewParams = serde_json::from_value(params)?;
+
+    let mut views = QUEUE_VIEWS.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+
+    if views.remove(&p.view_id).is_none() {
+        anyhow::bail!("view not found: {}", p.view_id);
+    }
+
+    let result = DeleteQueueViewResult {
+        deleted_view_id: p.view_id,
+    };
+    Ok((serde_json::to_value(result)?, None))
+}
+
+fn handle_queue_view_get(
+    params: serde_json::Value,
+    _store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    use deterministic_protocol::types::*;
+
+    let p: GetQueueViewParams = serde_json::from_value(params)?;
+
+    let views = QUEUE_VIEWS.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+
+    let view = views
+        .get(&p.view_id)
+        .ok_or_else(|| anyhow::anyhow!("view not found: {view_id}", view_id = p.view_id))?
+        .clone();
+
+    Ok((serde_json::to_value(view)?, None))
+}
+
+fn handle_queue_view_list(
+    params: serde_json::Value,
+    _store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    use deterministic_protocol::types::*;
+
+    let p: ListQueueViewsParams = serde_json::from_value(params)?;
+
+    let views = QUEUE_VIEWS.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
+
+    let mut result_views: Vec<QueueView> = views.values().cloned().collect();
+
+    if let Some(ref name_contains) = p.name_contains {
+        let search = name_contains.to_lowercase();
+        result_views.retain(|v| v.name.to_lowercase().contains(&search));
+    }
+
+    result_views.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let count = result_views.len();
+    let result = ListQueueViewsResult {
+        views: result_views,
+        count,
+    };
+    Ok((serde_json::to_value(result)?, None))
+}
+
+// ---------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
     use super::*;

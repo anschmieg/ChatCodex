@@ -28,6 +28,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { workspace = true, features = ["v4"] }
 chrono = { workspace = true }
 rusqlite = { workspace = true }
+lazy_static = "1.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }

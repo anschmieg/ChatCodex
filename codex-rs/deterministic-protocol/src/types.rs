@@ -1037,6 +1037,213 @@ pub struct PriorityCounts {
 }
 
 // ---------------------------------------------------------------------------
+// queue_view CRUD (Milestone 29)
+// ---------------------------------------------------------------------------
+
+/// Saved queue view filter configuration.
+/// Only uses existing deterministic queue filter parameters.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueViewFilters {
+    /// Filter by workspace path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// Filter by status prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Filter by exact label (case-insensitive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Filter by exact assignee.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    /// Include archived runs.
+    #[serde(default)]
+    pub include_archived: bool,
+    /// Include snoozed runs.
+    #[serde(default)]
+    pub include_snoozed: bool,
+    /// Only pinned runs.
+    #[serde(default)]
+    pub pinned_only: bool,
+    /// Only snoozed runs.
+    #[serde(default)]
+    pub snoozed_only: bool,
+    /// Only archived runs.
+    #[serde(default)]
+    pub archived_only: bool,
+    /// Filter by exact priority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_filter: Option<RunPriority>,
+    /// Only runs with exact effort bucket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_filter: Option<RunEffort>,
+    /// Only blocked runs.
+    #[serde(default)]
+    pub blocked_only: bool,
+    /// Only runs blocked by specific run ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_by_run_id: Option<String>,
+    /// Only runs with due date on or before threshold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_on_or_before: Option<String>,
+    /// Filter by triage bucket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage_bucket_filter: Option<RunTriageBucket>,
+    /// Only stale runs.
+    #[serde(default)]
+    pub stale_only: bool,
+    /// Only fresh (not stale) runs.
+    #[serde(default)]
+    pub fresh_only: bool,
+    /// Only runs blocking at least N other runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocking_run_count_at_least: Option<usize>,
+    /// ISO date for overdue computation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub today: Option<String>,
+}
+
+/// Saved queue view sort configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueViewSort {
+    /// Sort by priority (descending).
+    #[serde(default)]
+    pub sort_by_priority: bool,
+    /// Sort by due date (ascending, no due date sorts last).
+    #[serde(default)]
+    pub sort_by_due_date: bool,
+    /// Sort by effort (ascending).
+    #[serde(default)]
+    pub sort_by_effort: bool,
+    /// Sort by triage bucket rank.
+    #[serde(default)]
+    pub sort_by_triage: bool,
+    /// Sort by staleness (oldest first).
+    #[serde(default)]
+    pub sort_by_staleness: bool,
+}
+
+/// A saved deterministic queue view definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueView {
+    /// Unique view identifier.
+    pub view_id: String,
+    /// Human-readable name for the view.
+    pub name: String,
+    /// Optional description of what this view captures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Filter configuration.
+    pub filters: QueueViewFilters,
+    /// Sort configuration.
+    #[serde(default)]
+    pub sort: QueueViewSort,
+    /// Maximum runs to return (default from RunsListParams).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+    /// ISO 8601 last-update timestamp.
+    pub updated_at: String,
+}
+
+/// Parameters for creating a saved queue view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateQueueViewParams {
+    /// Human-readable name for the view (required, non-empty after trim).
+    pub name: String,
+    /// Optional description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Filter configuration.
+    pub filters: QueueViewFilters,
+    /// Sort configuration.
+    #[serde(default)]
+    pub sort: QueueViewSort,
+    /// Optional limit override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+/// Result after creating a saved queue view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateQueueViewResult {
+    pub view: QueueView,
+}
+
+/// Parameters for updating a saved queue view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateQueueViewParams {
+    /// View ID to update.
+    pub view_id: String,
+    /// New name (optional - if not provided, name is unchanged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// New description.
+    #[serde(default)]
+    pub description: Option<Option<String>>,
+    /// New filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filters: Option<QueueViewFilters>,
+    /// New sort.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<QueueViewSort>,
+    /// New limit.
+    #[serde(default)]
+    pub limit: Option<Option<usize>>,
+}
+
+/// Result after updating a saved queue view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateQueueViewResult {
+    pub view: QueueView,
+}
+
+/// Parameters for deleting a saved queue view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteQueueViewParams {
+    pub view_id: String,
+}
+
+/// Result after deleting a saved queue view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteQueueViewResult {
+    pub deleted_view_id: String,
+}
+
+/// Parameters for getting a single saved queue view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetQueueViewParams {
+    pub view_id: String,
+}
+
+/// Parameters for listing all saved queue views.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListQueueViewsParams {
+    /// Optional name filter (case-insensitive contains).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_contains: Option<String>,
+}
+
+/// Result after listing saved queue views.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListQueueViewsResult {
+    pub views: Vec<QueueView>,
+    pub count: usize,
+}
+// ---------------------------------------------------------------------------
 // run.get  (Milestone 7)
 // ---------------------------------------------------------------------------
 
