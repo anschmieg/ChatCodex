@@ -297,10 +297,10 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
     },
   );
 
-  // ---- list_runs (Milestone 7; extended in Milestone 13, 15, 16, 17, 20) ----
+  // ---- list_runs (Milestone 7; extended in Milestone 13, 15, 16, 17, 20, 23) ----
   server.tool(
     "list_runs",
-    "List known runs with status and metadata (read-only). Supports archive filtering via optional parameters: set includeArchived=true to include archived runs, or archivedOnly=true to return only archived runs. Use label= to filter by exact normalized label. Use pinnedOnly=true to return only pinned runs. Pinned runs appear first by default. Snoozed runs are excluded by default; use includeSnoozed=true to include them or snoozedOnly=true to return only snoozed runs. Use dueOnOrBefore=YYYY-MM-DD to filter by due date. Use sortByDueDate=true to sort ascending by due date (soonest first; undated runs last).",
+    "List known runs with status and metadata (read-only). Supports archive filtering via optional parameters: set includeArchived=true to include archived runs, or archivedOnly=true to return only archived runs. Use label= to filter by exact normalized label. Use pinnedOnly=true to return only pinned runs. Pinned runs appear first by default. Snoozed runs are excluded by default; use includeSnoozed=true to include them or snoozedOnly=true to return only snoozed runs. Use dueOnOrBefore=YYYY-MM-DD to filter by due date. Use sortByDueDate=true to sort ascending by due date (soonest first; undated runs last). Use blockingOnly=true to return only runs that are blocking other runs. Use blockingRunCountAtLeast=N to return only runs blocking at least N other runs.",
     ListRunsInput,
     async (params) => {
       const result = await client.call("runs.list", {
@@ -315,6 +315,8 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
         snoozedOnly: params.snoozedOnly,
         dueOnOrBefore: params.dueOnOrBefore,
         sortByDueDate: params.sortByDueDate,
+        blockingOnly: params.blockingOnly,
+        blockingRunCountAtLeast: params.blockingRunCountAtLeast,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

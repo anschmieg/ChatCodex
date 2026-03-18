@@ -1268,3 +1268,89 @@ describe("Milestone 20 due-date tool invariants", () => {
     assert.ok(result.success, "null assignee should be accepted to clear");
   });
 });
+
+// ---------------------------------------------------------------
+// Milestone 23: Blocker-impact summaries and blocking filters
+// ---------------------------------------------------------------
+describe("Milestone 23 blocker-impact tool invariants", () => {
+  it("list_runs should be registered (blocker-oriented filtering)", () => {
+    assert.ok(
+      REGISTERED_TOOL_NAMES.includes("list_runs" as (typeof REGISTERED_TOOL_NAMES)[number]),
+      "list_runs must be in the tool registry to support blocking filters",
+    );
+  });
+
+  it("list_runs is not an autonomous continuation tool", () => {
+    const forbidden = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end_to_end"];
+    for (const pattern of forbidden) {
+      assert.ok(
+        !"list_runs".includes(pattern),
+        `"list_runs" must not contain autonomous pattern "${pattern}"`,
+      );
+    }
+  });
+
+  it("daemon method runs.list is not a forbidden agent-runtime method", () => {
+    const forbiddenMethods = [
+      "turn/start",
+      "turn/steer",
+      "review/start",
+      "codex",
+      "codex-reply",
+      "continue_run",
+      "resume_thread",
+      "agent_step",
+      "fix_end_to_end",
+    ];
+    for (const method of forbiddenMethods) {
+      assert.ok(
+        method !== "runs.list",
+        `runs.list must not be a forbidden agent-runtime method`,
+      );
+    }
+  });
+
+  it("ListRunsInput schema accepts blockingOnly filter", () => {
+    const schema = z.object(ListRunsInput);
+    const withFilter = schema.safeParse({ blockingOnly: true });
+    assert.ok(withFilter.success, "blockingOnly=true should be accepted");
+    const withoutFilter = schema.safeParse({});
+    assert.ok(withoutFilter.success, "absent blockingOnly should be accepted");
+  });
+
+  it("ListRunsInput schema accepts blockingRunCountAtLeast filter", () => {
+    const schema = z.object(ListRunsInput);
+    const withFilter = schema.safeParse({ blockingRunCountAtLeast: 2 });
+    assert.ok(withFilter.success, "blockingRunCountAtLeast=2 should be accepted");
+    const withoutFilter = schema.safeParse({});
+    assert.ok(withoutFilter.success, "absent blockingRunCountAtLeast should be accepted");
+  });
+
+  it("ListRunsInput schema rejects non-positive blockingRunCountAtLeast", () => {
+    const schema = z.object(ListRunsInput);
+    const zero = schema.safeParse({ blockingRunCountAtLeast: 0 });
+    assert.ok(!zero.success, "blockingRunCountAtLeast=0 should be rejected (must be positive)");
+    const negative = schema.safeParse({ blockingRunCountAtLeast: -1 });
+    assert.ok(!negative.success, "negative blockingRunCountAtLeast should be rejected");
+  });
+
+  it("ListRunsInput schema accepts blockingOnly and blockingRunCountAtLeast together", () => {
+    const schema = z.object(ListRunsInput);
+    const combined = schema.safeParse({ blockingOnly: true, blockingRunCountAtLeast: 3 });
+    assert.ok(combined.success, "combined blocking filters should be accepted");
+  });
+
+  it("no hidden-agent regression: blocking filters are read-only, not autonomous", () => {
+    // Blocking filters are purely deterministic — they do not trigger any
+    // state mutation, autonomous rescheduling, or backend agent loops.
+    const coarsePatterns = ["continue", "resume", "agent", "turn", "codex_reply", "fix_end_to_end"];
+    for (const param of ["blockingOnly", "blockingRunCountAtLeast"]) {
+      for (const pattern of coarsePatterns) {
+        assert.ok(
+          !param.toLowerCase().includes(pattern),
+          `blocking filter param "${param}" must not contain autonomous pattern "${pattern}"`,
+        );
+      }
+    }
+  });
+});

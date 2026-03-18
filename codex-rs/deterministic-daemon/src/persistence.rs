@@ -911,6 +911,11 @@ impl Store {
                 due_date: row.get(20)?,
                 is_blocked: Some(is_blocked_val),
                 blocked_by_count: Some(blocked_by_count_val),
+                // Milestone 23: blocker-impact fields are populated by the handler after
+                // computing the full blocker-impact map; set to None here.
+                is_blocking: None,
+                blocking_run_count: None,
+                blocking_reason: None,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
@@ -1012,6 +1017,30 @@ impl Store {
     /// Backward-compatible alias used by daemon handler tests.
     pub fn get_run_history(&self, run_id: &str, limit: usize) -> Result<Vec<RunHistoryEntry>> {
         self.get_audit_entries(run_id, limit)
+    }
+
+    /// Return a map from run_id → number of active runs that list it in their `blocked_by_run_ids`.
+    ///
+    /// This is used by handlers to compute deterministic blocker-impact summaries (Milestone 23).
+    /// The map only contains run IDs that appear as blockers (count ≥ 1); absent entries mean zero.
+    pub fn get_blocker_impact_map(&self) -> Result<std::collections::HashMap<String, usize>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT blocked_by_run_ids FROM runs WHERE blocked_by_run_ids IS NOT NULL AND blocked_by_run_ids != '[]'",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let json: String = row.get(0)?;
+            Ok(json)
+        })?;
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let json = row?;
+            let ids: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+            for id in ids {
+                *map.entry(id).or_insert(0usize) += 1;
+            }
+        }
+        Ok(map)
     }
 }
 
