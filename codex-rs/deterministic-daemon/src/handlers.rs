@@ -96,6 +96,14 @@ fn build_retryable_action(
     }
 }
 
+/// Create a consistent error for unknown run IDs with helpful context.
+fn unknown_run_error(run_id: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "run not found: '{}'. Use list_runs to see available runs, or check the run_id.",
+        run_id
+    )
+}
+
 fn handle_run_prepare(
     params: serde_json::Value,
     store: &Store,
@@ -1585,7 +1593,7 @@ fn handle_queue_view_create(
 
     let name = p.name.trim().to_string();
     if name.is_empty() {
-        anyhow::bail!("view name cannot be empty");
+        anyhow::bail!("view name cannot be empty. Provide a non-empty name for the saved view.");
     }
 
     // Check for duplicate name
@@ -1593,7 +1601,10 @@ fn handle_queue_view_create(
         let views = QUEUE_VIEWS.lock().map_err(|e| anyhow::anyhow!("lock error: {e}"))?;
         for v in views.values() {
             if v.name.to_lowercase() == name.to_lowercase() {
-                anyhow::bail!("a view with this name already exists");
+                anyhow::bail!(
+                    "a view named '{}' already exists. Choose a different name, or use update_queue_view to modify the existing view.",
+                    v.name
+                );
             }
         }
     }
@@ -1633,18 +1644,24 @@ fn handle_queue_view_update(
 
     // Check if view exists
     if !views.contains_key(&p.view_id) {
-        anyhow::bail!("view not found: {}", p.view_id);
+        anyhow::bail!(
+            "view not found: {}. Use list_queue_views to see available views.",
+            p.view_id
+        );
     }
 
     // Validate name uniqueness if updating name
     if let Some(ref name) = p.name {
         let trimmed = name.trim().to_string();
         if trimmed.is_empty() {
-            anyhow::bail!("view name cannot be empty");
+            anyhow::bail!("view name cannot be empty. Provide a non-empty name for the saved view.");
         }
         for v in views.values() {
             if v.view_id != p.view_id && v.name.to_lowercase() == trimmed.to_lowercase() {
-                anyhow::bail!("a view with this name already exists");
+                anyhow::bail!(
+                    "a view named '{}' already exists. Choose a different name.",
+                    v.name
+                );
             }
         }
     }

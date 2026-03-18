@@ -26,7 +26,8 @@ pub fn archive(
     // Enforce: only finalized runs can be archived.
     if !state.status.starts_with("finalized:") {
         bail!(
-            "run '{}' cannot be archived: status is '{}' (only finalized runs may be archived)",
+            "run '{}' cannot be archived: status is '{}' (only finalized runs may be archived). \
+             Use finalize_run to close the run first, or wait for the run to complete.",
             params.run_id,
             state.status
         );
@@ -35,7 +36,8 @@ pub fn archive(
     // Reject if already archived.
     if state.archive_metadata.is_some() {
         bail!(
-            "run '{}' is already archived",
+            "run '{}' is already archived. \
+             Use unarchive_run to restore it to the active list.",
             params.run_id
         );
     }
@@ -220,6 +222,8 @@ mod tests {
         let err = archive(&params, &mut state).unwrap_err();
         assert!(err.to_string().contains("cannot be archived"));
         assert!(err.to_string().contains("active"));
+        // Error message should include recovery hint
+        assert!(err.to_string().contains("finalize_run") || err.to_string().contains("wait"));
         // State must not be mutated.
         assert!(state.archive_metadata.is_none());
         assert_eq!(state.status, "active");
@@ -276,6 +280,8 @@ mod tests {
         };
         let err = archive(&params, &mut state).unwrap_err();
         assert!(err.to_string().contains("already archived"));
+        // Error message should include recovery hint
+        assert!(err.to_string().contains("unarchive_run"));
         // Original archive metadata must not be overwritten.
         assert_eq!(state.archive_metadata.as_ref().unwrap().reason, "first archive");
     }

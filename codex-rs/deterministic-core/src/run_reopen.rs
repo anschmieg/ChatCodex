@@ -21,7 +21,8 @@ pub fn reopen(params: &RunReopenParams, state: &mut RunState) -> Result<RunReope
     // Enforce: only finalized runs can be reopened.
     if !state.status.starts_with("finalized:") {
         bail!(
-            "run '{}' cannot be reopened: status is '{}' (only finalized runs may be reopened)",
+            "run '{}' cannot be reopened: status is '{}' (only finalized runs may be reopened). \
+             Use get_run_state to inspect the run, or finalize_run if work is complete.",
             params.run_id,
             state.status
         );

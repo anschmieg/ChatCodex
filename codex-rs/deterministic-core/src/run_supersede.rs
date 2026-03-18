@@ -28,7 +28,8 @@ pub fn supersede(
     // Enforce: only finalized runs can be superseded.
     if !original_state.status.starts_with("finalized:") {
         bail!(
-            "run '{}' cannot be superseded: status is '{}' (only finalized runs may be superseded)",
+            "run '{}' cannot be superseded: status is '{}' (only finalized runs may be superseded). \
+             Use finalize_run to close the run first, or reopen_run to continue work on it.",
             params.run_id,
             original_state.status
         );

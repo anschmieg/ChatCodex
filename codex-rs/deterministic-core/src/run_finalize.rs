@@ -28,7 +28,12 @@ pub fn finalize(params: &RunFinalizeParams, state: &mut RunState) -> Result<RunF
 
     // Reject if already finalized.
     if state.finalized_outcome.is_some() {
-        bail!("run '{}' is already finalized", params.run_id);
+        bail!(
+            "run '{}' is already finalized (status: {}). \
+             Use reopen_run to continue work, or supersede_run to start a new approach.",
+            params.run_id,
+            state.status
+        );
     }
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -199,6 +204,8 @@ mod tests {
         };
         let err = finalize(&params2, &mut state).unwrap_err();
         assert!(err.to_string().contains("already finalized"));
+        // Error message should include recovery hints
+        assert!(err.to_string().contains("reopen_run") || err.to_string().contains("supersede_run"));
         // Original outcome must be preserved.
         let outcome = state.finalized_outcome.as_ref().unwrap();
         assert_eq!(outcome.outcome_kind, "completed");

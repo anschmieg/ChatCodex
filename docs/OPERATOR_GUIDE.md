@@ -457,6 +457,105 @@ While ChatCodex doesn't have built-in metrics, operators should watch:
 
 ---
 
+## Understanding Error Messages
+
+ChatCodex errors are designed to be actionable. When an operation fails, the error message typically includes:
+
+1. **What failed** — The operation and the affected run/view
+2. **Why it failed** — The specific constraint violated
+3. **What to do next** — Recovery hints when applicable
+
+### Common Error Patterns
+
+| Error Pattern | Meaning | Recovery |
+|---------------|---------|----------|
+| `unknown run: X` | Run ID doesn't exist | Use `list_runs` to see available runs |
+| `cannot be reopened: status is 'active'` | Run is not finalized | Finalize the run first, or check current status |
+| `cannot be archived: status is 'active'` | Run is not finalized | Use `finalize_run` to close it first |
+| `is already finalized` | Run already closed | Use `reopen_run` to continue work, or `supersede_run` for new approach |
+| `is already archived` | Run already archived | Use `unarchive_run` to restore it |
+| `is not archived` | Run was never archived | Use `list_runs` with `includeArchived` to see archived runs |
+| `is not snoozed` | Run was not snoozed | Use `list_runs` with `includeSnoozed` to see snoozed runs |
+| `view not found: X` | Saved view doesn't exist | Use `list_queue_views` to see available views |
+| `a view named 'X' already exists` | Duplicate view name | Choose a different name or update the existing view |
+
+### Error Message Format
+
+Errors from ChatCodex follow this format:
+
+```
+ChatCodex error in <method>: <error message> <recovery hint>
+```
+
+Examples:
+
+```
+ChatCodex error in run.reopen: run 'run_abc123' cannot be reopened: status is 'active'
+(only finalized runs may be reopened). Use get_run_state to inspect the run,
+or finalize_run if work is complete.
+
+ChatCodex error in run.finalize: run 'run_xyz' is already finalized (status: finalized:completed).
+Use reopen_run to continue work, or supersede_run to start a new approach.
+```
+
+### When Errors Don't Include Recovery Hints
+
+Some errors are straightforward and don't need hints:
+
+- Validation errors (invalid format, empty fields)
+- Permission errors
+- Resource not found
+
+For these, check the [INTERVENTION_PATTERNS.md](./INTERVENTION_PATTERNS.md) for recovery guidance.
+
+---
+
+## Understanding Error Messages
+
+ChatCodex provides clear, actionable error messages. When operations fail, the error message typically includes:
+
+1. **What failed** — The specific operation that couldn't complete
+2. **Why it failed** — The constraint or state that prevented it
+3. **What to do next** — A suggested recovery action
+
+### Common Error Patterns
+
+| Error Message | Cause | Recovery |
+|---------------|-------|----------|
+| `run cannot be reopened: status is 'active'` | Run isn't finalized | Use `finalize_run` first |
+| `run is already finalized` | Run already closed | Use `reopen_run` or `supersede_run` |
+| `run cannot be archived: status is 'active'` | Run not finalized | Use `finalize_run` first |
+| `run is already archived` | Already archived | Use `unarchive_run` to restore |
+| `run is not snoozed` | Not in snoozed state | Check status with `get_run_state` |
+| `view not found` | Invalid view ID | Use `list_queue_views` to see available views |
+| `unknown run` | Invalid run ID | Use `list_runs` to see available runs |
+| `a view named 'X' already exists` | Duplicate name | Use different name or `update_queue_view` |
+
+### Error Message Format
+
+```
+ChatCodex error in <method>: <error message> <recovery hint>
+```
+
+Example:
+```
+ChatCodex error in finalize_run: run 'run-abc' is already finalized (status: finalized:completed).
+Use reopen_run to continue work, or supersede_run to start a new approach.
+```
+
+### When Errors Occur
+
+Most errors fall into these categories:
+
+1. **Lifecycle errors** — Wrong state for operation (e.g., finalizing an already-finalized run)
+2. **Validation errors** — Invalid parameters (e.g., empty name, invalid date format)
+3. **Not found errors** — Run or view doesn't exist
+4. **Policy errors** — Operation blocked by policy (e.g., approval required)
+
+For detailed recovery steps for each error type, see [INTERVENTION_PATTERNS.md](./INTERVENTION_PATTERNS.md).
+
+---
+
 ## What's Next
 
 - **Intervention patterns**: See [INTERVENTION_PATTERNS.md](./INTERVENTION_PATTERNS.md) for specific recovery playbooks

@@ -29,7 +29,8 @@ pub fn unarchive(
     // Enforce: only archived runs can be unarchived.
     if state.archive_metadata.is_none() {
         bail!(
-            "run '{}' cannot be unarchived: it is not archived",
+            "run '{}' cannot be unarchived: it is not archived. \
+             Use list_runs with includeArchived=true to see archived runs, or archive_run to archive first.",
             params.run_id
         );
     }
@@ -37,7 +38,8 @@ pub fn unarchive(
     // Reject if already unarchived.
     if state.unarchive_metadata.is_some() {
         bail!(
-            "run '{}' is already unarchived",
+            "run '{}' is already unarchived. \
+             Use get_run_state to inspect the run, or list_runs to see it in the default listing.",
             params.run_id
         );
     }

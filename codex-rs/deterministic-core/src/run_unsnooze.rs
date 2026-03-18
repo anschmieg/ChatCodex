@@ -25,7 +25,11 @@ use deterministic_protocol::{RunState, RunUnsnoozeParams, RunUnsnoozeResult, SNO
 /// Returns the updated run state (via mutation) and a result DTO.
 pub fn unsnooze(params: &RunUnsnoozeParams, state: &mut RunState) -> Result<RunUnsnoozeResult> {
     if state.snooze_metadata.is_none() {
-        bail!("run '{}' is not snoozed", params.run_id);
+        bail!(
+            "run '{}' is not snoozed. \
+             Use list_runs with includeSnoozed=true to see snoozed runs, or get_run_state to check snooze status.",
+            params.run_id
+        );
     }
 
     let reason = params.reason.trim();
