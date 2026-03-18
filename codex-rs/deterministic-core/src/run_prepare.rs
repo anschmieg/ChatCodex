@@ -96,6 +96,7 @@ pub fn prepare(params: &RunPrepareParams) -> Result<(RunPrepareResult, RunState)
         ownership_note: None,
         due_date: None,
         blocked_by_run_ids: vec![],
+        effort: None,
         created_at: now.clone(),
         updated_at: now,
     };

@@ -128,6 +128,7 @@ mod tests {
             ownership_note: None,
             due_date: None,
             blocked_by_run_ids: vec![],
+            effort: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }
@@ -171,6 +172,7 @@ mod tests {
         let params = RunSetDependenciesParams {
             run_id: "run-a".to_string(),
             blocked_by_run_ids: vec![],
+            effort: None,
         };
         let result = set_dependencies(&params, &mut state, &[]).unwrap();
         assert!(result.blocked_by_run_ids.is_empty());
@@ -328,6 +330,7 @@ mod tests {
         let params = RunSetDependenciesParams {
             run_id: "run-a".to_string(),
             blocked_by_run_ids: vec![],
+            effort: None,
         };
         let result = set_dependencies(&params, &mut state, &[]).unwrap();
         assert!(result.message.contains("cleared"), "{}", result.message);
@@ -339,6 +342,7 @@ mod tests {
         let params = RunSetDependenciesParams {
             run_id: "run-a".to_string(),
             blocked_by_run_ids: vec![],
+            effort: None,
         };
         let result = set_dependencies(&params, &mut state, &[]).unwrap();
         assert!(result.message.contains("unchanged"), "{}", result.message);

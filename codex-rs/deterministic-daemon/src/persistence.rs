@@ -5,7 +5,7 @@
 //! access — unlike the previous JSON-file approach.
 
 use anyhow::{Context, Result};
-use deterministic_protocol::{ArchiveMetadata, PendingApproval, PinMetadata, ReopenMetadata, RetryableAction, RunAnnotation, RunHistoryEntry, RunOutcome, RunPolicy, RunPriority, RunState, RunSummary, SnoozeMetadata, UnarchiveMetadata};
+use deterministic_protocol::{ArchiveMetadata, PendingApproval, PinMetadata, ReopenMetadata, RetryableAction, RunAnnotation, RunEffort, RunHistoryEntry, RunOutcome, RunPolicy, RunPriority, RunState, RunSummary, SnoozeMetadata, UnarchiveMetadata};
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
@@ -143,6 +143,8 @@ impl Store {
             ("runs", "due_date", "TEXT"),
             // Milestone 21 columns
             ("runs", "blocked_by_run_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            // Milestone 24 columns
+            ("runs", "effort", "TEXT"),
         ];
 
         for (table, column, def) in migrations {
@@ -259,6 +261,8 @@ impl Store {
         // Milestone 21: persist blocked_by_run_ids as JSON array.
         let blocked_by_run_ids_json = serde_json::to_string(&state.blocked_by_run_ids)
             .context("failed to serialise blocked_by_run_ids")?;
+        // Milestone 24: persist effort as optional string.
+        let effort_str: Option<&str> = state.effort.as_ref().map(|e| e.as_str());
         conn.execute(
             "INSERT OR REPLACE INTO runs
                 (run_id, workspace_id, user_goal, status, plan, current_step,
@@ -271,8 +275,9 @@ impl Store {
                  unarchive_metadata, annotation, pin_metadata,
                  is_snoozed, snooze_metadata, priority,
                  assignee, ownership_note, due_date, blocked_by_run_ids,
+                 effort,
                  created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -311,6 +316,7 @@ impl Store {
                 state.ownership_note,
                 state.due_date,
                 blocked_by_run_ids_json,
+                effort_str,
                 state.created_at,
                 state.updated_at,
             ],
@@ -335,6 +341,7 @@ impl Store {
                         unarchive_metadata, annotation, pin_metadata,
                         snooze_metadata, priority,
                         assignee, ownership_note, due_date, blocked_by_run_ids,
+                        effort,
                         created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
@@ -550,6 +557,10 @@ impl Store {
                         )
                     })?;
 
+                // Milestone 24: effort — optional TEXT, default None.
+                let effort_str: Option<String> = row.get(34)?;
+                let effort: Option<RunEffort> = effort_str.as_deref().and_then(RunEffort::parse);
+
                 Ok(RunState {
                     run_id: row.get(0)?,
                     workspace_id: row.get(1)?,
@@ -585,8 +596,9 @@ impl Store {
                     ownership_note,
                     due_date,
                     blocked_by_run_ids,
-                    created_at: row.get(34)?,
-                    updated_at: row.get(35)?,
+                    effort,
+                    created_at: row.get(35)?,
+                    updated_at: row.get(36)?,
                 })
             })
             .context("failed to query run")?;
@@ -801,7 +813,8 @@ impl Store {
                     created_at, updated_at, outcome_kind, reopen_metadata,
                     supersedes_run_id, superseded_by_run_id, is_archived, archive_metadata,
                     unarchive_metadata, annotation, pin_metadata, snooze_metadata, priority,
-                    assignee, due_date, blocked_by_run_ids
+                    assignee, due_date, blocked_by_run_ids,
+                    effort
              FROM runs {where_clause}
              ORDER BY CASE WHEN pin_metadata IS NOT NULL THEN 0 ELSE 1 END ASC, updated_at DESC
              LIMIT ?1"
@@ -817,7 +830,7 @@ impl Store {
             // 10: supersedes_run_id  11: superseded_by_run_id
             // 12: is_archived  13: archive_metadata  14: unarchive_metadata
             // 15: annotation  16: pin_metadata  17: snooze_metadata  18: priority
-            // 19: assignee  20: due_date  21: blocked_by_run_ids
+            // 19: assignee  20: due_date  21: blocked_by_run_ids  22: effort
             let plan_json: String = row.get(5)?;
             let total_steps: usize = serde_json::from_str::<Vec<String>>(&plan_json)
                 .map(|v| v.len())
@@ -882,6 +895,9 @@ impl Store {
                 serde_json::from_str(&blocked_by_run_ids_json).unwrap_or_default();
             let blocked_by_count_val = blocked_by_run_ids.len();
             let is_blocked_val = !blocked_by_run_ids.is_empty();
+            // Milestone 24: effort — optional TEXT, default None.
+            let effort_str: Option<String> = row.get(22).unwrap_or(None);
+            let effort: Option<RunEffort> = effort_str.as_deref().and_then(RunEffort::parse);
             Ok(RunSummary {
                 run_id: row.get(0)?,
                 workspace_id: row.get(1)?,
@@ -916,6 +932,7 @@ impl Store {
                 is_blocking: None,
                 blocking_run_count: None,
                 blocking_reason: None,
+                effort,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
@@ -1084,6 +1101,7 @@ mod tests {
             ownership_note: None,
             due_date: None,
             blocked_by_run_ids: vec![],
+            effort: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }
