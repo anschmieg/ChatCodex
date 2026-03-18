@@ -280,6 +280,21 @@ export const ListRunsInput = {
     .describe(
       "When true, results are sorted ascending by due date (soonest first). Runs with no due date sort last.",
     ),
+  // Milestone 23: blocker-oriented queue filters
+  blockingOnly: z
+    .boolean()
+    .optional()
+    .describe(
+      "When true, return only runs that are blocking at least one other run. Useful for identifying which runs need to be unblocked first.",
+    ),
+  blockingRunCountAtLeast: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "When set, return only runs whose blocking_run_count is at least this value. Useful for prioritizing the highest-impact blockers.",
+    ),
 };
 
 // ---------------------------------------------------------------

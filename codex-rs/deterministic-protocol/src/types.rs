@@ -822,6 +822,15 @@ pub struct RunSummary {
     /// Number of runs explicitly blocking this run (Milestone 21).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_by_count: Option<usize>,
+    /// Whether this run is currently blocking at least one other run (Milestone 23).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_blocking: Option<bool>,
+    /// Number of runs this run is currently blocking (Milestone 23).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocking_run_count: Option<usize>,
+    /// Concise human-readable blocker-impact summary (Milestone 23).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocking_reason: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -888,6 +897,12 @@ pub struct RunsListParams {
     /// Filter to runs explicitly blocked by this specific run ID (Milestone 21).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_by_run_id: Option<String>,
+    /// When true, return only runs that are blocking at least one other run (Milestone 23).
+    #[serde(default)]
+    pub blocking_only: Option<bool>,
+    /// When set, return only runs whose blocking_run_count is at least this value (Milestone 23).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocking_run_count_at_least: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -972,6 +987,15 @@ pub struct RunGetResult {
     /// Explicit list of run IDs that this run is blocked by (Milestone 21).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocked_by_run_ids: Vec<String>,
+    /// Whether this run is currently blocking at least one other run (Milestone 23).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_blocking: Option<bool>,
+    /// Number of runs this run is currently blocking (Milestone 23).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocking_run_count: Option<usize>,
+    /// Concise human-readable blocker-impact summary (Milestone 23).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocking_reason: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

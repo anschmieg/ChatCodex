@@ -511,6 +511,26 @@ fn handle_runs_list(
                 .unwrap_or(false)
         });
     }
+    // Milestone 23: compute blocker-impact map and populate RunSummary fields.
+    let blocker_map = store.get_blocker_impact_map()?;
+    for run in &mut runs {
+        let count = blocker_map.get(&run.run_id).copied().unwrap_or(0);
+        run.is_blocking = Some(count > 0);
+        run.blocking_run_count = Some(count);
+        run.blocking_reason = if count > 0 {
+            Some(format!("blocking {} run(s)", count))
+        } else {
+            None
+        };
+    }
+    // Milestone 23: blocking_only filter — keep only runs blocking at least one other run.
+    if p.blocking_only.unwrap_or(false) {
+        runs.retain(|r| r.is_blocking.unwrap_or(false));
+    }
+    // Milestone 23: blocking_run_count_at_least filter.
+    if let Some(min_count) = p.blocking_run_count_at_least {
+        runs.retain(|r| r.blocking_run_count.unwrap_or(0) >= min_count);
+    }
     let count = runs.len();
     let result = RunsListResult { runs, count };
     Ok((serde_json::to_value(result)?, None))
@@ -547,6 +567,17 @@ fn handle_run_get(
     let due_date = state.due_date.clone();
     let blocked_by_run_ids = state.blocked_by_run_ids.clone();
 
+    // Milestone 23: compute blocker-impact for this run.
+    let blocker_map = store.get_blocker_impact_map()?;
+    let blocking_count = blocker_map.get(&p.run_id).copied().unwrap_or(0);
+    let is_blocking = Some(blocking_count > 0);
+    let blocking_run_count = Some(blocking_count);
+    let blocking_reason = if blocking_count > 0 {
+        Some(format!("blocking {} run(s)", blocking_count))
+    } else {
+        None
+    };
+
     let result = RunGetResult {
         run_state: state.clone(),
         pending_approvals,
@@ -570,6 +601,9 @@ fn handle_run_get(
         priority,
         due_date,
         blocked_by_run_ids,
+        is_blocking,
+        blocking_run_count,
+        blocking_reason,
     };
     Ok((serde_json::to_value(result)?, Some(state)))
 }
@@ -3445,6 +3479,156 @@ mod tests {
         let summary_a = result.runs.iter().find(|r| r.run_id == "r_lsib_a").unwrap();
         assert_eq!(summary_a.is_blocked, Some(false));
         assert_eq!(summary_a.blocked_by_count, Some(0));
+    }
+
+    // -----------------------------------------------------------------------
+    // Milestone 23: blocker-impact fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn runs_list_shows_is_blocking_and_blocking_run_count() {
+        // r_ib_a blocks r_ib_b and r_ib_c.  r_ib_a should appear as "blocking 2 run(s)".
+        let store = Store::open_in_memory().unwrap();
+        let state_a = make_run_state("r_ib_a");
+        let mut state_b = make_run_state("r_ib_b");
+        let mut state_c = make_run_state("r_ib_c");
+        state_b.blocked_by_run_ids = vec!["r_ib_a".to_string()];
+        state_c.blocked_by_run_ids = vec!["r_ib_a".to_string()];
+        store.save_run(&state_a).unwrap();
+        store.save_run(&state_b).unwrap();
+        store.save_run(&state_c).unwrap();
+
+        let (val, _) = dispatch(Method::RunsList, serde_json::json!({}), &store).unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+
+        let summary_a = result.runs.iter().find(|r| r.run_id == "r_ib_a").unwrap();
+        assert_eq!(summary_a.is_blocking, Some(true));
+        assert_eq!(summary_a.blocking_run_count, Some(2));
+        assert_eq!(summary_a.blocking_reason, Some("blocking 2 run(s)".to_string()));
+
+        // Runs that are not blocking any other run should have is_blocking=false.
+        let summary_b = result.runs.iter().find(|r| r.run_id == "r_ib_b").unwrap();
+        assert_eq!(summary_b.is_blocking, Some(false));
+        assert_eq!(summary_b.blocking_run_count, Some(0));
+        assert!(summary_b.blocking_reason.is_none());
+    }
+
+    #[test]
+    fn runs_list_blocking_only_filter() {
+        // Only runs that are blocking at least one other run should be returned when blocking_only=true.
+        let store = Store::open_in_memory().unwrap();
+        let state_a = make_run_state("r_lbof_a");
+        let mut state_b = make_run_state("r_lbof_b");
+        let state_c = make_run_state("r_lbof_c");
+        state_b.blocked_by_run_ids = vec!["r_lbof_a".to_string()];
+        store.save_run(&state_a).unwrap();
+        store.save_run(&state_b).unwrap();
+        store.save_run(&state_c).unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"blockingOnly": true}),
+            &store,
+        )
+        .unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.count, 1, "only the blocker run should appear");
+        assert_eq!(result.runs[0].run_id, "r_lbof_a");
+        assert_eq!(result.runs[0].is_blocking, Some(true));
+    }
+
+    #[test]
+    fn runs_list_blocking_run_count_at_least_filter() {
+        // r_lbca_a blocks both _b and _c (count=2); _d blocks only _e (count=1).
+        let store = Store::open_in_memory().unwrap();
+        let state_a = make_run_state("r_lbca_a");
+        let mut state_b = make_run_state("r_lbca_b");
+        let mut state_c = make_run_state("r_lbca_c");
+        let state_d = make_run_state("r_lbca_d");
+        let mut state_e = make_run_state("r_lbca_e");
+        state_b.blocked_by_run_ids = vec!["r_lbca_a".to_string()];
+        state_c.blocked_by_run_ids = vec!["r_lbca_a".to_string()];
+        state_e.blocked_by_run_ids = vec!["r_lbca_d".to_string()];
+        store.save_run(&state_a).unwrap();
+        store.save_run(&state_b).unwrap();
+        store.save_run(&state_c).unwrap();
+        store.save_run(&state_d).unwrap();
+        store.save_run(&state_e).unwrap();
+
+        // blocking_run_count_at_least=2 should return only _a.
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"blockingRunCountAtLeast": 2}),
+            &store,
+        )
+        .unwrap();
+        let result: RunsListResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.count, 1);
+        assert_eq!(result.runs[0].run_id, "r_lbca_a");
+        assert_eq!(result.runs[0].blocking_run_count, Some(2));
+    }
+
+    #[test]
+    fn run_get_includes_blocker_impact_fields() {
+        // r_gib_a blocks r_gib_b; run.get on r_gib_a should reflect that.
+        let store = Store::open_in_memory().unwrap();
+        let state_a = make_run_state("r_gib_a");
+        let mut state_b = make_run_state("r_gib_b");
+        state_b.blocked_by_run_ids = vec!["r_gib_a".to_string()];
+        store.save_run(&state_a).unwrap();
+        store.save_run(&state_b).unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunGet,
+            serde_json::json!({"runId": "r_gib_a"}),
+            &store,
+        )
+        .unwrap();
+        let result: RunGetResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.is_blocking, Some(true));
+        assert_eq!(result.blocking_run_count, Some(1));
+        assert_eq!(result.blocking_reason, Some("blocking 1 run(s)".to_string()));
+    }
+
+    #[test]
+    fn run_get_not_blocking_shows_false() {
+        // A standalone run should not be marked as blocking.
+        let store = Store::open_in_memory().unwrap();
+        let state = make_run_state("r_gnb_a");
+        store.save_run(&state).unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunGet,
+            serde_json::json!({"runId": "r_gnb_a"}),
+            &store,
+        )
+        .unwrap();
+        let result: RunGetResult = serde_json::from_value(val).unwrap();
+        assert_eq!(result.is_blocking, Some(false));
+        assert_eq!(result.blocking_run_count, Some(0));
+        assert!(result.blocking_reason.is_none());
+    }
+
+    #[test]
+    fn blocker_impact_deterministic_count_derivation() {
+        // A run blocking N others must report exactly N, deterministically.
+        let store = Store::open_in_memory().unwrap();
+        let blocker = make_run_state("r_bid_blocker");
+        let mut dep1 = make_run_state("r_bid_dep1");
+        let mut dep2 = make_run_state("r_bid_dep2");
+        let mut dep3 = make_run_state("r_bid_dep3");
+        dep1.blocked_by_run_ids = vec!["r_bid_blocker".to_string()];
+        dep2.blocked_by_run_ids = vec!["r_bid_blocker".to_string()];
+        dep3.blocked_by_run_ids = vec!["r_bid_blocker".to_string()];
+        store.save_run(&blocker).unwrap();
+        store.save_run(&dep1).unwrap();
+        store.save_run(&dep2).unwrap();
+        store.save_run(&dep3).unwrap();
+
+        let impact_map = store.get_blocker_impact_map().unwrap();
+        assert_eq!(impact_map.get("r_bid_blocker").copied().unwrap_or(0), 3);
+        // Dependency runs themselves should not appear as blockers.
+        assert_eq!(impact_map.get("r_bid_dep1").copied().unwrap_or(0), 0);
     }
 
     #[test]
