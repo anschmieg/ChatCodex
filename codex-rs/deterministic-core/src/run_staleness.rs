@@ -3,7 +3,7 @@
 //! All rules are derived from existing timestamps only.
 //! No state mutation, no background processing, no model calls, no timers.
 
-use deterministic_protocol::{RunStaleness, RunState};
+use deterministic_protocol::RunStaleness;
 
 /// Compact derived staleness summary for a run.
 ///
@@ -46,19 +46,19 @@ pub fn derive_staleness(updated_at: &str, reference_date: &str) -> RunStalenessS
     let (staleness_bucket, staleness_reason, is_stale) = if age_days <= 3 {
         (
             RunStaleness::Fresh,
-            format!("updated {} day(s) ago", age_days),
+            format!("updated {age_days} day(s) ago"),
             false,
         )
     } else if age_days <= 7 {
         (
             RunStaleness::Aging,
-            format!("updated {} days ago", age_days),
+            format!("updated {age_days} days ago"),
             false,
         )
     } else {
         (
             RunStaleness::Stale,
-            format!("stale: {} days since update", age_days),
+            format!("stale: {age_days} days since update"),
             true,
         )
     };

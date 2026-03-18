@@ -1,6 +1,8 @@
 //! JSON-RPC handler dispatch.
 
 use anyhow::Result;
+use chrono::Utc;
+use deterministic_core::{run_staleness::derive_staleness, run_triage::derive_triage};
 use deterministic_protocol::methods::Method;
 use deterministic_protocol::*;
 
@@ -550,6 +552,57 @@ fn handle_runs_list(
             (None, None) => std::cmp::Ordering::Equal,
         });
     }
+    // Milestone 26: derive staleness for each run.
+    let reference_date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    for run in &mut runs {
+        let staleness = deterministic_core::run_staleness::derive_staleness(
+            &run.updated_at,
+            &reference_date,
+        );
+        run.age_days = Some(staleness.age_days as u32);
+        run.is_stale = Some(staleness.is_stale);
+        run.staleness_reason = Some(staleness.staleness_reason);
+        run.staleness_bucket = Some(staleness.staleness_bucket);
+    }
+    // Milestone 27: derive triage for each run.
+    for run in &mut runs {
+        let triage = deterministic_core::run_triage::derive_triage(
+            &run.status,
+            run.is_archived.unwrap_or(false),
+            run.is_snoozed.unwrap_or(false),
+            run.is_blocked.unwrap_or(false),
+            &run.priority.to_string(),
+            run.due_date.as_deref(),
+            run.staleness_bucket,
+            &reference_date,
+        );
+        run.triage_bucket = Some(triage.triage_bucket);
+        run.triage_reason = Some(triage.triage_reason);
+    }
+    // Milestone 27: triage_bucket_filter — keep only runs in the requested bucket.
+    if let Some(ref bucket_filter) = p.triage_bucket_filter {
+        runs.retain(|r| r.triage_bucket.as_ref() == Some(bucket_filter));
+    }
+    // Milestone 27: stale_only and fresh_only filters.
+    if p.stale_only.unwrap_or(false) {
+        runs.retain(|r| r.is_stale.unwrap_or(false));
+    }
+    if p.fresh_only.unwrap_or(false) {
+        runs.retain(|r| !r.is_stale.unwrap_or(true));
+    }
+    // Milestone 27: sort_by_triage — deterministic bucket ordering:
+    // critical → attention → ready → blocked → deferred → done.
+    if p.sort_by_triage.unwrap_or(false) {
+        runs.sort_by(|a, b| {
+            let a_rank = a.triage_bucket.map(RunTriageBucket::sort_key).unwrap_or(999);
+            let b_rank = b.triage_bucket.map(RunTriageBucket::sort_key).unwrap_or(999);
+            a_rank.cmp(&b_rank)
+        });
+    }
+    // Milestone 27: sort_by_staleness — oldest first (higher age_days = more urgent).
+    if p.sort_by_staleness.unwrap_or(false) {
+        runs.sort_by(|a, b| b.age_days.cmp(&a.age_days));
+    }
     let count = runs.len();
     let result = RunsListResult { runs, count };
     Ok((serde_json::to_value(result)?, None))
@@ -598,6 +651,23 @@ fn handle_run_get(
         None
     };
 
+    // Milestone 26+27: derive staleness and triage for this run.
+    let reference_date = Utc::now().format("%Y-%m-%d").to_string();
+    let is_archived = state.archive_metadata.is_some();
+    let staleness = derive_staleness(&state.updated_at, &reference_date);
+    let triage = derive_triage(
+        &state.status,
+        is_archived,
+        state.snooze_metadata.is_some(),
+        !state.blocked_by_run_ids.is_empty(),
+        &state.priority.to_string(),
+        state.due_date.as_deref(),
+        Some(staleness.staleness_bucket),
+        &reference_date,
+    );
+    let triage_bucket = Some(triage.triage_bucket);
+    let triage_reason = Some(triage.triage_reason);
+
     let result = RunGetResult {
         run_state: state.clone(),
         pending_approvals,
@@ -625,6 +695,8 @@ fn handle_run_get(
         blocking_run_count,
         blocking_reason,
         effort,
+        triage_bucket,
+        triage_reason,
     };
     Ok((serde_json::to_value(result)?, Some(state)))
 }

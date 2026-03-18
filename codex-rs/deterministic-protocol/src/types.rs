@@ -850,6 +850,12 @@ pub struct RunSummary {
     /// Staleness bucket: fresh/aging/stale (Milestone 26).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staleness_bucket: Option<RunStaleness>,
+    /// Derived triage bucket: critical/attention/ready/blocked/deferred/done (Milestone 27).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage_bucket: Option<RunTriageBucket>,
+    /// Reason for triage bucket classification (Milestone 27).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage_reason: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -943,6 +949,12 @@ pub struct RunsListParams {
     /// Reference date for staleness calculation (Milestone 26).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub today: Option<String>,
+    /// Filter by triage bucket (Milestone 27).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage_bucket_filter: Option<RunTriageBucket>,
+    /// Sort by triage bucket (critical → attention → ready → blocked → deferred → done) (Milestone 27).
+    #[serde(default)]
+    pub sort_by_triage: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1110,6 +1122,12 @@ pub struct RunGetResult {
     /// Explicit effort bucket for this run (Milestone 24).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<RunEffort>,
+    /// Derived triage bucket (Milestone 27).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage_bucket: Option<RunTriageBucket>,
+    /// Derived triage reason (Milestone 27).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage_reason: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1961,3 +1979,51 @@ pub struct RunSetEffortResult {
     pub message: String,
 }
 
+
+/// Deterministic triage bucket derived from run state (Milestone 27).
+///
+/// Buckets are ordered by review priority:
+/// - critical: overdue urgent runs, or ready urgent items
+/// - attention: needs operator attention (approval pending, blocked, etc.)
+/// - ready: can be worked on immediately
+/// - blocked: waiting on dependencies
+/// - deferred: snoozed, archived, or otherwise not active
+/// - done: finalized runs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunTriageBucket {
+    Critical,
+    Attention,
+    Ready,
+    Blocked,
+    Deferred,
+    Done,
+}
+
+impl RunTriageBucket {
+    /// Higher value = higher triage priority (for sorting)
+    pub fn sort_key(self) -> i64 {
+        match self {
+            Self::Critical => 5,
+            Self::Attention => 4,
+            Self::Ready => 3,
+            Self::Blocked => 2,
+            Self::Deferred => 1,
+            Self::Done => 0,
+        }
+    }
+}
+
+impl fmt::Display for RunTriageBucket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Critical => "critical",
+            Self::Attention => "attention",
+            Self::Ready => "ready",
+            Self::Blocked => "blocked",
+            Self::Deferred => "deferred",
+            Self::Done => "done",
+        };
+        f.write_str(s)
+    }
+}

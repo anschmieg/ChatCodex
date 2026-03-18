@@ -30,5 +30,7 @@ pub mod run_set_due_date;
 pub mod run_set_dependencies;
 pub mod run_set_effort;
 pub mod run_readiness;
+pub mod run_staleness;
+pub mod run_triage;
 pub mod tests_run;
 pub mod workspace_summary;

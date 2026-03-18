@@ -938,6 +938,9 @@ impl Store {
                 is_stale: None,
                 staleness_reason: None,
                 staleness_bucket: None,
+                // Milestone 27: triage fields populated by handler
+                triage_bucket: None,
+                triage_reason: None,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
