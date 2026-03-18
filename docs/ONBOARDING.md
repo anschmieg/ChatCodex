@@ -411,5 +411,7 @@ Expected:
 
 - **First run workflow**: See [FIRST_RUN_WORKFLOW.md](./FIRST_RUN_WORKFLOW.md)
 - **Example prompts**: See [EXAMPLE_PROMPTS.md](./EXAMPLE_PROMPTS.md)
+- **Operator guide**: See [OPERATOR_GUIDE.md](./OPERATOR_GUIDE.md) for running in production
+- **Intervention patterns**: See [INTERVENTION_PATTERNS.md](./INTERVENTION_PATTERNS.md) for recovery playbooks
 - **API reference**: See [MCP_TOOL_CONTRACTS.md](./MCP_TOOL_CONTRACTS.md)
 - **Architecture details**: See [ARCHITECTURE.md](./ARCHITECTURE.md)

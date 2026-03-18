@@ -494,4 +494,6 @@ Tag and note runs for discoverability:
 
 - **Setup**: See [ONBOARDING.md](./ONBOARDING.md)
 - **Workflow details**: See [FIRST_RUN_WORKFLOW.md](./FIRST_RUN_WORKFLOW.md)
+- **Operator guide**: See [OPERATOR_GUIDE.md](./OPERATOR_GUIDE.md) for production operations
+- **Intervention patterns**: See [INTERVENTION_PATTERNS.md](./INTERVENTION_PATTERNS.md) for recovery playbooks
 - **API reference**: See [MCP_TOOL_CONTRACTS.md](./MCP_TOOL_CONTRACTS.md)

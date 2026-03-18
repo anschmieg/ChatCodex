@@ -252,4 +252,6 @@ At run creation, you can customize:
 - **Onboarding**: [ONBOARDING.md](./ONBOARDING.md)
 - **Workflow guide**: [FIRST_RUN_WORKFLOW.md](./FIRST_RUN_WORKFLOW.md)
 - **Example prompts**: [EXAMPLE_PROMPTS.md](./EXAMPLE_PROMPTS.md)
+- **Operator guide**: [OPERATOR_GUIDE.md](./OPERATOR_GUIDE.md) for production operations
+- **Intervention patterns**: [INTERVENTION_PATTERNS.md](./INTERVENTION_PATTERNS.md) for recovery playbooks
 - **API contracts**: [MCP_TOOL_CONTRACTS.md](./MCP_TOOL_CONTRACTS.md)

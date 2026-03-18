@@ -499,5 +499,7 @@ Check what's blocking work:
 ## Next Steps
 
 - **Example prompts**: See [EXAMPLE_PROMPTS.md](./EXAMPLE_PROMPTS.md)
+- **Operator guide**: See [OPERATOR_GUIDE.md](./OPERATOR_GUIDE.md) for production operations
+- **Intervention patterns**: See [INTERVENTION_PATTERNS.md](./INTERVENTION_PATTERNS.md) for recovery playbooks
 - **API reference**: See [MCP_TOOL_CONTRACTS.md](./MCP_TOOL_CONTRACTS.md)
 - **Troubleshooting**: See [ONBOARDING.md](./ONBOARDING.md)
