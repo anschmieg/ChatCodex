@@ -636,3 +636,112 @@ export const GetQueueOverviewInput = {
     .optional()
     .describe("ISO date for computing overdue counts"),
 };
+
+// ---------------------------------------------------------------
+// Queue View CRUD (Milestone 29)
+// ---------------------------------------------------------------
+
+/** Filter configuration for a saved queue view. */
+export const QueueViewFilters = {
+  workspaceId: z.string().optional().describe("Filter by workspace path"),
+  status: z.string().optional().describe("Filter by status prefix"),
+  label: z.string().optional().describe("Filter by exact label (case-insensitive)"),
+  assignee: z.string().optional().describe("Filter by exact assignee"),
+  includeArchived: z.boolean().optional().describe("Include archived runs (default: false)"),
+  includeSnoozed: z.boolean().optional().describe("Include snoozed runs (default: false)"),
+  pinnedOnly: z.boolean().optional().describe("Only pinned runs"),
+  snoozedOnly: z.boolean().optional().describe("Only snoozed runs"),
+  archivedOnly: z.boolean().optional().describe("Only archived runs"),
+  priorityFilter: z.enum(["low", "normal", "high", "urgent"]).optional().describe("Filter by exact priority"),
+  effortFilter: z.enum(["tiny", "small", "medium", "large", "xlarge"]).optional().describe("Filter by effort bucket"),
+  blockedOnly: z.boolean().optional().describe("Only blocked runs"),
+  blockedByRunId: z.string().optional().describe("Only runs blocked by specific run ID"),
+  dueOnOrBefore: z.string().optional().describe("Only runs with due date on or before threshold (YYYY-MM-DD)"),
+  triageBucketFilter: z.enum(["ready", "blocked", "deferred"]).optional().describe("Filter by triage bucket"),
+  staleOnly: z.boolean().optional().describe("Only stale runs"),
+  freshOnly: z.boolean().optional().describe("Only fresh (not stale) runs"),
+  blockingRunCountAtLeast: z.number().optional().describe("Only runs blocking at least N other runs"),
+  today: z.string().optional().describe("ISO date for overdue computation"),
+};
+
+/** Sort configuration for a saved queue view. */
+export const QueueViewSort = {
+  sortByPriority: z.boolean().optional().describe("Sort by priority (descending)"),
+  sortByDueDate: z.boolean().optional().describe("Sort by due date (ascending, no due date sorts last)"),
+  sortByEffort: z.boolean().optional().describe("Sort by effort (ascending)"),
+  sortByTriage: z.boolean().optional().describe("Sort by triage bucket rank"),
+  sortByStaleness: z.boolean().optional().describe("Sort by staleness (oldest first)"),
+};
+
+/** Input schema for `create_queue_view`. */
+export const CreateQueueViewInput = {
+  name: z.string().describe("Human-readable name for the view (required, non-empty after trim)"),
+  description: z.string().optional().describe("Optional description"),
+  filters: z.object(QueueViewFilters).optional().describe("Filter configuration"),
+  sort: z.object(QueueViewSort).optional().describe("Sort configuration"),
+  limit: z.number().optional().describe("Maximum runs to return"),
+};
+
+/** Input schema for `update_queue_view`. */
+export const UpdateQueueViewInput = {
+  viewId: z.string().describe("View ID to update"),
+  name: z.string().optional().describe("New name (optional - if not provided, name is unchanged)"),
+  description: z.string().nullable().optional().describe("New description (null to clear)"),
+  filters: z.object(QueueViewFilters).optional().describe("New filters"),
+  sort: z.object(QueueViewSort).optional().describe("New sort"),
+  limit: z.number().nullable().optional().describe("New limit (null to clear)"),
+};
+
+/** Input schema for `delete_queue_view`. */
+export const DeleteQueueViewInput = {
+  viewId: z.string().describe("View ID to delete"),
+};
+
+/** Input schema for `get_queue_view`. */
+export const GetQueueViewInput = {
+  viewId: z.string().describe("View ID to retrieve"),
+};
+
+/** Input schema for `list_queue_views`. */
+export const ListQueueViewsInput = {
+  nameContains: z.string().optional().describe("Filter by name (case-insensitive contains)"),
+};
+
+// ---------------------------------------------------------------
+// Queue View Schemas (Milestone 29)
+// ---------------------------------------------------------------
+
+/** Filter configuration for saved queue views. */
+export const QueueViewFiltersSchema = {
+  workspaceId: z.string().optional().describe("Filter by workspace path"),
+  status: z.string().optional().describe("Filter by status prefix"),
+  label: z.string().optional().describe("Filter by exact label (case-insensitive)"),
+  assignee: z.string().optional().describe("Filter by exact assignee"),
+  includeArchived: z.boolean().optional().describe("Include archived runs"),
+  includeSnoozed: z.boolean().optional().describe("Include snoozed runs"),
+  pinnedOnly: z.boolean().optional().describe("Only pinned runs"),
+  snoozedOnly: z.boolean().optional().describe("Only snoozed runs"),
+  archivedOnly: z.boolean().optional().describe("Only archived runs"),
+  priorityFilter: z.enum(["low", "normal", "high", "urgent"]).optional().describe("Filter by priority"),
+  effortFilter: z.enum(["tiny", "small", "medium", "large", "huge"]).optional().describe("Filter by effort"),
+  blockedOnly: z.boolean().optional().describe("Only blocked runs"),
+  blockedByRunId: z.string().optional().describe("Only runs blocked by specific run ID"),
+  dueOnOrBefore: z.string().optional().describe("Only runs due on or before date (YYYY-MM-DD)"),
+  triageBucketFilter: z.enum(["urgent", "attention", "stale", "blocked", "ready"]).optional().describe("Filter by triage bucket"),
+  staleOnly: z.boolean().optional().describe("Only stale runs"),
+  freshOnly: z.boolean().optional().describe("Only fresh (not stale) runs"),
+  blockingRunCountAtLeast: z.number().optional().describe("Only runs blocking at least N other runs"),
+  today: z.string().optional().describe("ISO date for overdue computation"),
+};
+
+/** Sort configuration for saved queue views. */
+export const QueueViewSortSchema = {
+  sortByPriority: z.boolean().optional().describe("Sort by priority (descending)"),
+  sortByDueDate: z.boolean().optional().describe("Sort by due date (ascending)"),
+  sortByEffort: z.boolean().optional().describe("Sort by effort (ascending)"),
+  sortByTriage: z.boolean().optional().describe("Sort by triage bucket rank"),
+  sortByStaleness: z.boolean().optional().describe("Sort by staleness (oldest first)"),
+};
+
+/** Input schema for `create_queue_view`. */
+

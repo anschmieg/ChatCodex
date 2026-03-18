@@ -42,6 +42,11 @@ import {
   AssignRunOwnerInput,
   SetRunDueDateInput,
   GetQueueOverviewInput,
+  CreateQueueViewInput,
+  UpdateQueueViewInput,
+  DeleteQueueViewInput,
+  GetQueueViewInput,
+  ListQueueViewsInput,
 } from "./schemas.js";
 
 /**
@@ -646,6 +651,92 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
         includeArchived: params.includeArchived,
         includeSnoozed: params.includeSnoozed,
         today: params.today,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---------------------------------------------------------------
+  // Queue View CRUD (Milestone 29)
+  // ---------------------------------------------------------------
+
+  server.tool(
+    "create_queue_view",
+    "Create a saved queue view with deterministic filter/sort configuration. " +
+      "The view can be applied to runs.list or runs.overview to reuse common queue slices. " +
+      "Names must be unique (case-insensitive).",
+    CreateQueueViewInput,
+    async (params) => {
+      const result = await client.call("queue_view.create", {
+        name: params.name,
+        description: params.description,
+        filters: params.filters,
+        sort: params.sort,
+        limit: params.limit,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    "update_queue_view",
+    "Update a saved queue view. Only provided fields are updated; others remain unchanged. " +
+      "Name uniqueness is enforced on update.",
+    UpdateQueueViewInput,
+    async (params) => {
+      const result = await client.call("queue_view.update", {
+        viewId: params.viewId,
+        name: params.name,
+        description: params.description,
+        filters: params.filters,
+        sort: params.sort,
+        limit: params.limit,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    "delete_queue_view",
+    "Delete a saved queue view by ID.",
+    DeleteQueueViewInput,
+    async (params) => {
+      const result = await client.call("queue_view.delete", {
+        viewId: params.viewId,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    "get_queue_view",
+    "Get a saved queue view definition by ID.",
+    GetQueueViewInput,
+    async (params) => {
+      const result = await client.call("queue_view.get", {
+        viewId: params.viewId,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    "list_queue_views",
+    "List all saved queue views, optionally filtered by name.",
+    ListQueueViewsInput,
+    async (params) => {
+      const result = await client.call("queue_view.list", {
+        nameContains: params.nameContains,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
