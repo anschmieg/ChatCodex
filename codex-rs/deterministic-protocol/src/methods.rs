@@ -55,6 +55,8 @@ pub enum Method {
     RunSetDependencies,
     // Milestone 24: deterministic queue overview
     RunsQueueOverview,
+    // Milestone 25: deterministic run effort estimates
+    RunSetEffort,
 }
 
 impl Method {
@@ -107,6 +109,8 @@ impl Method {
             Self::RunSetDependencies => "run.set_dependencies",
             // Milestone 24
             Self::RunsQueueOverview => "runs.overview",
+            // Milestone 25
+            Self::RunSetEffort => "run.set_effort",
         }
     }
 

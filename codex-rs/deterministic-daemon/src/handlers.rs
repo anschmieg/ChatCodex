@@ -62,6 +62,8 @@ pub fn dispatch(
         Method::RunSetDependencies => handle_run_set_dependencies(params, store),
         // Milestone 24: deterministic queue overview
         Method::RunsQueueOverview => handle_runs_queue_overview(params, store),
+        // Milestone 25: deterministic run effort estimates
+        Method::RunSetEffort => handle_run_set_effort(params, store),
     }
 }
 
@@ -533,6 +535,21 @@ fn handle_runs_list(
     if let Some(min_count) = p.blocking_run_count_at_least {
         runs.retain(|r| r.blocking_run_count.unwrap_or(0) >= min_count);
     }
+    // Milestone 24: effort_filter — keep only runs with the requested effort bucket.
+    if let Some(filter_effort) = p.effort_filter {
+        runs.retain(|r| r.effort == Some(filter_effort));
+    }
+    // Milestone 24: sort_by_effort — ascending (small → medium → large), runs with no
+    // effort sort last.  Uses a stable sort to preserve the existing pin / updated_at
+    // ordering within each bucket.
+    if p.sort_by_effort.unwrap_or(false) {
+        runs.sort_by(|a, b| match (a.effort, b.effort) {
+            (Some(ea), Some(eb)) => ea.cmp(&eb),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+    }
     let count = runs.len();
     let result = RunsListResult { runs, count };
     Ok((serde_json::to_value(result)?, None))
@@ -568,6 +585,7 @@ fn handle_run_get(
     let priority = state.priority;
     let due_date = state.due_date.clone();
     let blocked_by_run_ids = state.blocked_by_run_ids.clone();
+    let effort = state.effort;
 
     // Milestone 23: compute blocker-impact for this run.
     let blocker_map = store.get_blocker_impact_map()?;
@@ -606,6 +624,7 @@ fn handle_run_get(
         is_blocking,
         blocking_run_count,
         blocking_reason,
+        effort,
     };
     Ok((serde_json::to_value(result)?, Some(state)))
 }
@@ -1272,6 +1291,37 @@ fn handle_run_set_dependencies(
     Ok((serde_json::to_value(result)?, Some(state)))
 }
 
+// ---- Milestone 25: deterministic run effort estimates ----
+
+fn handle_run_set_effort(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: RunSetEffortParams = serde_json::from_value(params)?;
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let result = deterministic_core::run_set_effort::set_effort(&p, &mut state)?;
+    store.save_run(&state)?;
+
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "run_effort_set",
+        &result.message,
+        Some(
+            &serde_json::json!({
+                "previous_effort": result.previous_effort.map(deterministic_protocol::RunEffort::as_str),
+                "effort": result.effort.map(deterministic_protocol::RunEffort::as_str),
+                "updated_at": result.updated_at,
+            })
+            .to_string(),
+        ),
+    );
+
+    Ok((serde_json::to_value(result)?, Some(state)))
+}
+
 // ---------------------------------------------------------------------------
 // runs.overview (Milestone 24)
 
@@ -1470,6 +1520,7 @@ mod tests {
             ownership_note: None,
             due_date: None,
             blocked_by_run_ids: vec![],
+            effort: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

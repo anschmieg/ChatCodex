@@ -88,6 +88,7 @@ pub fn supersede(
         ownership_note: None,
         due_date: None,
         blocked_by_run_ids: vec![],
+        effort: None,
         created_at: now.clone(),
         updated_at: now.clone(),
     };
@@ -155,6 +156,7 @@ mod tests {
             ownership_note: None,
             due_date: None,
             blocked_by_run_ids: vec![],
+            effort: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

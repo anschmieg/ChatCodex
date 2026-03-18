@@ -738,6 +738,10 @@ pub struct RunState {
     /// An empty list means the run is not blocked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocked_by_run_ids: Vec<String>,
+    /// Explicit effort bucket for this run (Milestone 24).
+    /// None means no estimate has been set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<RunEffort>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -831,6 +835,9 @@ pub struct RunSummary {
     /// Concise human-readable blocker-impact summary (Milestone 23).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocking_reason: Option<String>,
+    /// Explicit effort bucket for this run (Milestone 24).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<RunEffort>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -903,6 +910,15 @@ pub struct RunsListParams {
     /// When set, return only runs whose blocking_run_count is at least this value (Milestone 23).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocking_run_count_at_least: Option<usize>,
+    /// Filter by exact effort bucket (Milestone 24).
+    /// When set, only runs with this effort level are returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_filter: Option<RunEffort>,
+    /// When true, runs are sorted by effort ascending (small → medium → large)
+    /// before the default pinned-first / updated_at ordering (Milestone 24).
+    /// Runs with no effort sort last.
+    #[serde(default)]
+    pub sort_by_effort: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1067,6 +1083,9 @@ pub struct RunGetResult {
     /// Concise human-readable blocker-impact summary (Milestone 23).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocking_reason: Option<String>,
+    /// Explicit effort bucket for this run (Milestone 24).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<RunEffort>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1765,5 +1784,103 @@ pub struct RunSetDependenciesResult {
     /// ISO 8601 timestamp of when this update was applied.
     pub updated_at: String,
     /// Short confirmation message.
+    pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// run.set_effort  (Milestone 24)
+// ---------------------------------------------------------------------------
+
+/// Deterministic run effort bucket.
+///
+/// Three levels from smallest to largest: `small < medium < large`.
+/// The default for all new and existing runs is `None` (no estimate set).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunEffort {
+    Small,
+    Medium,
+    Large,
+}
+
+impl RunEffort {
+    /// Canonical string representation used on the wire and in SQLite.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Small => "small",
+            Self::Medium => "medium",
+            Self::Large => "large",
+        }
+    }
+
+    /// Parse a string into a [`RunEffort`].
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "small" => Some(Self::Small),
+            "medium" => Some(Self::Medium),
+            "large" => Some(Self::Large),
+            _ => None,
+        }
+    }
+
+    /// All valid effort values, ordered from smallest to largest.
+    pub fn all() -> &'static [RunEffort] {
+        &[Self::Small, Self::Medium, Self::Large]
+    }
+
+    /// Numeric sort key: higher value = larger effort (for SQL ORDER BY).
+    pub fn sort_key(self) -> i64 {
+        match self {
+            Self::Small => 0,
+            Self::Medium => 1,
+            Self::Large => 2,
+        }
+    }
+}
+
+impl fmt::Display for RunEffort {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Parameters for `run.set_effort` — explicit deterministic run effort update.
+///
+/// Setting effort is deterministic, explicit, and audited. It updates only
+/// the effort field and does not execute work, change status, refresh, replan,
+/// reopen, finalize, archive, unarchive, pin, unpin, snooze, reprioritize,
+/// assign ownership, or change due dates.
+///
+/// Pass `effort: null` (i.e., `Some(None)`) to clear the effort estimate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSetEffortParams {
+    /// ID of the run whose effort is being set.
+    pub run_id: String,
+    /// The new effort level, or `null` to clear.
+    ///
+    /// - `Some(Some(effort))` → set effort to this value
+    /// - `Some(None)` → clear the effort estimate
+    /// - `None` → no-op (absent from JSON; treated as no change)
+    pub effort: Option<Option<RunEffort>>,
+}
+
+/// Result of `run.set_effort`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSetEffortResult {
+    /// ID of the run whose effort was updated.
+    pub run_id: String,
+    /// Current status of the run (unchanged).
+    pub status: String,
+    /// The effort value before this update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_effort: Option<RunEffort>,
+    /// The new effort value, or `None` if cleared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<RunEffort>,
+    /// ISO 8601 timestamp of when this update was applied.
+    pub updated_at: String,
+    /// Confirmation message.
     pub message: String,
 }
