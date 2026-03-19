@@ -354,6 +354,29 @@ function createProvider(config: EmbeddedOidcAuthConfig, db: Database.Database): 
     devInteractions: {
       enabled: false,
     },
+    resourceIndicators: {
+      enabled: true,
+      defaultResource() {
+        return config.resourceServerUrl.href;
+      },
+      useGrantedResource() {
+        return true;
+      },
+      async getResourceServerInfo(
+        _ctx: unknown,
+        resourceIndicator: string,
+        _client: unknown,
+      ) {
+        if (resourceIndicator !== config.resourceServerUrl.href) {
+          throw new Error("unknown resource indicator");
+        }
+
+        return {
+          audience: config.resourceServerUrl.href,
+          scope: config.scopesSupported.join(" "),
+        };
+      },
+    },
     clientIdMetadataDocument: {
       ack: CIMD_ACKNOWLEDGEMENT,
       enabled: true,
