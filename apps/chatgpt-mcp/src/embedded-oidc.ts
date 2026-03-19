@@ -350,6 +350,7 @@ function createAccount(accountId: string) {
 }
 
 function createProvider(config: EmbeddedOidcAuthConfig, db: Database.Database): Provider {
+  const interactionBasePath = new URL("./interaction/", config.issuerUrl).pathname.replace(/\/$/, "");
   const features = {
     devInteractions: {
       enabled: false,
@@ -409,6 +410,11 @@ function createProvider(config: EmbeddedOidcAuthConfig, db: Database.Database): 
     features: features as never,
     findAccount(_ctx: unknown, sub: string) {
       return createAccount(sub) as never;
+    },
+    interactions: {
+      url(_ctx: unknown, interaction: { uid: string }) {
+        return `${interactionBasePath}/${interaction.uid}`;
+      },
     },
     jwks: config.jwks,
     loadExistingGrant: async () => undefined,
