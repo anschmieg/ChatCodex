@@ -1,33 +1,29 @@
 /**
  * Entry point for the ChatGPT MCP gateway.
  *
- * This is a thin MCP server that:
- *  - Registers deterministic tools
- *  - Validates inputs with Zod
- *  - Forwards requests to the Rust daemon
- *  - Formats responses for ChatGPT
+ * Supports:
+ *  - `stdio` transport for local MCP client process spawning
+ *  - Streamable HTTP transport for remote MCP hosting
  *
  * It contains NO core planning logic and NO model calls.
  */
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { DaemonClient } from "./daemon-client.js";
-import { registerTools } from "./tools.js";
+import { createMcpServer } from "./mcp-server.js";
+import { startHttpServer } from "./http-server.js";
 
 async function main(): Promise<void> {
-  const server = new McpServer({
-    name: "chatgpt-deterministic-mcp",
-    version: "0.0.1",
-  });
+  const transportMode = (process.env["MCP_TRANSPORT"] ?? "stdio").toLowerCase();
 
-  const client = new DaemonClient();
+  if (transportMode === "http") {
+    await startHttpServer();
+    return;
+  }
 
-  registerTools(server, client);
-
+  const server = createMcpServer();
   const transport = new StdioServerTransport();
-  await server.connect(transport);
 
+  await server.connect(transport);
   // Log to stderr so MCP stdio transport is not polluted
   process.stderr.write("chatgpt-mcp: server started on stdio\n");
 }

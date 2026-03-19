@@ -111,7 +111,7 @@ export class DaemonClient {
       throw new Error(
         `ChatCodex daemon unreachable (HTTP ${resp.status} ${resp.statusText}). ` +
         `Ensure the daemon is running at ${this.baseUrl}. ` +
-        `Start the daemon with: deterministic-daemon --port <port> --data-dir <path>`,
+        `Start the daemon with DETERMINISTIC_BIND=<host:port> and DETERMINISTIC_STORE_DIR=<path>.`,
       );
     }
 

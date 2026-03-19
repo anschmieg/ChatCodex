@@ -1,0 +1,10 @@
+.git
+.claude
+.devcontainer
+node_modules
+target
+codex-rs/target
+codex-rs/runs
+apps/chatgpt-mcp/node_modules
+apps/chatgpt-mcp/dist
+**/.DS_Store
