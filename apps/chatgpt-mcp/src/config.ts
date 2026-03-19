@@ -20,11 +20,17 @@ export interface StaticTokenAuthConfig {
   token: string;
 }
 
-export interface OAuthAuthConfig {
+interface BaseOAuthAuthConfig {
   mode: "oauth";
-  provider?: "generic" | "cloudflare-access";
   issuerUrl: URL;
   resourceServerUrl: URL;
+  serviceDocumentationUrl?: URL;
+  scopesSupported: string[];
+  requiredScopes: string[];
+}
+
+export interface ExternalOAuthAuthConfig extends BaseOAuthAuthConfig {
+  provider?: "generic" | "cloudflare-access";
   discoveryUrl?: URL;
   authorizationEndpoint?: URL;
   tokenEndpoint?: URL;
@@ -32,14 +38,34 @@ export interface OAuthAuthConfig {
   revocationEndpoint?: URL;
   introspectionEndpoint?: URL;
   jwksUrl?: URL;
-  serviceDocumentationUrl?: URL;
-  scopesSupported: string[];
-  requiredScopes: string[];
   audience?: string;
   introspectionClientId?: string;
   introspectionClientSecret?: string;
   jwtAlgorithms?: string[];
 }
+
+export interface EmbeddedOidcCloudflareAccessLoginConfig {
+  provider: "cloudflare-access";
+  teamDomain: URL;
+  audience: string;
+  emailClaim: string;
+}
+
+export interface EmbeddedOidcAuthConfig extends BaseOAuthAuthConfig {
+  provider: "embedded-oidc";
+  authorizationEndpoint: URL;
+  tokenEndpoint: URL;
+  registrationEndpoint: URL;
+  revocationEndpoint: URL;
+  jwksUrl: URL;
+  storagePath: string;
+  cookieKeys: string[];
+  jwks: { keys: JsonWebKey[] };
+  cimdAllowedHosts: string[];
+  login: EmbeddedOidcCloudflareAccessLoginConfig;
+}
+
+export type OAuthAuthConfig = ExternalOAuthAuthConfig | EmbeddedOidcAuthConfig;
 
 type Env = NodeJS.ProcessEnv;
 
@@ -49,6 +75,10 @@ const DEFAULT_MCP_PATH = "/mcp";
 const DEFAULT_HEALTHZ_PATH = "/healthz";
 const DEFAULT_SCOPE = "mcp:tools";
 const CLOUDFLARE_ACCESS_PROVIDER = "cloudflare-access";
+const EMBEDDED_OIDC_PROVIDER = "embedded-oidc";
+const DEFAULT_EMBEDDED_OIDC_PATH = "/oauth";
+const DEFAULT_OIDC_STORAGE_PATH = ".data/chatcodex-oidc.sqlite";
+const DEFAULT_CIMD_ALLOWED_HOSTS = ["chat.openai.com", "chatgpt.com", "openai.com"];
 
 function readTrimmed(env: Env, key: string): string | undefined {
   const raw = env[key];
@@ -98,6 +128,7 @@ function inferAuthMode(env: Env): "none" | "static-token" | "oauth" {
   }
 
   if (
+    readTrimmed(env, "CHATCODEX_OAUTH_PROVIDER") === EMBEDDED_OIDC_PROVIDER ||
     readTrimmed(env, "OAUTH_ISSUER_URL") ||
     readTrimmed(env, "OAUTH_DISCOVERY_URL") ||
     readTrimmed(env, "OAUTH_AUTHORIZATION_ENDPOINT") ||
@@ -148,10 +179,88 @@ function requireString(value: string | undefined, key: string): string {
   return value;
 }
 
+function readJson<T>(env: Env, key: string): T | undefined {
+  const value = readTrimmed(env, key);
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(value) as T;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "invalid JSON";
+    throw new Error(`${key} must contain valid JSON: ${message}`);
+  }
+}
+
+function maybeLoadEmbeddedOidcConfig(
+  env: Env,
+  publicBaseUrl: URL | undefined,
+): EmbeddedOidcAuthConfig | undefined {
+  if (readTrimmed(env, "CHATCODEX_OAUTH_PROVIDER") !== EMBEDDED_OIDC_PROVIDER) {
+    return undefined;
+  }
+
+  if (!publicBaseUrl) {
+    throw new Error("Embedded OIDC provider mode requires PUBLIC_BASE_URL.");
+  }
+
+  const issuerPath = readTrimmed(env, "OIDC_PROVIDER_ISSUER_PATH") ?? DEFAULT_EMBEDDED_OIDC_PATH;
+  const issuerUrl = new URL(issuerPath, publicBaseUrl);
+  const resourceServerUrl =
+    readUrl(env, "OAUTH_RESOURCE_SERVER_URL") ?? new URL(DEFAULT_MCP_PATH, publicBaseUrl);
+  const jwks = readJson<{ keys: JsonWebKey[] }>(env, "OIDC_PROVIDER_JWKS_JSON");
+  const cookieKeys = readCsv(env, "OIDC_PROVIDER_COOKIE_KEYS");
+  const teamDomain = normalizeCloudflareTeamDomain(
+    requireString(
+      readTrimmed(env, "CLOUDFLARE_ACCESS_TEAM_DOMAIN"),
+      "CLOUDFLARE_ACCESS_TEAM_DOMAIN",
+    ),
+  );
+
+  if (!jwks || !Array.isArray(jwks.keys) || jwks.keys.length === 0) {
+    throw new Error("OIDC_PROVIDER_JWKS_JSON must be a JWK set with at least one key.");
+  }
+
+  if (cookieKeys.length === 0) {
+    throw new Error("OIDC_PROVIDER_COOKIE_KEYS must include at least one signing key.");
+  }
+
+  const scopesSupported = readCsv(env, "OAUTH_SCOPES_SUPPORTED", [DEFAULT_SCOPE]);
+  const requiredScopes = readCsv(env, "OAUTH_REQUIRED_SCOPES", [...scopesSupported]);
+
+  return {
+    mode: "oauth",
+    provider: "embedded-oidc",
+    issuerUrl,
+    resourceServerUrl,
+    authorizationEndpoint: new URL("authorize", `${issuerUrl.href}/`),
+    tokenEndpoint: new URL("token", `${issuerUrl.href}/`),
+    registrationEndpoint: new URL("register", `${issuerUrl.href}/`),
+    revocationEndpoint: new URL("revoke", `${issuerUrl.href}/`),
+    jwksUrl: new URL("jwks", `${issuerUrl.href}/`),
+    storagePath: readTrimmed(env, "OIDC_PROVIDER_STORAGE_PATH") ?? DEFAULT_OIDC_STORAGE_PATH,
+    cookieKeys,
+    jwks,
+    cimdAllowedHosts: readCsv(env, "OIDC_CIMD_ALLOWED_HOSTS", DEFAULT_CIMD_ALLOWED_HOSTS),
+    scopesSupported,
+    requiredScopes,
+    login: {
+      provider: "cloudflare-access",
+      teamDomain,
+      audience: requireString(
+        readTrimmed(env, "OIDC_LOGIN_CLOUDFLARE_ACCESS_AUDIENCE"),
+        "OIDC_LOGIN_CLOUDFLARE_ACCESS_AUDIENCE",
+      ),
+      emailClaim: readTrimmed(env, "OIDC_LOGIN_EMAIL_CLAIM") ?? "email",
+    },
+  };
+}
+
 function maybeLoadCloudflareAccessConfig(
   env: Env,
   publicBaseUrl: URL | undefined,
-): OAuthAuthConfig | undefined {
+): ExternalOAuthAuthConfig | undefined {
   const provider = readTrimmed(env, "CHATCODEX_OAUTH_PROVIDER");
   const hasCloudflareHints =
     provider === CLOUDFLARE_ACCESS_PROVIDER ||
@@ -207,6 +316,11 @@ function maybeLoadCloudflareAccessConfig(
 }
 
 function loadOAuthConfig(env: Env, publicBaseUrl: URL | undefined): OAuthAuthConfig {
+  const embeddedOidcConfig = maybeLoadEmbeddedOidcConfig(env, publicBaseUrl);
+  if (embeddedOidcConfig) {
+    return embeddedOidcConfig;
+  }
+
   const cloudflareAccessConfig = maybeLoadCloudflareAccessConfig(env, publicBaseUrl);
   if (cloudflareAccessConfig) {
     return cloudflareAccessConfig;

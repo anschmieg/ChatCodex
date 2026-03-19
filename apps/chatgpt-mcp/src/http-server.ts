@@ -11,6 +11,7 @@ import express, { type Request, type Response, type NextFunction } from "express
 import { createMcpServer } from "./mcp-server.js";
 import { DaemonClient } from "./daemon-client.js";
 import { loadServerConfig } from "./config.js";
+import { initializeEmbeddedOidcRuntime } from "./embedded-oidc.js";
 import { initializeOAuthRuntime } from "./oauth.js";
 
 const MAX_BODY_SIZE = "1mb";
@@ -148,32 +149,63 @@ export async function startHttpServer(): Promise<void> {
   app.use(express.urlencoded({ extended: false, limit: MAX_BODY_SIZE }));
 
   if (config.auth.mode === "oauth") {
-    const oauth = await initializeOAuthRuntime(config.auth);
-    app.use(
-      mcpAuthMetadataRouter({
-        oauthMetadata: oauth.oauthMetadata,
-        resourceServerUrl: oauth.resourceServerUrl,
-        serviceDocumentationUrl: config.auth.serviceDocumentationUrl,
-        scopesSupported: oauth.scopesSupported,
-        resourceName: "ChatCodex MCP",
-      }),
-    );
+    if (config.auth.provider === "embedded-oidc") {
+      const oauth = await initializeEmbeddedOidcRuntime(config.auth);
+      app.use(new URL(config.auth.issuerUrl).pathname, oauth.router);
 
-    app.all(
-      config.mcpPath,
-      requireBearerAuth({
-        verifier: oauth.verifier,
-        requiredScopes: oauth.requiredScopes,
-        resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(oauth.resourceServerUrl),
-      }),
-      async (req, res, next) => {
-        try {
-          await handleMcpRequest(req, res, sessions);
-        } catch (error) {
-          next(error);
-        }
-      },
-    );
+      app.use(
+        mcpAuthMetadataRouter({
+          oauthMetadata: oauth.oauthMetadata,
+          resourceServerUrl: oauth.resourceServerUrl,
+          serviceDocumentationUrl: config.auth.serviceDocumentationUrl,
+          scopesSupported: oauth.scopesSupported,
+          resourceName: "ChatCodex MCP",
+        }),
+      );
+
+      app.all(
+        config.mcpPath,
+        requireBearerAuth({
+          verifier: oauth.verifier,
+          requiredScopes: oauth.requiredScopes,
+          resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(oauth.resourceServerUrl),
+        }),
+        async (req, res, next) => {
+          try {
+            await handleMcpRequest(req, res, sessions);
+          } catch (error) {
+            next(error);
+          }
+        },
+      );
+    } else {
+      const oauth = await initializeOAuthRuntime(config.auth);
+      app.use(
+        mcpAuthMetadataRouter({
+          oauthMetadata: oauth.oauthMetadata,
+          resourceServerUrl: oauth.resourceServerUrl,
+          serviceDocumentationUrl: config.auth.serviceDocumentationUrl,
+          scopesSupported: oauth.scopesSupported,
+          resourceName: "ChatCodex MCP",
+        }),
+      );
+
+      app.all(
+        config.mcpPath,
+        requireBearerAuth({
+          verifier: oauth.verifier,
+          requiredScopes: oauth.requiredScopes,
+          resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(oauth.resourceServerUrl),
+        }),
+        async (req, res, next) => {
+          try {
+            await handleMcpRequest(req, res, sessions);
+          } catch (error) {
+            next(error);
+          }
+        },
+      );
+    }
   } else if (config.auth.mode === "static-token") {
     app.all(config.mcpPath, createStaticTokenMiddleware(config.auth.token), async (req, res, next) => {
       try {

@@ -13,13 +13,17 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "better-sqlite3": "^12.8.0",
     "express": "^5.1.0",
     "jose": "^6.1.2",
+    "oidc-provider": "^9.7.1",
     "zod": "^3.24.4"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.3",
     "@types/node": "^22.15.21",
+    "@types/oidc-provider": "^9.5.0",
     "typescript": "^5.8.3"
   },
   "engines": {

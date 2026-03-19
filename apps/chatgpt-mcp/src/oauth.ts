@@ -5,7 +5,7 @@ import {
 import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
-import type { OAuthAuthConfig } from "./config.js";
+import type { ExternalOAuthAuthConfig } from "./config.js";
 
 export interface OAuthRuntime {
   oauthMetadata: OAuthMetadata;
@@ -122,7 +122,7 @@ function assertAudience(expectedAudience: string | undefined, actual: unknown): 
   }
 }
 
-function buildOAuthMetadataFromConfig(config: OAuthAuthConfig): OAuthMetadata {
+function buildOAuthMetadataFromConfig(config: ExternalOAuthAuthConfig): OAuthMetadata {
   if (!config.authorizationEndpoint || !config.tokenEndpoint) {
     throw new Error("OAuth metadata is incomplete. Missing authorization or token endpoint.");
   }
@@ -181,7 +181,7 @@ async function fetchDiscoveryMetadata(
 }
 
 function createIntrospectionVerifier(
-  config: OAuthAuthConfig,
+  config: ExternalOAuthAuthConfig,
   endpoint: URL,
   fetchImpl: typeof fetch,
 ): OAuthTokenVerifier {
@@ -224,7 +224,7 @@ function createIntrospectionVerifier(
 }
 
 function createJwtVerifier(
-  config: OAuthAuthConfig,
+  config: ExternalOAuthAuthConfig,
   jwksUrl: URL,
 ): OAuthTokenVerifier {
   const jwks = createRemoteJWKSet(jwksUrl);
@@ -245,7 +245,7 @@ function createJwtVerifier(
 }
 
 export async function initializeOAuthRuntime(
-  config: OAuthAuthConfig,
+  config: ExternalOAuthAuthConfig,
   fetchImpl: typeof fetch = fetch,
 ): Promise<OAuthRuntime> {
   const discoveredMetadata = config.discoveryUrl

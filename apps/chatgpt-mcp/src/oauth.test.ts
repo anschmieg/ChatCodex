@@ -1,10 +1,10 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import { initializeOAuthRuntime } from "./oauth.js";
-import type { OAuthAuthConfig } from "./config.js";
+import type { ExternalOAuthAuthConfig } from "./config.js";
 
 describe("initializeOAuthRuntime", () => {
-  const baseConfig: OAuthAuthConfig = {
+  const baseConfig: ExternalOAuthAuthConfig = {
     mode: "oauth",
     issuerUrl: new URL("https://auth.example.com"),
     resourceServerUrl: new URL("https://chatcodex.example.com/mcp"),
