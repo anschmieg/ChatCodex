@@ -828,6 +828,7 @@ Step 3: If not relevant:
 
 ## What's Next
 
+- **Quick start**: See [MVP_README.md](./MVP_README.md) for the fastest path to first use
 - **Operator guide**: See [OPERATOR_GUIDE.md](./OPERATOR_GUIDE.md) for daily operations
 - **First run workflow**: See [FIRST_RUN_WORKFLOW.md](./FIRST_RUN_WORKFLOW.md) for basics
 - **Tool reference**: See [TOOLS_OVERVIEW.md](./TOOLS_OVERVIEW.md) for all tools

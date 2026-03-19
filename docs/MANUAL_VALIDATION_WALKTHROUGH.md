@@ -471,3 +471,6 @@ After completing manual validation:
 2. File issues for any bugs discovered
 3. Mark completed validations in `docs/VALIDATION_PLAN.md`
 4. Decide MVP readiness
+
+**Quick start**: See [MVP_README.md](./MVP_README.md) for the fastest path to first use
+5. See [MVP_README.md](./MVP_README.md) for the fastest path to first use

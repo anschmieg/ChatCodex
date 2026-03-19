@@ -558,6 +558,7 @@ For detailed recovery steps for each error type, see [INTERVENTION_PATTERNS.md](
 
 ## What's Next
 
+- **Quick start**: See [MVP_README.md](./MVP_README.md) for the fastest path to first use
 - **Intervention patterns**: See [INTERVENTION_PATTERNS.md](./INTERVENTION_PATTERNS.md) for specific recovery playbooks
 - **First run workflow**: See [FIRST_RUN_WORKFLOW.md](./FIRST_RUN_WORKFLOW.md) for the basic workflow
 - **Tool reference**: See [TOOLS_OVERVIEW.md](./TOOLS_OVERVIEW.md) for all available tools

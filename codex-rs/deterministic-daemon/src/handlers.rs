@@ -96,14 +96,6 @@ fn build_retryable_action(
     }
 }
 
-/// Create a consistent error for unknown run IDs with helpful context.
-fn unknown_run_error(run_id: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "run not found: '{}'. Use list_runs to see available runs, or check the run_id.",
-        run_id
-    )
-}
-
 fn handle_run_prepare(
     params: serde_json::Value,
     store: &Store,

@@ -492,6 +492,7 @@ Tag and note runs for discoverability:
 
 ## Next Steps
 
+- **Quick start**: See [MVP_README.md](./MVP_README.md) for the fastest path to first use
 - **Setup**: See [ONBOARDING.md](./ONBOARDING.md)
 - **Workflow details**: See [FIRST_RUN_WORKFLOW.md](./FIRST_RUN_WORKFLOW.md)
 - **Operator guide**: See [OPERATOR_GUIDE.md](./OPERATOR_GUIDE.md) for production operations

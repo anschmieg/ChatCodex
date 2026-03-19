@@ -237,8 +237,10 @@ MVP is ready when:
 
 ## Next Steps
 
-1. **Add missing integration tests** for V1-V6
-2. **Create manual walkthrough checklist** (see `MANUAL_VALIDATION_WALKTHROUGH.md`)
-3. **Run manual validations** for each workflow
-4. **Document findings** and update readiness assessment
-5. **Fix any blocking issues** discovered during validation
+1. **Quick start**: See [MVP_README.md](./MVP_README.md) for the fastest path to first use
+2. **Add missing integration tests** for V1-V6
+3. **Create manual walkthrough checklist** (see `MANUAL_VALIDATION_WALKTHROUGH.md`)
+4. **Run manual validations** for each workflow
+5. **Document findings** and update readiness assessment
+6. **Fix any blocking issues** discovered during validation
+6. **Quick start**: See [MVP_README.md](./MVP_README.md) for the fastest path to first use

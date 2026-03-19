@@ -498,6 +498,7 @@ Check what's blocking work:
 
 ## Next Steps
 
+- **Quick start**: See [MVP_README.md](./MVP_README.md) for the fastest path to first use
 - **Example prompts**: See [EXAMPLE_PROMPTS.md](./EXAMPLE_PROMPTS.md)
 - **Operator guide**: See [OPERATOR_GUIDE.md](./OPERATOR_GUIDE.md) for production operations
 - **Intervention patterns**: See [INTERVENTION_PATTERNS.md](./INTERVENTION_PATTERNS.md) for recovery playbooks

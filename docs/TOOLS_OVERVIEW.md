@@ -249,6 +249,7 @@ At run creation, you can customize:
 
 ## Next Steps
 
+- **Quick start**: [MVP_README.md](./MVP_README.md) for the fastest path to first use
 - **Onboarding**: [ONBOARDING.md](./ONBOARDING.md)
 - **Workflow guide**: [FIRST_RUN_WORKFLOW.md](./FIRST_RUN_WORKFLOW.md)
 - **Example prompts**: [EXAMPLE_PROMPTS.md](./EXAMPLE_PROMPTS.md)
