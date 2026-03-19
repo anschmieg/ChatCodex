@@ -1,93 +1,39 @@
-import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import {
+  getOAuthProtectedResourceMetadataUrl,
+  mcpAuthMetadataRouter,
+} from "@modelcontextprotocol/sdk/server/auth/router.js";
+import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import express, { type Request, type Response, type NextFunction } from "express";
 import { createMcpServer } from "./mcp-server.js";
 import { DaemonClient } from "./daemon-client.js";
+import { loadServerConfig } from "./config.js";
+import { initializeOAuthRuntime } from "./oauth.js";
 
-const DEFAULT_PORT = 3000;
-const DEFAULT_HOST = "0.0.0.0";
-const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_BODY_SIZE = "1mb";
 
 function sendJson(
-  res: ServerResponse,
+  res: Response,
   statusCode: number,
   body: unknown,
 ): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(statusCode, {
-    "content-type": "application/json",
-    "content-length": Buffer.byteLength(payload),
-  });
-  res.end(payload);
+  res.status(statusCode).json(body);
 }
 
 function sendText(
-  res: ServerResponse,
+  res: Response,
   statusCode: number,
   body: string,
   contentType = "text/plain; charset=utf-8",
 ): void {
-  res.writeHead(statusCode, {
-    "content-type": contentType,
-    "content-length": Buffer.byteLength(body),
-  });
-  res.end(body);
+  res.status(statusCode).type(contentType).send(body);
 }
 
-function getPath(req: IncomingMessage): string {
-  const rawUrl = req.url ?? "/";
-  return new URL(rawUrl, "http://localhost").pathname;
-}
-
-function requireBearerToken(req: IncomingMessage, res: ServerResponse): boolean {
-  const expectedToken = process.env["MCP_AUTH_TOKEN"];
-  if (!expectedToken) {
-    return true;
-  }
-
-  const authHeader = req.headers["authorization"];
-  if (authHeader === `Bearer ${expectedToken}`) {
-    return true;
-  }
-
-  res.writeHead(401, {
-    "content-type": "application/json",
-    "www-authenticate": 'Bearer realm="chatcodex-mcp"',
-  });
-  res.end(
-    JSON.stringify({
-      error: "unauthorized",
-      message: "Provide a valid Bearer token.",
-    }),
-  );
-  return false;
-}
-
-async function parseJsonBody(req: IncomingMessage): Promise<unknown | undefined> {
-  if (req.method !== "POST") {
-    return undefined;
-  }
-
-  const chunks: Buffer[] = [];
-  let total = 0;
-
-  for await (const chunk of req) {
-    const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += bufferChunk.length;
-    if (total > MAX_BODY_BYTES) {
-      throw new Error("request body too large");
-    }
-    chunks.push(bufferChunk);
-  }
-
-  if (chunks.length === 0) {
-    return undefined;
-  }
-
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-}
-
-async function handleHealthz(res: ServerResponse): Promise<void> {
-  const daemonOk = await new DaemonClient().healthz().catch(() => false);
+async function handleHealthz(res: Response, daemonClient: DaemonClient): Promise<void> {
+  const daemonOk = await daemonClient.healthz().catch(() => false);
   if (daemonOk) {
     sendJson(res, 200, { status: "ok" });
     return;
@@ -99,87 +45,190 @@ async function handleHealthz(res: ServerResponse): Promise<void> {
   });
 }
 
-async function handleMcpRequest(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  if (!requireBearerToken(req, res)) {
-    return;
-  }
+interface SessionContext {
+  server: ReturnType<typeof createMcpServer>;
+  transport: StreamableHTTPServerTransport;
+}
 
-  if (req.method !== "POST") {
-    sendJson(res, 405, {
-      jsonrpc: "2.0",
-      error: {
-        code: -32000,
-        message: "Method not allowed.",
-      },
-      id: null,
+function getSessionId(req: Request): string | undefined {
+  const value = req.header("mcp-session-id");
+  return value && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function createStaticTokenMiddleware(token: string) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (req.header("authorization") === `Bearer ${token}`) {
+      next();
+      return;
+    }
+
+    res.status(401).set("WWW-Authenticate", 'Bearer realm="chatcodex-mcp"').json({
+      error: "unauthorized",
+      message: "Provide a valid Bearer token.",
     });
-    return;
-  }
+  };
+}
 
-  const parsedBody = await parseJsonBody(req);
+function createSessionContext(
+  sessions: Map<string, SessionContext>,
+): SessionContext {
   const server = createMcpServer();
   const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
+    sessionIdGenerator: () => randomUUID(),
+    onsessioninitialized: (sessionId) => {
+      sessions.set(sessionId, { server, transport });
+    },
   });
 
-  try {
-    await server.connect(transport);
-    await transport.handleRequest(req, res, parsedBody);
-  } finally {
-    res.on("close", () => {
-      void transport.close();
-      void server.close();
-    });
+  transport.onclose = () => {
+    const sessionId = transport.sessionId;
+    if (sessionId) {
+      sessions.delete(sessionId);
+    }
+    void server.close();
+  };
+
+  transport.onerror = (error) => {
+    process.stderr.write(`chatgpt-mcp: transport error: ${error}\n`);
+  };
+
+  return { server, transport };
+}
+
+async function handleMcpRequest(
+  req: Request,
+  res: Response,
+  sessions: Map<string, SessionContext>,
+): Promise<void> {
+  const sessionId = getSessionId(req);
+  let context = sessionId ? sessions.get(sessionId) : undefined;
+
+  if (!context) {
+    if (sessionId) {
+      sendJson(res, 404, {
+        jsonrpc: "2.0",
+        error: {
+          code: -32001,
+          message: `Unknown MCP session: ${sessionId}`,
+        },
+        id: null,
+      });
+      return;
+    }
+
+    if (req.method !== "POST" || !isInitializeRequest(req.body)) {
+      sendJson(res, 400, {
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: "Bad Request: expected initialize request without session ID.",
+        },
+        id: null,
+      });
+      return;
+    }
+
+    context = createSessionContext(sessions);
+    await context.server.connect(context.transport);
   }
+
+  await context.transport.handleRequest(req, res, req.body);
 }
 
 export async function startHttpServer(): Promise<void> {
-  const port = Number.parseInt(process.env["PORT"] ?? `${DEFAULT_PORT}`, 10);
-  const host = process.env["HOST"] ?? DEFAULT_HOST;
+  const config = loadServerConfig();
+  const daemonClient = new DaemonClient(config.daemonUrl);
+  const app = createMcpExpressApp({
+    host: config.host,
+    allowedHosts: config.allowedHosts.length > 0 ? config.allowedHosts : undefined,
+  });
+  const sessions = new Map<string, SessionContext>();
 
-  const server = createServer(async (req, res) => {
+  app.use(express.json({ limit: MAX_BODY_SIZE }));
+  app.use(express.urlencoded({ extended: false, limit: MAX_BODY_SIZE }));
+
+  if (config.auth.mode === "oauth") {
+    const oauth = await initializeOAuthRuntime(config.auth);
+    app.use(
+      mcpAuthMetadataRouter({
+        oauthMetadata: oauth.oauthMetadata,
+        resourceServerUrl: oauth.resourceServerUrl,
+        serviceDocumentationUrl: config.auth.serviceDocumentationUrl,
+        scopesSupported: oauth.scopesSupported,
+        resourceName: "ChatCodex MCP",
+      }),
+    );
+
+    app.all(
+      config.mcpPath,
+      requireBearerAuth({
+        verifier: oauth.verifier,
+        requiredScopes: oauth.requiredScopes,
+        resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(oauth.resourceServerUrl),
+      }),
+      async (req, res, next) => {
+        try {
+          await handleMcpRequest(req, res, sessions);
+        } catch (error) {
+          next(error);
+        }
+      },
+    );
+  } else if (config.auth.mode === "static-token") {
+    app.all(config.mcpPath, createStaticTokenMiddleware(config.auth.token), async (req, res, next) => {
+      try {
+        await handleMcpRequest(req, res, sessions);
+      } catch (error) {
+        next(error);
+      }
+    });
+  } else {
+    app.all(config.mcpPath, async (req, res, next) => {
+      try {
+        await handleMcpRequest(req, res, sessions);
+      } catch (error) {
+        next(error);
+      }
+    });
+  }
+
+  app.get(config.healthzPath, async (_req, res, next) => {
     try {
-      const path = getPath(req);
-
-      if (path === "/healthz") {
-        await handleHealthz(res);
-        return;
-      }
-
-      if (path === "/") {
-        sendJson(res, 200, {
-          service: "chatcodex-mcp",
-          transport: "streamable-http",
-          mcpPath: "/mcp",
-          healthz: "/healthz",
-        });
-        return;
-      }
-
-      if (path === "/mcp") {
-        await handleMcpRequest(req, res);
-        return;
-      }
-
-      sendText(res, 404, "Not Found");
+      await handleHealthz(res, daemonClient);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "internal server error";
-      sendJson(res, 500, {
-        error: "internal_error",
-        message,
-      });
+      next(error);
     }
   });
 
+  app.get("/", (_req, res) => {
+    sendJson(res, 200, {
+      service: "chatcodex-mcp",
+      transport: "streamable-http",
+      authMode: config.auth.mode,
+      mcpPath: config.mcpPath,
+      healthz: config.healthzPath,
+      publicBaseUrl: config.publicBaseUrl?.href,
+    });
+  });
+
+  app.use((req, res) => {
+    sendText(res, 404, `Not Found: ${req.path}`);
+  });
+
+  app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const message = error instanceof Error ? error.message : "internal server error";
+    sendJson(res, 500, {
+      error: "internal_error",
+      message,
+    });
+  });
+
   await new Promise<void>((resolve, reject) => {
+    const server = app.listen(config.port, config.host, () => resolve());
     server.once("error", reject);
-    server.listen(port, host, () => resolve());
   });
 
   process.stderr.write(
-    `chatgpt-mcp: HTTP server listening on http://${host}:${port}/mcp\n`,
+    `chatgpt-mcp: HTTP server listening on http://${config.host}:${config.port}${config.mcpPath}\n`,
   );
 }
