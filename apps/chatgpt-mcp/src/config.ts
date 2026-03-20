@@ -53,9 +53,10 @@ export interface EmbeddedOidcCloudflareAccessLoginConfig {
 
 export interface EmbeddedOidcAuthConfig extends BaseOAuthAuthConfig {
   provider: "embedded-oidc";
+  registrationMode: "both" | "cimd" | "dcr";
   authorizationEndpoint: URL;
   tokenEndpoint: URL;
-  registrationEndpoint: URL;
+  registrationEndpoint?: URL;
   revocationEndpoint: URL;
   jwksUrl: URL;
   storagePath: string;
@@ -79,6 +80,7 @@ const EMBEDDED_OIDC_PROVIDER = "embedded-oidc";
 const DEFAULT_EMBEDDED_OIDC_PATH = "/oauth";
 const DEFAULT_OIDC_STORAGE_PATH = ".data/chatcodex-oidc.sqlite";
 const DEFAULT_CIMD_ALLOWED_HOSTS = ["chat.openai.com", "chatgpt.com", "openai.com"];
+const DEFAULT_EMBEDDED_OIDC_REGISTRATION_MODE = "both";
 
 function readTrimmed(env: Env, key: string): string | undefined {
   const raw = env[key];
@@ -209,6 +211,8 @@ function maybeLoadEmbeddedOidcConfig(
   const issuerUrl = new URL(issuerPath, publicBaseUrl);
   const resourceServerUrl =
     readUrl(env, "OAUTH_RESOURCE_SERVER_URL") ?? new URL(DEFAULT_MCP_PATH, publicBaseUrl);
+  const registrationMode =
+    readTrimmed(env, "OIDC_PROVIDER_REGISTRATION_MODE") ?? DEFAULT_EMBEDDED_OIDC_REGISTRATION_MODE;
   const jwks = readJson<{ keys: JsonWebKey[] }>(env, "OIDC_PROVIDER_JWKS_JSON");
   const cookieKeys = readCsv(env, "OIDC_PROVIDER_COOKIE_KEYS");
   const teamDomain = normalizeCloudflareTeamDomain(
@@ -226,17 +230,27 @@ function maybeLoadEmbeddedOidcConfig(
     throw new Error("OIDC_PROVIDER_COOKIE_KEYS must include at least one signing key.");
   }
 
+  if (registrationMode !== "both" && registrationMode !== "cimd" && registrationMode !== "dcr") {
+    throw new Error(
+      `OIDC_PROVIDER_REGISTRATION_MODE must be one of "both", "cimd", or "dcr", got "${registrationMode}".`,
+    );
+  }
+
   const scopesSupported = readCsv(env, "OAUTH_SCOPES_SUPPORTED", [DEFAULT_SCOPE]);
   const requiredScopes = readCsv(env, "OAUTH_REQUIRED_SCOPES", [...scopesSupported]);
 
   return {
     mode: "oauth",
     provider: "embedded-oidc",
+    registrationMode,
     issuerUrl,
     resourceServerUrl,
     authorizationEndpoint: new URL("authorize", `${issuerUrl.href}/`),
     tokenEndpoint: new URL("token", `${issuerUrl.href}/`),
-    registrationEndpoint: new URL("register", `${issuerUrl.href}/`),
+    registrationEndpoint:
+      registrationMode === "cimd"
+        ? undefined
+        : new URL("register", `${issuerUrl.href}/`),
     revocationEndpoint: new URL("revoke", `${issuerUrl.href}/`),
     jwksUrl: new URL("jwks", `${issuerUrl.href}/`),
     storagePath: readTrimmed(env, "OIDC_PROVIDER_STORAGE_PATH") ?? DEFAULT_OIDC_STORAGE_PATH,

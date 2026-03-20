@@ -397,11 +397,11 @@ function createProvider(config: EmbeddedOidcAuthConfig, db: Database.Database): 
       },
     },
     registration: {
-      enabled: true,
+      enabled: config.registrationMode !== "cimd",
       initialAccessToken: false,
     },
     registrationManagement: {
-      enabled: true,
+      enabled: config.registrationMode !== "cimd",
     },
     revocation: {
       enabled: true,
@@ -468,7 +468,7 @@ function createProvider(config: EmbeddedOidcAuthConfig, db: Database.Database): 
     routes: {
       authorization: "/authorize",
       jwks: "/jwks",
-      registration: "/register",
+      registration: config.registrationMode === "cimd" ? undefined : "/register",
       revocation: "/revoke",
       token: "/token",
     },
@@ -489,7 +489,7 @@ function createOAuthMetadata(config: EmbeddedOidcAuthConfig): OAuthMetadata {
     issuer: config.issuerUrl.href,
     authorization_endpoint: config.authorizationEndpoint.href,
     token_endpoint: config.tokenEndpoint.href,
-    registration_endpoint: config.registrationEndpoint.href,
+    registration_endpoint: config.registrationEndpoint?.href,
     revocation_endpoint: config.revocationEndpoint.href,
     jwks_uri: config.jwksUrl.href,
     response_types_supported: ["code"],

@@ -118,6 +118,7 @@ describe("loadServerConfig", () => {
     }
 
     assert.equal(config.auth.issuerUrl.href, "https://codex.nothing.pink/oauth");
+    assert.ok(config.auth.registrationEndpoint);
     assert.equal(config.auth.registrationEndpoint.href, "https://codex.nothing.pink/oauth/register");
     assert.equal(config.auth.jwksUrl.href, "https://codex.nothing.pink/oauth/jwks");
     assert.deepEqual(config.auth.cookieKeys, ["cookie-key-1", "cookie-key-2"]);
@@ -127,5 +128,28 @@ describe("loadServerConfig", () => {
       "openai.com",
     ]);
     assert.equal(config.auth.login.teamDomain.href, "https://nothingpink.cloudflareaccess.com/");
+  });
+
+  it("loads embedded OIDC config in CIMD-only mode", () => {
+    const config = loadServerConfig({
+      CHATCODEX_AUTH_MODE: "oauth",
+      CHATCODEX_OAUTH_PROVIDER: "embedded-oidc",
+      PUBLIC_BASE_URL: "https://codex.nothing.pink",
+      OIDC_PROVIDER_REGISTRATION_MODE: "cimd",
+      OIDC_PROVIDER_JWKS_JSON: JSON.stringify({
+        keys: [{ kty: "RSA", n: "abc", e: "AQAB", d: "def", alg: "RS256", use: "sig" }],
+      }),
+      OIDC_PROVIDER_COOKIE_KEYS: "cookie-key-1,cookie-key-2",
+      OIDC_LOGIN_CLOUDFLARE_ACCESS_AUDIENCE: "self-hosted-app-aud",
+      CLOUDFLARE_ACCESS_TEAM_DOMAIN: "nothingpink.cloudflareaccess.com",
+    });
+
+    assert.equal(config.auth.mode, "oauth");
+    if (config.auth.mode !== "oauth" || config.auth.provider !== "embedded-oidc") {
+      throw new Error("expected embedded oidc config");
+    }
+
+    assert.equal(config.auth.registrationMode, "cimd");
+    assert.equal(config.auth.registrationEndpoint, undefined);
   });
 });

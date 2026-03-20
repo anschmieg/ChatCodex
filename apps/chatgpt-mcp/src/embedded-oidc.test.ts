@@ -17,6 +17,7 @@ async function createTestConfig(): Promise<EmbeddedOidcAuthConfig> {
   return {
     mode: "oauth",
     provider: "embedded-oidc",
+    registrationMode: "both",
     issuerUrl: new URL("https://codex.nothing.pink/oauth"),
     resourceServerUrl: new URL("https://codex.nothing.pink/mcp"),
     authorizationEndpoint: new URL("https://codex.nothing.pink/oauth/authorize"),
@@ -49,6 +50,19 @@ describe("initializeEmbeddedOidcRuntime", () => {
       "https://codex.nothing.pink/oauth/register",
     );
     assert.equal(runtime.oauthMetadata.client_id_metadata_document_supported, true);
+
+    await runtime.close();
+  });
+
+  it("can run in CIMD-only mode without advertising dynamic registration", async () => {
+    const config = await createTestConfig();
+    config.registrationMode = "cimd";
+    config.registrationEndpoint = undefined;
+
+    const runtime = await initializeEmbeddedOidcRuntime(config);
+
+    assert.equal(runtime.oauthMetadata.client_id_metadata_document_supported, true);
+    assert.equal(runtime.oauthMetadata.registration_endpoint, undefined);
 
     await runtime.close();
   });
