@@ -15,6 +15,12 @@ import { initializeEmbeddedOidcRuntime } from "./embedded-oidc.js";
 import { initializeOAuthRuntime } from "./oauth.js";
 
 const MAX_BODY_SIZE = "1mb";
+const SAFE_UNAUTHENTICATED_MCP_METHODS = new Set([
+  "initialize",
+  "ping",
+  "tools/list",
+  "notifications/initialized",
+]);
 
 function logRequestEvent(event: string, details: Record<string, unknown>): void {
   process.stderr.write(`chatgpt-mcp:${event} ${JSON.stringify(details)}\n`);
@@ -39,6 +45,35 @@ function createRequestLogger(label: string) {
     });
 
     next();
+  };
+}
+
+function isSafeUnauthenticatedMcpRequest(body: unknown): boolean {
+  const messages = Array.isArray(body) ? body : [body];
+  if (messages.length === 0) {
+    return false;
+  }
+
+  return messages.every((message) => {
+    if (!message || typeof message !== "object") {
+      return false;
+    }
+
+    const method = "method" in message ? message.method : undefined;
+    return typeof method === "string" && SAFE_UNAUTHENTICATED_MCP_METHODS.has(method);
+  });
+}
+
+function createMcpAuthCompatibilityMiddleware(
+  authMiddleware: (req: Request, res: Response, next: NextFunction) => void,
+) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.header("authorization") && isSafeUnauthenticatedMcpRequest(req.body)) {
+      next();
+      return;
+    }
+
+    authMiddleware(req, res, next);
   };
 }
 
@@ -178,6 +213,13 @@ export async function startHttpServer(): Promise<void> {
     if (config.auth.provider === "embedded-oidc") {
       const oauth = await initializeEmbeddedOidcRuntime(config.auth);
       const issuerPath = new URL(config.auth.issuerUrl).pathname;
+      const mcpAuthMiddleware = createMcpAuthCompatibilityMiddleware(
+        requireBearerAuth({
+          verifier: oauth.verifier,
+          requiredScopes: oauth.requiredScopes,
+          resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(oauth.resourceServerUrl),
+        }),
+      );
 
       app.use(`${issuerPath}/authorize`, createRequestLogger("oauth_authorize"));
       app.use(`${issuerPath}/token`, createRequestLogger("oauth_token"));
@@ -196,11 +238,7 @@ export async function startHttpServer(): Promise<void> {
 
       app.all(
         config.mcpPath,
-        requireBearerAuth({
-          verifier: oauth.verifier,
-          requiredScopes: oauth.requiredScopes,
-          resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(oauth.resourceServerUrl),
-        }),
+        mcpAuthMiddleware,
         async (req, res, next) => {
           try {
             await handleMcpRequest(req, res, sessions);
@@ -211,6 +249,13 @@ export async function startHttpServer(): Promise<void> {
       );
     } else {
       const oauth = await initializeOAuthRuntime(config.auth);
+      const mcpAuthMiddleware = createMcpAuthCompatibilityMiddleware(
+        requireBearerAuth({
+          verifier: oauth.verifier,
+          requiredScopes: oauth.requiredScopes,
+          resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(oauth.resourceServerUrl),
+        }),
+      );
       app.use(
         mcpAuthMetadataRouter({
           oauthMetadata: oauth.oauthMetadata,
@@ -223,11 +268,7 @@ export async function startHttpServer(): Promise<void> {
 
       app.all(
         config.mcpPath,
-        requireBearerAuth({
-          verifier: oauth.verifier,
-          requiredScopes: oauth.requiredScopes,
-          resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(oauth.resourceServerUrl),
-        }),
+        mcpAuthMiddleware,
         async (req, res, next) => {
           try {
             await handleMcpRequest(req, res, sessions);
