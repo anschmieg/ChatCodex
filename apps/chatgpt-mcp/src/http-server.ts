@@ -16,6 +16,32 @@ import { initializeOAuthRuntime } from "./oauth.js";
 
 const MAX_BODY_SIZE = "1mb";
 
+function logRequestEvent(event: string, details: Record<string, unknown>): void {
+  process.stderr.write(`chatgpt-mcp:${event} ${JSON.stringify(details)}\n`);
+}
+
+function createRequestLogger(label: string) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const startedAt = Date.now();
+    const hasAuthorizationHeader = Boolean(req.header("authorization"));
+    const mcpSessionId = getSessionId(req);
+
+    res.on("finish", () => {
+      logRequestEvent(label, {
+        method: req.method,
+        path: req.path,
+        statusCode: res.statusCode,
+        durationMs: Date.now() - startedAt,
+        hasAuthorizationHeader,
+        mcpSessionId,
+        userAgent: req.header("user-agent"),
+      });
+    });
+
+    next();
+  };
+}
+
 function sendJson(
   res: Response,
   statusCode: number,
@@ -151,7 +177,12 @@ export async function startHttpServer(): Promise<void> {
   if (config.auth.mode === "oauth") {
     if (config.auth.provider === "embedded-oidc") {
       const oauth = await initializeEmbeddedOidcRuntime(config.auth);
-      app.use(new URL(config.auth.issuerUrl).pathname, oauth.router);
+      const issuerPath = new URL(config.auth.issuerUrl).pathname;
+
+      app.use(`${issuerPath}/authorize`, createRequestLogger("oauth_authorize"));
+      app.use(`${issuerPath}/token`, createRequestLogger("oauth_token"));
+      app.use(config.mcpPath, createRequestLogger("mcp"));
+      app.use(issuerPath, oauth.router);
 
       app.use(
         mcpAuthMetadataRouter({
