@@ -424,7 +424,43 @@ function createProvider(config: EmbeddedOidcAuthConfig, db: Database.Database): 
       },
     },
     jwks: config.jwks,
-    loadExistingGrant: async () => undefined,
+    loadExistingGrant: async (ctx: {
+      oidc: {
+        client?: { clientId: string };
+        provider: Provider;
+        result?: { consent?: { grantId?: string } };
+        session?: {
+          accountId?: string;
+          grantIdFor(clientId: string): string | undefined;
+        };
+      };
+    }) => {
+      const clientId = ctx.oidc.client?.clientId;
+      if (!clientId) {
+        return undefined;
+      }
+
+      const grantId =
+        ctx.oidc.result?.consent?.grantId ?? ctx.oidc.session?.grantIdFor(clientId);
+
+      if (grantId) {
+        return ctx.oidc.provider.Grant.find(grantId);
+      }
+
+      const accountId = ctx.oidc.session?.accountId;
+      if (!accountId) {
+        return undefined;
+      }
+
+      const grant = new ctx.oidc.provider.Grant({
+        accountId,
+        clientId,
+      });
+      grant.addOIDCScope("openid offline_access");
+      grant.addResourceScope(config.resourceServerUrl.href, config.scopesSupported.join(" "));
+      await grant.save();
+      return grant;
+    },
     pkce: {
       required: () => true,
     },
