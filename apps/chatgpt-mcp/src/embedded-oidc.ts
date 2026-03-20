@@ -350,7 +350,8 @@ function createAccount(accountId: string) {
 }
 
 function createProvider(config: EmbeddedOidcAuthConfig, db: Database.Database): Provider {
-  const interactionBasePath = new URL("./interaction/", config.issuerUrl).pathname.replace(/\/$/, "");
+  const issuerPath = config.issuerUrl.pathname.replace(/\/$/, "");
+  const interactionBasePath = `${issuerPath}/interaction`;
   const features = {
     devInteractions: {
       enabled: false,
