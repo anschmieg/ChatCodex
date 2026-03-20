@@ -41,6 +41,12 @@ function epochTime(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+function withOptionalTrailingSlash(url: URL): [string, string] {
+  const withSlash = url.href;
+  const withoutSlash = withSlash.endsWith("/") ? withSlash.slice(0, -1) : withSlash;
+  return [withSlash, withoutSlash];
+}
+
 function normalizeResource(value: unknown): URL | undefined {
   if (typeof value === "string") {
     return new URL(value);
@@ -222,7 +228,7 @@ async function verifyCloudflareAccessIdentity(
 
   const jwks = createRemoteJWKSet(new URL(CLOUDFLARE_CERTS_PATH, config.teamDomain));
   const { payload } = await jwtVerify(token, jwks, {
-    issuer: config.teamDomain.href,
+    issuer: withOptionalTrailingSlash(config.teamDomain),
     audience: config.audience,
   });
   const emailClaim = payload[config.emailClaim];
