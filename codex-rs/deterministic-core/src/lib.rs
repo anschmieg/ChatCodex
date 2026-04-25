@@ -6,6 +6,7 @@
 
 pub mod approval;
 pub mod approval_policy;
+pub mod hybrid_provider;
 pub mod file_read;
 pub mod git_diff;
 pub mod git_status;
@@ -34,3 +35,5 @@ pub mod run_staleness;
 pub mod run_triage;
 pub mod tests_run;
 pub mod workspace_summary;
+
+pub use hybrid_provider::{HybridConfig, HybridProviderKind, HybridProviderProfile};

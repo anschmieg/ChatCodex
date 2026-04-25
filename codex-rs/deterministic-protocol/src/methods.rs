@@ -63,6 +63,12 @@ pub enum Method {
     QueueViewDelete,
     QueueViewGet,
     QueueViewList,
+    // Phase 5: hybrid worker protocol
+    HybridWorkerPrepare,
+    HybridWorkerStart,
+    HybridWorkerGet,
+    HybridWorkerCancel,
+    HybridWorkerList,
 }
 
 impl Method {
@@ -123,6 +129,12 @@ impl Method {
             Self::QueueViewDelete => "queue_view.delete",
             Self::QueueViewGet => "queue_view.get",
             Self::QueueViewList => "queue_view.list",
+            // Phase 5: hybrid worker
+            Self::HybridWorkerPrepare => "hybrid.worker.prepare",
+            Self::HybridWorkerStart => "hybrid.worker.start",
+            Self::HybridWorkerGet => "hybrid.worker.get",
+            Self::HybridWorkerCancel => "hybrid.worker.cancel",
+            Self::HybridWorkerList => "hybrid.worker.list",
         }
     }
 
@@ -181,6 +193,12 @@ impl Method {
             "queue_view.delete" => Some(Self::QueueViewDelete),
             "queue_view.get" => Some(Self::QueueViewGet),
             "queue_view.list" => Some(Self::QueueViewList),
+            // Phase 5: hybrid worker
+            "hybrid.worker.prepare" => Some(Self::HybridWorkerPrepare),
+            "hybrid.worker.start" => Some(Self::HybridWorkerStart),
+            "hybrid.worker.get" => Some(Self::HybridWorkerGet),
+            "hybrid.worker.cancel" => Some(Self::HybridWorkerCancel),
+            "hybrid.worker.list" => Some(Self::HybridWorkerList),
             _ => None,
         }
     }
@@ -240,6 +258,12 @@ impl Method {
             Self::QueueViewDelete,
             Self::QueueViewGet,
             Self::QueueViewList,
+            // Phase 5: hybrid worker
+            Self::HybridWorkerPrepare,
+            Self::HybridWorkerStart,
+            Self::HybridWorkerGet,
+            Self::HybridWorkerCancel,
+            Self::HybridWorkerList,
         ]
     }
 }

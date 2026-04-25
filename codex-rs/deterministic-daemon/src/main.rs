@@ -15,10 +15,23 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "127.0.0.1:19280".to_string());
 
     let store = deterministic_daemon::persistence::Store::open(std::path::Path::new(&store_dir))?;
-    let state = Arc::new(deterministic_daemon::router::AppState { store });
+    let hybrid_config = deterministic_core::HybridConfig::load_from_env();
+    let state = Arc::new(deterministic_daemon::router::AppState {
+        store,
+        hybrid_config: hybrid_config.clone(),
+    });
+
+    if hybrid_config.is_enabled() {
+        tracing::info!(
+            "hybrid mode enabled; provider={} model={}",
+            hybrid_config.get_default_profile().map(|p| p.base_url.as_str()).unwrap_or("N/A"),
+            hybrid_config.get_default_profile().map(|p| p.model.as_str()).unwrap_or("N/A")
+        );
+    } else {
+        tracing::info!("hybrid mode disabled (default)");
+    }
 
     let app = deterministic_daemon::router::build_router(state);
-
     tracing::info!("deterministic daemon listening on {bind_addr}");
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     axum::serve(listener, app).await?;

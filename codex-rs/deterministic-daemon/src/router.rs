@@ -11,10 +11,12 @@ use std::sync::Arc;
 
 use crate::handlers;
 use crate::persistence::Store;
+use deterministic_core::HybridConfig;
 
 /// Shared application state.
 pub struct AppState {
     pub store: Store,
+    pub hybrid_config: HybridConfig,
 }
 
 /// Build the Axum router.
@@ -25,8 +27,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-async fn healthz() -> impl IntoResponse {
-    (StatusCode::OK, "ok")
+async fn healthz(state: State<Arc<AppState>>) -> impl IntoResponse {
+    let hybrid_enabled = state.hybrid_config.is_enabled();
+    let body = if hybrid_enabled {
+        "ok hybrid_enabled"
+    } else {
+        "ok"
+    };
+    (StatusCode::OK, body)
 }
 
 async fn rpc_handler(
@@ -115,7 +123,8 @@ mod tests {
     fn test_app() -> (Router, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
-        let state = Arc::new(AppState { store });
+        let hybrid_config = deterministic_core::HybridConfig::load_from_env();
+        let state = Arc::new(AppState { store, hybrid_config });
         (build_router(state), dir)
     }
 

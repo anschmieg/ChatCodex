@@ -72,6 +72,12 @@ pub fn dispatch(
         Method::QueueViewDelete => handle_queue_view_delete(params, store),
         Method::QueueViewGet => handle_queue_view_get(params, store),
         Method::QueueViewList => handle_queue_view_list(params, store),
+        // Phase 5: hybrid worker protocol (handlers live in deterministic-daemon)
+        Method::HybridWorkerPrepare => handle_hybrid_worker_prepare(params, store),
+        Method::HybridWorkerStart => handle_hybrid_worker_start(params, store),
+        Method::HybridWorkerGet => handle_hybrid_worker_get(params, store),
+        Method::HybridWorkerCancel => handle_hybrid_worker_cancel(params, store),
+        Method::HybridWorkerList => handle_hybrid_worker_list(params, store),
     }
 }
 
@@ -1752,6 +1758,161 @@ fn handle_queue_view_list(
         count,
     };
     Ok((serde_json::to_value(result)?, None))
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: hybrid worker handlers
+// ---------------------------------------------------------------------------
+
+use deterministic_protocol::{
+    HybridWorkerCancelParams, HybridWorkerCancelResult, HybridWorkerGetParams,
+    HybridWorkerListParams, HybridWorkerListResult, HybridWorkerPrepareParams,
+    HybridWorkerPrepareResult, HybridWorkerStartParams, HybridWorkerStartResult,
+    HybridWorkerStatus, HybridWorkerRun,
+};
+
+fn handle_hybrid_worker_prepare(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: HybridWorkerPrepareParams = serde_json::from_value(params)?;
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let parent = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    if parent.harness_mode != deterministic_protocol::HarnessMode::Hybrid {
+        anyhow::bail!(
+            "hybrid worker may only be started for runs with harness_mode='hybrid'; \
+             run '{}' has harness_mode='{}'",
+            p.run_id,
+            parent.harness_mode.as_str()
+        );
+    }
+
+    let worker_run_id = uuid::Uuid::new_v4().to_string();
+    let focus_paths = p.focus_paths.clone();
+    let focus_paths_json =
+        serde_json::to_string(&focus_paths).unwrap_or_else(|_| "[]".to_string());
+
+    // Build a deterministic prompt from parent run goal + worker task goal + focus paths.
+    let prompt = build_worker_prompt(&parent.user_goal, &p.task_goal, &focus_paths, &p.context_files);
+
+    let run = HybridWorkerRun {
+        worker_run_id: worker_run_id.clone(),
+        parent_run_id: p.run_id.clone(),
+        status: HybridWorkerStatus::Prepared,
+        provider_profile_id: "default".to_string(),
+        task_goal: p.task_goal.clone(),
+        focus_paths,
+        prompt,
+        proposed_edits: None,
+        summary: None,
+        failure_message: None,
+        created_at: now.clone(),
+        updated_at: now,
+        started_at: None,
+        completed_at: None,
+        cancel_requested: false,
+    };
+
+    store.save_worker_run(&run)?;
+    let result = HybridWorkerPrepareResult {
+        worker_run_id,
+        status: HybridWorkerStatus::Prepared,
+        recommended_next_action: "Worker run prepared. Call hybrid_start_worker_run to begin LLM execution.".to_string(),
+        recommended_tool: "hybrid_start_worker_run".to_string(),
+    };
+    Ok((serde_json::to_value(result)?, None))
+}
+
+fn handle_hybrid_worker_get(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: HybridWorkerGetParams = serde_json::from_value(params)?;
+    let worker = store
+        .get_worker_run(&p.worker_run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown worker run: {}", p.worker_run_id))?;
+    // hybrid.worker.get returns the worker run directly
+    Ok((serde_json::to_value(worker)?, None))
+}
+
+fn handle_hybrid_worker_start(
+    params: serde_json::Value,
+    _store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: HybridWorkerStartParams = serde_json::from_value(params)?;
+    let result = HybridWorkerStartResult {
+        worker_run_id: p.worker_run_id,
+        status: HybridWorkerStatus::Running,
+        summary: None,
+        proposed_edits: None,
+        failure_message: None,
+        recommended_next_action: "Worker execution placeholder — provider client not yet wired".to_string(),
+        recommended_tool: "hybrid_get_worker_run".to_string(),
+    };
+    Ok((serde_json::to_value(result)?, None))
+}
+
+fn handle_hybrid_worker_cancel(
+    params: serde_json::Value,
+    _store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: HybridWorkerCancelParams = serde_json::from_value(params)?;
+    let result = HybridWorkerCancelResult {
+        worker_run_id: p.worker_run_id,
+        status: HybridWorkerStatus::Cancelled,
+        cancel_requested: true,
+    };
+    Ok((serde_json::to_value(result)?, None))
+}
+
+fn handle_hybrid_worker_list(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: HybridWorkerListParams = serde_json::from_value(params)?;
+    let runs = store.list_worker_runs(&p.run_id, p.status)?;
+    let result = HybridWorkerListResult { worker_runs: runs };
+    Ok((serde_json::to_value(result)?, None))
+}
+
+/// Build a deterministic worker prompt from parent goal, task goal, focus paths, and context files.
+fn build_worker_prompt(
+    parent_goal: &str,
+    task_goal: &str,
+    focus_paths: &[String],
+    context_files: &[deterministic_protocol::HybridWorkerContextFile],
+) -> String {
+    use std::fmt::Write as _;
+    let mut prompt = String::new();
+    writeln!(&mut prompt, "# Parent Run Goal").unwrap();
+    writeln!(&mut prompt, "{}", parent_goal).unwrap();
+    writeln!(&mut prompt).unwrap();
+    writeln!(&mut prompt, "# Worker Task Goal").unwrap();
+    writeln!(&mut prompt, "{}", task_goal).unwrap();
+    if !focus_paths.is_empty() {
+        writeln!(&mut prompt).unwrap();
+        writeln!(&mut prompt, "# Focus Paths").unwrap();
+        for p in focus_paths {
+            writeln!(&mut prompt, "- {}", p).unwrap();
+        }
+    }
+    if !context_files.is_empty() {
+        writeln!(&mut prompt).unwrap();
+        writeln!(&mut prompt, "# Context Files").unwrap();
+        writeln!(&mut prompt, "(context files will be injected by the handler at start time)").unwrap();
+        for cf in context_files {
+            writeln!(&mut prompt, "- {}:{}:{}",
+                cf.path,
+                cf.start_line.map(|s| s.to_string()).unwrap_or_default(),
+                cf.end_line.map(|s| s.to_string()).unwrap_or_default()
+            ).unwrap();
+        }
+    }
+    prompt
 }
 
 // ---------------------------------------------------------------------------

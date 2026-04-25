@@ -2280,3 +2280,187 @@ impl fmt::Display for RunTriageBucket {
         f.write_str(s)
     }
 }
+
+#[cfg(test)]
+mod harness_mode_tests {
+    use super::*;
+
+    #[test]
+    fn parse_accepts_deterministic() {
+        assert_eq!(HarnessMode::parse("deterministic"), Some(HarnessMode::Deterministic));
+    }
+
+    #[test]
+    fn parse_accepts_hybrid() {
+        assert_eq!(HarnessMode::parse("hybrid"), Some(HarnessMode::Hybrid));
+    }
+
+    #[test]
+    fn parse_rejects_unknown() {
+        assert_eq!(HarnessMode::parse("unknown"), None);
+        assert_eq!(HarnessMode::parse(""), None);
+        assert_eq!(HarnessMode::parse("HYBRID"), None);
+    }
+
+    #[test]
+    fn as_str_roundtrips() {
+        for mode in [HarnessMode::Deterministic, HarnessMode::Hybrid] {
+            assert_eq!(HarnessMode::parse(mode.as_str()), Some(mode));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// hybrid.worker — Phase 5 worker run protocol
+// ---------------------------------------------------------------------------
+
+/// Status of a hybrid worker run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HybridWorkerStatus {
+    Prepared,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+impl HybridWorkerStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Prepared => "prepared",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "prepared" => Some(Self::Prepared),
+            "running" => Some(Self::Running),
+            "succeeded" => Some(Self::Succeeded),
+            "failed" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+}
+
+/// A single file context entry supplied to a worker run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HybridWorkerContextFile {
+    pub path: String,
+    #[serde(default)]
+    pub start_line: Option<u64>,
+    #[serde(default)]
+    pub end_line: Option<u64>,
+}
+
+/// Complete state for a hybrid worker run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HybridWorkerRun {
+    pub worker_run_id: String,
+    pub parent_run_id: String,
+    pub status: HybridWorkerStatus,
+    pub provider_profile_id: String,
+    pub task_goal: String,
+    #[serde(default)]
+    pub focus_paths: Vec<String>,
+    pub prompt: String,
+    pub proposed_edits: Option<Vec<super::PatchEdit>>,
+    pub summary: Option<String>,
+    pub failure_message: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub cancel_requested: bool,
+}
+
+// ---- hybrid.worker.prepare ----
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HybridWorkerPrepareParams {
+    pub run_id: String,
+    pub task_goal: String,
+    #[serde(default)]
+    pub focus_paths: Vec<String>,
+    #[serde(default)]
+    pub context_files: Vec<HybridWorkerContextFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HybridWorkerPrepareResult {
+    pub worker_run_id: String,
+    pub status: HybridWorkerStatus,
+    pub recommended_next_action: String,
+    pub recommended_tool: String,
+}
+
+// ---- hybrid.worker.start ----
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HybridWorkerStartParams {
+    pub worker_run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HybridWorkerStartResult {
+    pub worker_run_id: String,
+    pub status: HybridWorkerStatus,
+    pub summary: Option<String>,
+    pub proposed_edits: Option<Vec<super::PatchEdit>>,
+    pub failure_message: Option<String>,
+    pub recommended_next_action: String,
+    pub recommended_tool: String,
+}
+
+// ---- hybrid.worker.get ----
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HybridWorkerGetParams {
+    pub worker_run_id: String,
+}
+
+// ---- hybrid.worker.cancel ----
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HybridWorkerCancelParams {
+    pub worker_run_id: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HybridWorkerCancelResult {
+    pub worker_run_id: String,
+    pub status: HybridWorkerStatus,
+    pub cancel_requested: bool,
+}
+
+// ---- hybrid.worker.list ----
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HybridWorkerListParams {
+    pub run_id: String,
+    #[serde(default)]
+    pub status: Option<HybridWorkerStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HybridWorkerListResult {
+    pub worker_runs: Vec<HybridWorkerRun>,
+}

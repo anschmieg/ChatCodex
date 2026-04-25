@@ -178,6 +178,29 @@ impl Store {
         )
         .context("failed to create audit_trail table")?;
 
+        // Phase 5: hybrid worker runs table.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS hybrid_worker_runs (
+                worker_run_id      TEXT PRIMARY KEY,
+                parent_run_id     TEXT NOT NULL,
+                status            TEXT NOT NULL,
+                provider_profile_id TEXT NOT NULL,
+                task_goal         TEXT NOT NULL,
+                focus_paths       TEXT NOT NULL DEFAULT '[]',
+                prompt            TEXT NOT NULL,
+                proposed_edits    TEXT,
+                summary           TEXT,
+                failure_message   TEXT,
+                created_at        TEXT NOT NULL,
+                updated_at        TEXT NOT NULL,
+                started_at        TEXT,
+                completed_at      TEXT,
+                cancel_requested  INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (parent_run_id) REFERENCES runs(run_id)
+            );",
+        )
+        .context("failed to create hybrid_worker_runs table")?;
+
         Ok(())
     }
 
@@ -1078,6 +1101,190 @@ impl Store {
             }
         }
         Ok(map)
+    }
+
+    /// Persist a hybrid worker run (insert or replace).
+    pub fn save_worker_run(&self, run: &deterministic_protocol::HybridWorkerRun) -> Result<()> {
+        use deterministic_protocol::HybridWorkerRun;
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let focus_paths_json = serde_json::to_string(&run.focus_paths)
+            .context("failed to serialise worker focus_paths")?;
+        let proposed_edits_json: Option<String> = run
+            .proposed_edits
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .context("failed to serialise proposed_edits")?;
+        conn.execute(
+            "INSERT OR REPLACE INTO hybrid_worker_runs
+                (worker_run_id, parent_run_id, status, provider_profile_id,
+                 task_goal, focus_paths, prompt, proposed_edits, summary,
+                 failure_message, created_at, updated_at, started_at,
+                 completed_at, cancel_requested)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            rusqlite::params![
+                run.worker_run_id,
+                run.parent_run_id,
+                run.status.as_str(),
+                run.provider_profile_id,
+                run.task_goal,
+                focus_paths_json,
+                run.prompt,
+                proposed_edits_json,
+                run.summary,
+                run.failure_message,
+                run.created_at,
+                run.updated_at,
+                run.started_at,
+                run.completed_at,
+                if run.cancel_requested { 1 } else { 0 },
+            ],
+        )
+        .context("failed to save worker run")?;
+        Ok(())
+    }
+
+    /// Retrieve a hybrid worker run by ID.
+    pub fn get_worker_run(&self, worker_run_id: &str) -> Result<Option<deterministic_protocol::HybridWorkerRun>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT worker_run_id, parent_run_id, status, provider_profile_id,
+                        task_goal, focus_paths, prompt, proposed_edits, summary,
+                        failure_message, created_at, updated_at, started_at,
+                        completed_at, cancel_requested
+                 FROM hybrid_worker_runs WHERE worker_run_id = ?1",
+            )
+            .context("failed to prepare statement")?;
+
+
+        let mut rows = stmt
+            .query_map(rusqlite::params![worker_run_id], |row| {
+                let focus_paths_json: String = row.get(5)?;
+                let focus_paths: Vec<String> =
+                    serde_json::from_str(&focus_paths_json).unwrap_or_default();
+                let proposed_edits_json: Option<String> = row.get(7)?;
+                let proposed_edits: Option<Vec<deterministic_protocol::PatchEdit>> =
+                    proposed_edits_json
+                        .as_deref()
+                        .map(serde_json::from_str)
+                        .transpose()
+                        .unwrap_or(None);
+                let status_str: String = row.get(2)?;
+                let status = deterministic_protocol::HybridWorkerStatus::parse(&status_str)
+                    .unwrap_or(deterministic_protocol::HybridWorkerStatus::Prepared);
+                let cancel_requested: i64 = row.get(14)?;
+                Ok(deterministic_protocol::HybridWorkerRun {
+                    worker_run_id: row.get(0)?,
+                    parent_run_id: row.get(1)?,
+                    status,
+                    provider_profile_id: row.get(3)?,
+                    task_goal: row.get(4)?,
+                    focus_paths,
+                    prompt: row.get(6)?,
+                    proposed_edits,
+                    summary: row.get(8)?,
+                    failure_message: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                    started_at: row.get(12)?,
+                    completed_at: row.get(13)?,
+                    cancel_requested: cancel_requested != 0,
+                })
+            })
+            .context("failed to query worker run")?;
+
+        match rows.next() {
+            Some(Ok(run)) => Ok(Some(run)),
+            Some(Err(e)) => Err(anyhow::anyhow!("failed to read row: {e}")),
+            None => Ok(None),
+        }
+    }
+
+    /// List hybrid worker runs for a parent run ID, optionally filtered by status.
+    pub fn list_worker_runs(
+        &self,
+        parent_run_id: &str,
+        status_filter: Option<deterministic_protocol::HybridWorkerStatus>,
+    ) -> Result<Vec<deterministic_protocol::HybridWorkerRun>> {
+        use deterministic_protocol::{HybridWorkerRun, HybridWorkerStatus};
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        let sql = "SELECT worker_run_id, parent_run_id, status, provider_profile_id,
+                        task_goal, focus_paths, prompt, proposed_edits, summary,
+                        failure_message, created_at, updated_at, started_at,
+                        completed_at, cancel_requested
+                 FROM hybrid_worker_runs WHERE parent_run_id = ?1";
+        let sql_with_status = format!("{sql} AND status = ?2");
+
+        let mut runs = Vec::new();
+
+        if let Some(status) = status_filter {
+            let mut stmt = conn
+                .prepare(&sql_with_status)
+                .context("failed to prepare statement")?;
+            let rows = stmt.query_map(rusqlite::params![parent_run_id, status.as_str()], |row| {
+                Self::map_worker_row(row)
+            })?;
+            for row in rows {
+                runs.push(row.map_err(|e| anyhow::anyhow!("failed to read worker run row: {e}"))?);
+            }
+        } else {
+            let mut stmt = conn.prepare(sql).context("failed to prepare statement")?;
+            let rows = stmt.query_map(rusqlite::params![parent_run_id], |row| {
+                Self::map_worker_row(row)
+            })?;
+            for row in rows {
+                runs.push(row.map_err(|e| anyhow::anyhow!("failed to read worker run row: {e}"))?);
+            }
+        }
+        Ok(runs)
+    }
+
+    fn map_worker_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<deterministic_protocol::HybridWorkerRun> {
+        use deterministic_protocol::{HybridWorkerRun, HybridWorkerStatus, PatchEdit};
+        let focus_paths_json: String = row.get(5)?;
+        let focus_paths: Vec<String> = serde_json::from_str(&focus_paths_json).unwrap_or_default();
+        let proposed_edits_json: Option<String> = row.get(7)?;
+        let proposed_edits: Option<Vec<PatchEdit>> = proposed_edits_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .unwrap_or(None);
+        let status_str: String = row.get(2)?;
+        let status = HybridWorkerStatus::parse(&status_str)
+            .unwrap_or(HybridWorkerStatus::Prepared);
+        let cancel_requested: i64 = row.get(14)?;
+        Ok(HybridWorkerRun {
+            worker_run_id: row.get(0)?,
+            parent_run_id: row.get(1)?,
+            status,
+            provider_profile_id: row.get(3)?,
+            task_goal: row.get(4)?,
+            focus_paths,
+            prompt: row.get(6)?,
+            proposed_edits,
+            summary: row.get(8)?,
+            failure_message: row.get(9)?,
+            created_at: row.get(10)?,
+            updated_at: row.get(11)?,
+            started_at: row.get(12)?,
+            completed_at: row.get(13)?,
+            cancel_requested: cancel_requested != 0,
+        })
+    }
+
+    /// Mark cancel_requested = 1 on a worker run.
+    pub fn mark_worker_cancel_requested(&self, worker_run_id: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE hybrid_worker_runs SET cancel_requested = 1, updated_at = ?1
+             WHERE worker_run_id = ?2",
+            rusqlite::params![now, worker_run_id],
+        )
+        .context("failed to mark cancel_requested")?;
+        Ok(())
     }
 }
 
