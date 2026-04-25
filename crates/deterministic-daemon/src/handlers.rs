@@ -2162,13 +2162,22 @@ fn build_worker_prompt(
             "(context files will be injected by the handler at start time)"
         )
         .unwrap();
-        for cf in context_files {
+        for (i, cf) in context_files.iter().enumerate() {
+            // Build a unique, human-readable label per entry so duplicate paths
+            // with different line ranges are clearly distinguished in the prompt.
+            // Format: "path" (range L..R) [entry N]   e.g. "src/lib.rs" (L5..L10) [entry 1]
+            let range_label = match (cf.start_line, cf.end_line) {
+                (Some(s), Some(e)) => format!("L{s}..L{e}"),
+                (Some(s), None) => format!("L{s}.."),
+                (None, Some(e)) => format!("..L{e}"),
+                (None, None) => String::from("all lines"),
+            };
             writeln!(
                 &mut prompt,
-                "- {}:{}:{}",
+                "- \"{}\" ( {}) [entry {}]",
                 cf.path,
-                cf.start_line.map(|s| s.to_string()).unwrap_or_default(),
-                cf.end_line.map(|s| s.to_string()).unwrap_or_default()
+                range_label,
+                i + 1,
             )
             .unwrap();
         }

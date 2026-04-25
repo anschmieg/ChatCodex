@@ -615,3 +615,64 @@ fn approval_resolve_denied_clears_retryable_action() {
     );
     println!("[Approval] denied: retryable_action invalidated, is_valid=false");
 }
+
+// ---------------------------------------------------------------------------
+// Test 9: duplicate context file entries — same path, different ranges
+// ---------------------------------------------------------------------------
+
+#[test]
+fn prepare_with_duplicate_context_file_entries_both_labeled() {
+    let env = TestEnv::new();
+    env.store.save_run(&env.make_hybrid_run("r1")).unwrap();
+
+    // Two entries for the same path with different line ranges.
+    let duplicate_entries = vec![
+        deterministic_protocol::HybridWorkerContextFile {
+            path: "src/main.rs".into(),
+            start_line: Some(1),
+            end_line: Some(10),
+        },
+        deterministic_protocol::HybridWorkerContextFile {
+            path: "src/main.rs".into(),
+            start_line: Some(15),
+            end_line: Some(25),
+        },
+    ];
+
+    let (result, _) = dispatch(
+        Method::HybridWorkerPrepare,
+        serde_json::json!({
+            "runId": "r1",
+            "taskGoal": "add helper function",
+            "contextFiles": duplicate_entries
+        }),
+        &env.store,
+        &mock_hybrid_config(),
+    )
+    .unwrap();
+
+    let worker_id: &str = result.get("workerRunId").unwrap().as_str().unwrap();
+
+    // Retrieve the stored prompt and verify both entries appear with distinct labels.
+    let worker = env.store.get_worker_run(worker_id).unwrap().unwrap();
+    let prompt = worker.prompt;
+
+    // Entry 1 should be labeled with range L1..L10 and [entry 1]
+    assert!(
+        prompt.contains("\"src/main.rs\" ( L1..L10) [entry 1]"),
+        "entry 1 must appear with its range label; prompt:\n{prompt}"
+    );
+
+    // Entry 2 should be labeled with range L15..L25 and [entry 2]
+    assert!(
+        prompt.contains("\"src/main.rs\" ( L15..L25) [entry 2]"),
+        "entry 2 must appear with its range label; prompt:\n{prompt}"
+    );
+
+    // The entries must be distinguishable (not a silent overwrite).
+    // Count occurrences of the quoted path — there should be 2 (one per entry).
+    let count = prompt.matches("\"src/main.rs\"").count();
+    assert_eq!(count, 2, "prompt should contain path twice (once per entry); prompt:\n{prompt}");
+
+    println!("[Context] both entries appear in prompt with distinct range labels");
+}
