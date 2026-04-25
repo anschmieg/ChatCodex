@@ -20,7 +20,7 @@
 //! - appends a deterministic audit entry
 
 use anyhow::{bail, Result};
-use deterministic_protocol::{
+use deterministic_protocol::{HarnessMode, 
     RunAnnotateParams, RunAnnotateResult, RunState, LABEL_MAX_COUNT, LABEL_MAX_LEN,
     OPERATOR_NOTE_MAX_LEN,
 };
@@ -162,6 +162,7 @@ mod tests {
             due_date: None,
             blocked_by_run_ids: vec![],
             effort: None,
+            harness_mode: HarnessMode::Deterministic,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

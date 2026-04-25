@@ -13,7 +13,7 @@
 //! - An audit entry is appended by the daemon layer.
 
 use anyhow::{bail, Result};
-use deterministic_protocol::{
+use deterministic_protocol::{HarnessMode, 
     RunSetPriorityParams, RunSetPriorityResult, RunState, PRIORITY_REASON_MAX_LEN,
 };
 
@@ -102,6 +102,7 @@ mod tests {
             due_date: None,
             blocked_by_run_ids: vec![],
             effort: None,
+            harness_mode: HarnessMode::Deterministic,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

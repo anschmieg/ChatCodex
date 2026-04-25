@@ -42,6 +42,10 @@ AGENTS.override.md
 .jest/
 *.tsbuildinfo
 
+# runtime data (do not commit working state)
+apps/chatgpt-mcp/.data/
+codex-rs/runs/
+
 # logs
 *.log
 npm-debug.log*

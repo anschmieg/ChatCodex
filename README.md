@@ -1,60 +1,170 @@
-<p align="center"><code>npm i -g @openai/codex</code><br />or <code>brew install --cask codex</code></p>
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+# ChatCodex
 
----
+A deterministic coding harness control plane for ChatGPT with an optional **dual-mode architecture**.
 
-## Quickstart
+## What is this?
 
-### Installing and running Codex CLI
+ChatCodex provides a deterministic execution environment for ChatGPT-assisted coding tasks. It gives ChatGPT fine-grained tools (read file, search code, apply patch, run tests, etc.) while keeping all policy enforcement server-side.
 
-Install globally with your preferred package manager:
+The project has two operating modes:
 
-```shell
-# Install using npm
-npm install -g @openai/codex
+### Deterministic Mode (default)
+
+ChatGPT is the **only** LLM in the stack. The Rust daemon is purely deterministic — no model calls, no agent loops, no autonomous continuation. Every file write goes through `apply_patch` and every test execution goes through `run_tests`.
+
+### Hybrid Mode (opt-in)
+
+ChatGPT remains the orchestrator but may start **bounded implementation-worker runs** using a configured OpenAI-compatible external/local LLM. Workers return proposed patches only. ChatGPT reviews those patches and explicitly applies them through `apply_patch`.
+
+v1 supports OpenAI-compatible HTTP only (OpenAI API, Ollama with OpenAI-compatible endpoint, LM Studio, etc.). Anthropic is not implemented in v1.
+
+## Architecture
+
+```
+ChatGPT model
+  → MCP server (TypeScript, thin gateway)
+  → internal JSON-RPC
+  → deterministic Rust harness daemon
+  → filesystem / git / patch / tests / approvals / sandbox
+
+Hybrid mode extension (opt-in):
+  → optional OpenAI-compatible LLM provider
+  → workers return proposed patches only
+  → ChatGPT reviews → apply_patch → workspace
 ```
 
-```shell
-# Install using Homebrew
-brew install --cask codex
+### Key principles
+
+1. **ChatGPT is the only LLM in deterministic mode** — no backend model SDKs or API calls
+2. **Hybrid workers are bounded** — they produce proposed patches, not direct file mutations
+3. **Server-side policy enforcement** — approvals and restrictions are backend-owned
+4. **Thin TypeScript gateway** — validation, mapping, and formatting only
+
+## Repository structure
+
+```
+codex-rs/
+  deterministic-protocol/  # Shared types and method names
+  deterministic-core/      # Deterministic logic and policy
+  deterministic-daemon/    # HTTP JSON-RPC transport, SQLite persistence
+
+apps/chatgpt-mcp/          # TypeScript MCP gateway
+
+docs/                      # Architecture and contract documentation
 ```
 
-Then simply run `codex` to get started.
+## Quick start
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+### Prerequisites
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+- Rust 1.93.0 (pinned via `codex-rs/rust-toolchain.toml`)
+- Node.js 22+
+- npm
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+### Build and test (deterministic crates)
 
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+```bash
+cd codex-rs
+cargo build -p deterministic-protocol -p deterministic-core -p deterministic-daemon
+cargo test -p deterministic-protocol -p deterministic-core -p deterministic-daemon
+cargo clippy -p deterministic-protocol -p deterministic-core -p deterministic-daemon --all-targets -- -D warnings
+```
 
-</details>
+### TypeScript MCP gateway
 
-### Using Codex with your ChatGPT plan
+```bash
+cd apps/chatgpt-mcp
+npm ci
+npm run build
+npm test
+```
 
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Team, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+## Deterministic mode tools
 
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
+| Tool | Description |
+|------|-------------|
+| `codex_prepare_run` | Initialize a coding run with goal and plan |
+| `get_workspace_summary` | Workspace overview and detected tooling |
+| `read_file` | Read file contents with optional line ranges |
+| `git_status` | Working tree status |
+| `search_code` | Text/symbol search with snippets |
+| `apply_patch` | Apply patches (policy-gated) |
+| `run_tests` | Execute whitelisted test commands (policy-gated) |
+| `show_diff` | Diff summary or patch text |
+| `refresh_run_state` | Read-only run state snapshot |
+| `replan_run` | Deterministic rule-based replanning |
+| `approve_action` | Resolve pending approvals |
+| `list_runs` | List known runs with filtering |
+| `get_run_state` | Get authoritative current state |
+| `get_run_history` | Get audit trail for a run |
+| `preview_patch_policy` | Preview patch policy decision |
+| `preview_test_policy` | Preview test-run policy decision |
+| `finalize_run` | Close a run with structured outcome |
+| `reopen_run` | Reopen a finalized run |
+| `supersede_run` | Create a successor run |
+| `archive_run` | Archive a finalized run |
+| `unarchive_run` | Restore an archived run |
+| `annotate_run` | Attach labels/note to a run |
+| `pin_run` / `unpin_run` | Pin/unpin a run |
+| `snooze_run` / `unsnooze_run` | Snooze/unsnooze a run |
+| `set_run_priority` | Set run priority |
+| `assign_run_owner` | Assign/unassign run owner |
+| `set_run_due_date` | Set/clear run due date |
 
-## Docs
+## Hybrid mode tools (opt-in)
 
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
+Available when `CHATCODEX_HYBRID_ENABLED=true` and per-run `harnessMode: "hybrid"`:
 
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+| Tool | Description |
+|------|-------------|
+| `hybrid_prepare_worker_run` | Prepare a bounded worker run |
+| `hybrid_start_worker_run` | Start a worker (calls provider) |
+| `hybrid_get_worker_run` | Get worker status and proposed patches |
+| `hybrid_cancel_worker_run` | Cancel a prepared/running worker |
+| `hybrid_list_worker_runs` | List workers for a parent run |
+
+## Hybrid mode configuration
+
+```bash
+# Enable hybrid mode (disabled by default)
+CHATCODEX_HYBRID_ENABLED=true
+
+# Required: OpenAI-compatible endpoint
+CHATCODEX_HYBRID_PROVIDER_BASE_URL=http://127.0.0.1:11434/v1
+CHATCODEX_HYBRID_PROVIDER_MODEL=llama3
+
+# Optional
+CHATCODEX_HYBRID_PROVIDER_API_KEY_ENV=OLLAMA_API_KEY   # env var name for key
+CHATCODEX_HYBRID_PROVIDER_TIMEOUT_SECONDS=120
+CHATCODEX_HYBRID_PROVIDER_MAX_OUTPUT_TOKENS=8000
+CHATCODEX_HYBRID_PROVIDER_TEMPERATURE=0.2
+
+# Start the daemon
+cargo run -p deterministic-daemon
+```
+
+## Safety model
+
+### Hybrid workers are bounded
+
+- Workers receive a task goal and focus paths
+- Workers return `proposed_edits[]` — they never call `patch.apply`
+- ChatGPT reviews proposed edits and explicitly invokes `apply_patch`
+- Concurrency limits: max 3 global running workers, max 3 per parent run
+- Cancellation sets a flag but does not mutate workspace files
+
+### No hidden agent loops
+
+- The backend never owns planning or execution through an LLM
+- Forbidden tool/method names are checked at registration time
+- Deterministic crates cannot depend on model SDKs
+
+## Development
+
+See [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md) for local verification commands.
+
+See [docs/IMPLEMENTATION_PLAN_v2.md](./docs/IMPLEMENTATION_PLAN_v2.md) for the full dual-mode implementation plan.
+
+## License
+
+Apache-2.0 (see LICENSE)

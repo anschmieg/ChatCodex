@@ -1,7 +1,7 @@
 //! Handler logic for `run.prepare`.
 
 use anyhow::Result;
-use deterministic_protocol::{RunPolicy, RunPrepareParams, RunPrepareResult, RunState};
+use deterministic_protocol::{HarnessMode, RunPolicy, RunPrepareParams, RunPrepareResult, RunState};
 use uuid::Uuid;
 
 /// Create a new deterministic run.
@@ -97,6 +97,7 @@ pub fn prepare(params: &RunPrepareParams) -> Result<(RunPrepareResult, RunState)
         due_date: None,
         blocked_by_run_ids: vec![],
         effort: None,
+        harness_mode: params.harness_mode.unwrap_or(HarnessMode::Deterministic),
         created_at: now.clone(),
         updated_at: now,
     };
@@ -117,6 +118,7 @@ mod tests {
             focus_paths: vec![],
             mode: None,
             policy: None,
+            harness_mode: None,
         };
         let (result, state) = prepare(&params).unwrap();
         assert_eq!(result.status, "prepared");
@@ -135,6 +137,7 @@ mod tests {
             focus_paths: vec![],
             mode: None,
             policy: None,
+            harness_mode: None,
         };
         let (result, state) = prepare(&params).unwrap();
         let defaults = RunPolicy::default();
@@ -155,6 +158,7 @@ mod tests {
                 delete_requires_approval: Some(false),
                 ..Default::default()
             }),
+            harness_mode: None,
         };
         let (result, state) = prepare(&params).unwrap();
         assert_eq!(result.effective_policy.patch_edit_threshold, 20);
@@ -171,6 +175,7 @@ mod tests {
             focus_paths: vec!["lib/".to_string()],
             mode: None,
             policy: None,
+            harness_mode: None,
         };
         let (result, state) = prepare(&params).unwrap();
         assert_eq!(result.effective_policy.focus_paths, vec!["lib/"]);

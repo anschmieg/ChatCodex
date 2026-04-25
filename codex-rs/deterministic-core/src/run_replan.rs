@@ -6,7 +6,7 @@
 //! This is **rule-based only** — no LLM calls, no hidden planning loop.
 
 use anyhow::Result;
-use deterministic_protocol::{RunReplanParams, RunReplanResult, RunState};
+use deterministic_protocol::{HarnessMode, RunReplanParams, RunReplanResult, RunState};
 
 /// Deterministically replan a run.
 ///
@@ -214,6 +214,7 @@ mod tests {
             due_date: None,
             blocked_by_run_ids: vec![],
             effort: None,
+            harness_mode: HarnessMode::Deterministic,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

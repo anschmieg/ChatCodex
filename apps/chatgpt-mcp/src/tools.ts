@@ -111,6 +111,14 @@ export const REGISTERED_TOOL_NAMES = [
   "assign_run_owner",
   // Milestone 20: deterministic run due dates
   "set_run_due_date",
+  // Milestone 24/28: queue overview
+  "get_run_queue_overview",
+  // Milestone 29: queue view CRUD
+  "create_queue_view",
+  "update_queue_view",
+  "delete_queue_view",
+  "get_queue_view",
+  "list_queue_views",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -126,6 +134,7 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
         focusPaths: params.focusPaths ?? [],
         mode: params.mode,
         policy: params.policy,
+        harnessMode: params.harnessMode,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

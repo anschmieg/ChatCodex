@@ -92,7 +92,7 @@ pub fn assign_owner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deterministic_protocol::{RunPolicy, RunPriority};
+    use deterministic_protocol::{HarnessMode, RunPolicy, RunPriority};
 
     fn make_state(id: &str, status: &str) -> RunState {
         RunState {
@@ -131,6 +131,7 @@ mod tests {
             due_date: None,
             blocked_by_run_ids: vec![],
             effort: None,
+            harness_mode: HarnessMode::Deterministic,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         }

@@ -64,6 +64,10 @@ export const CodexPrepareRunInput = {
   policy: PolicyProfileInputSchema.optional().describe(
     "Optional per-run policy configuration. When omitted the daemon uses deterministic defaults.",
   ),
+  harnessMode: z.enum(["deterministic", "hybrid"]).optional().describe(
+    "Harness execution mode. 'deterministic' (default): ChatGPT is the only LLM. " +
+    "'hybrid': ChatGPT may orchestrate bounded worker LLM runs via OpenAI-compatible provider.",
+  ),
 };
 
 // ---------------------------------------------------------------

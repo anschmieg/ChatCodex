@@ -6,7 +6,7 @@
 //! preserves the full history of the original run.
 
 use anyhow::{bail, Result};
-use deterministic_protocol::{RunState, RunSupersedeParams, RunSupersedeResult};
+use deterministic_protocol::{HarnessMode, RunState, RunSupersedeParams, RunSupersedeResult};
 
 /// Supersede a finalized run by creating a new successor run.
 ///
@@ -90,6 +90,7 @@ pub fn supersede(
         due_date: None,
         blocked_by_run_ids: vec![],
         effort: None,
+        harness_mode: HarnessMode::Deterministic,
         created_at: now.clone(),
         updated_at: now.clone(),
     };
@@ -119,7 +120,7 @@ pub fn make_successor_run_id(original_run_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deterministic_protocol::{RunOutcome, RunPolicy};
+    use deterministic_protocol::{HarnessMode, RunOutcome, RunPolicy};
 
     fn make_active_state(run_id: &str) -> RunState {
         RunState {
@@ -158,6 +159,7 @@ mod tests {
             due_date: None,
             blocked_by_run_ids: vec![],
             effort: None,
+            harness_mode: HarnessMode::Deterministic,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

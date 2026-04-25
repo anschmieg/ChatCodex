@@ -5,7 +5,7 @@
 //! No LLM calls, no autonomous continuation.
 
 use anyhow::Result;
-use deterministic_protocol::{ApprovalResolveParams, ApprovalResolveResult, PendingApproval, RunState};
+use deterministic_protocol::{HarnessMode, ApprovalResolveParams, ApprovalResolveResult, PendingApproval, RunState};
 
 /// Create a pending approval and transition the run to `awaiting_approval`.
 ///
@@ -215,6 +215,7 @@ mod tests {
             due_date: None,
             blocked_by_run_ids: vec![],
             effort: None,
+            harness_mode: HarnessMode::Deterministic,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

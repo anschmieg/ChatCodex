@@ -151,6 +151,45 @@ impl RunPolicyInput {
 }
 
 // ---------------------------------------------------------------------------
+// HarnessMode — dual-mode execution control (Phase 3, IMPLEMENTATION_PLAN_v2)
+// ---------------------------------------------------------------------------
+
+/// Dual-mode execution mode for a run.
+///
+/// - `Deterministic`: ChatGPT is the only LLM. No hybrid worker calls.
+/// - `Hybrid`: ChatGPT orchestrates bounded worker LLM runs via OpenAI-compatible provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HarnessMode {
+    #[default]
+    Deterministic,
+    Hybrid,
+}
+
+impl HarnessMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Deterministic => "deterministic",
+            Self::Hybrid => "hybrid",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "deterministic" => Some(Self::Deterministic),
+            "hybrid" => Some(Self::Hybrid),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for HarnessMode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // run.prepare
 // ---------------------------------------------------------------------------
 
@@ -167,6 +206,10 @@ pub struct RunPrepareParams {
     /// When omitted the daemon uses deterministic defaults.
     #[serde(default)]
     pub policy: Option<RunPolicyInput>,
+    /// Harness mode for this run (Phase 3, IMPLEMENTATION_PLAN_v2).
+    /// When omitted defaults to `HarnessMode::Deterministic`.
+    #[serde(default)]
+    pub harness_mode: Option<HarnessMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -742,6 +785,9 @@ pub struct RunState {
     /// None means no estimate has been set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<RunEffort>,
+    /// Harness mode: deterministic (default) or hybrid (Phase 3, IMPLEMENTATION_PLAN_v2).
+    #[serde(default)]
+    pub harness_mode: HarnessMode,
     pub created_at: String,
     pub updated_at: String,
 }

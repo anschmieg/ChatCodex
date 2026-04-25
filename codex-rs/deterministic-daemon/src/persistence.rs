@@ -5,7 +5,7 @@
 //! access — unlike the previous JSON-file approach.
 
 use anyhow::{Context, Result};
-use deterministic_protocol::{ArchiveMetadata, PendingApproval, PinMetadata, ReopenMetadata, RetryableAction, RunAnnotation, RunEffort, RunHistoryEntry, RunOutcome, RunPolicy, RunPriority, RunState, RunSummary, SnoozeMetadata, UnarchiveMetadata};
+use deterministic_protocol::{HarnessMode, ArchiveMetadata, PendingApproval, PinMetadata, ReopenMetadata, RetryableAction, RunAnnotation, RunEffort, RunHistoryEntry, RunOutcome, RunPolicy, RunPriority, RunState, RunSummary, SnoozeMetadata, UnarchiveMetadata};
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
@@ -145,6 +145,8 @@ impl Store {
             ("runs", "blocked_by_run_ids", "TEXT NOT NULL DEFAULT '[]'"),
             // Milestone 24 columns
             ("runs", "effort", "TEXT"),
+            // Phase 3 columns
+            ("runs", "harness_mode", "TEXT NOT NULL DEFAULT 'deterministic'"),
         ];
 
         for (table, column, def) in migrations {
@@ -263,6 +265,8 @@ impl Store {
             .context("failed to serialise blocked_by_run_ids")?;
         // Milestone 24: persist effort as optional string.
         let effort_str: Option<&str> = state.effort.as_ref().map(|e| e.as_str());
+        // Phase 3: persist harness_mode as string.
+        let harness_mode_str = state.harness_mode.as_str();
         conn.execute(
             "INSERT OR REPLACE INTO runs
                 (run_id, workspace_id, user_goal, status, plan, current_step,
@@ -275,9 +279,9 @@ impl Store {
                  unarchive_metadata, annotation, pin_metadata,
                  is_snoozed, snooze_metadata, priority,
                  assignee, ownership_note, due_date, blocked_by_run_ids,
-                 effort,
+                 effort, harness_mode,
                  created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41)",
             rusqlite::params![
                 state.run_id,
                 state.workspace_id,
@@ -317,6 +321,7 @@ impl Store {
                 state.due_date,
                 blocked_by_run_ids_json,
                 effort_str,
+                harness_mode_str,
                 state.created_at,
                 state.updated_at,
             ],
@@ -341,7 +346,7 @@ impl Store {
                         unarchive_metadata, annotation, pin_metadata,
                         snooze_metadata, priority,
                         assignee, ownership_note, due_date, blocked_by_run_ids,
-                        effort,
+                        effort, harness_mode,
                         created_at, updated_at
                  FROM runs WHERE run_id = ?1",
             )
@@ -561,6 +566,11 @@ impl Store {
                 let effort_str: Option<String> = row.get(34)?;
                 let effort: Option<RunEffort> = effort_str.as_deref().and_then(RunEffort::parse);
 
+                // Phase 3: harness_mode — TEXT, default 'deterministic'.
+                let harness_mode_str: String = row.get(35)?;
+                let harness_mode = HarnessMode::parse(&harness_mode_str)
+                    .unwrap_or(HarnessMode::Deterministic);
+
                 Ok(RunState {
                     run_id: row.get(0)?,
                     workspace_id: row.get(1)?,
@@ -597,8 +607,9 @@ impl Store {
                     due_date,
                     blocked_by_run_ids,
                     effort,
-                    created_at: row.get(35)?,
-                    updated_at: row.get(36)?,
+                    harness_mode,
+                    created_at: row.get(36)?,
+                    updated_at: row.get(37)?,
                 })
             })
             .context("failed to query run")?;
@@ -1111,6 +1122,7 @@ mod tests {
             due_date: None,
             blocked_by_run_ids: vec![],
             effort: None,
+            harness_mode: HarnessMode::Deterministic,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

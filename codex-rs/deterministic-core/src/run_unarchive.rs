@@ -6,7 +6,7 @@
 //! outcome.  Only archived runs may be unarchived.
 
 use anyhow::{bail, Result};
-use deterministic_protocol::{RunState, RunUnarchiveParams, RunUnarchiveResult, UnarchiveMetadata};
+use deterministic_protocol::{HarnessMode, RunState, RunUnarchiveParams, RunUnarchiveResult, UnarchiveMetadata};
 
 /// Unarchive an archived run.
 ///
@@ -107,6 +107,7 @@ mod tests {
             due_date: None,
             blocked_by_run_ids: vec![],
             effort: None,
+            harness_mode: HarnessMode::Deterministic,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

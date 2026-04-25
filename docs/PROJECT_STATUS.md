@@ -472,3 +472,7 @@ docs/                    # Architecture and contract documentation
 ## Development Verification
 
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for local verification commands.
+
+
+> **Rust toolchain:** This project pins its Rust toolchain in `codex-rs/rust-toolchain.toml` (currently `1.93.0`).
+> Tests require this exact version. If Cargo reports edition 2024 unsupported errors, update your Rust toolchain.

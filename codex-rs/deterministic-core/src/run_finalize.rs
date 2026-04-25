@@ -5,7 +5,7 @@
 //! record.  No autonomous work is triggered.
 
 use anyhow::{bail, Result};
-use deterministic_protocol::{
+use deterministic_protocol::{HarnessMode, 
     RunFinalizeParams, RunFinalizeResult, RunOutcome, RunState, VALID_OUTCOME_KINDS,
 };
 
@@ -108,6 +108,7 @@ mod tests {
             due_date: None,
             blocked_by_run_ids: vec![],
             effort: None,
+            harness_mode: HarnessMode::Deterministic,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

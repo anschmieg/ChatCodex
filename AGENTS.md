@@ -2,7 +2,10 @@
 
 ## Mission
 
-This repository implements a **deterministic coding harness control plane for ChatGPT**.
+This repository implements a **deterministic coding harness control plane for ChatGPT** with an optional **dual-mode architecture**:
+
+- **Deterministic mode** (default): ChatGPT is the only LLM. The Rust daemon and MCP gateway stay deterministic and code-only. No model calls, no agent loops, no autonomous continuation.
+- **Hybrid mode** (opt-in): ChatGPT remains the orchestrator but may start bounded implementation-worker runs using a configured OpenAI-compatible external/local LLM. Workers return proposed patches only — ChatGPT explicitly applies changes through `apply_patch`.
 
 The required architecture is:
 
@@ -11,12 +14,23 @@ ChatGPT-hosted model
 → deterministic Rust harness daemon
 → filesystem / git / patch / test / approvals / sandbox
 
+Hybrid workers (when enabled) call an OpenAI-compatible endpoint but never write files directly.
+
 ## Absolute rules
 
-1. **The only LLM in the stack is ChatGPT.**
-   - Do not add any provider SDKs or model calls.
-   - Do not call OpenAI, Anthropic, Google, xAI, Ollama, or any other model provider.
+1. **The only LLM in deterministic mode is ChatGPT.**
+   - Do not add any provider SDKs or model calls in deterministic mode.
+   - Do not call OpenAI, Anthropic, Google, xAI, Ollama, or any other model provider in deterministic mode.
    - Do not create a hidden agent loop anywhere in the backend.
+
+2. **Hybrid mode is opt-in and worker-constrained.**
+   - Hybrid mode requires explicit server config (`CHATCODEX_HYBRID_ENABLED=true`) and per-run `harnessMode: "hybrid"`.
+   - Hybrid workers are bounded: they receive a task goal and return proposed patches.
+   - Hybrid workers never apply patches, run tests, commit, or mutate files directly.
+   - ChatGPT must explicitly invoke `apply_patch` and `run_tests` to make workspace changes.
+   - Workers return proposed edits only — all actual file writes go through `apply_patch`.
+
+   - v1 supports OpenAI-compatible HTTP only (not Anthropic). Ollama works through an OpenAI-compatible local endpoint when available.
 
 2. **Forbidden architecture**
    - ChatGPT must never call a coarse tool that causes Codex or another harness to continue its own agent loop.
@@ -53,6 +67,12 @@ ChatGPT-hosted model
    - `run_tests`
    - `show_diff`
    - `git_status`
+   - **Hybrid mode tools (opt-in):**
+     - `hybrid_prepare_worker_run`
+     - `hybrid_start_worker_run`
+     - `hybrid_get_worker_run`
+     - `hybrid_cancel_worker_run`
+     - `hybrid_list_worker_runs`
 
 5. **Internal daemon JSON-RPC surface**
    - `run.prepare`
@@ -66,6 +86,12 @@ ChatGPT-hosted model
    - `tests.run`
    - `git.diff`
    - `git.status`
+   - **Hybrid mode methods (opt-in):**
+     - `hybrid.worker.prepare`
+     - `hybrid.worker.start`
+     - `hybrid.worker.get`
+     - `hybrid.worker.cancel`
+     - `hybrid.worker.list`
 
 ## Scope for the first coding-agent task
 

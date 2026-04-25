@@ -5,7 +5,7 @@
 //! Reopening is audited, does not execute work, and preserves prior history.
 
 use anyhow::{bail, Result};
-use deterministic_protocol::{ReopenMetadata, RunReopenParams, RunReopenResult, RunState};
+use deterministic_protocol::{HarnessMode, ReopenMetadata, RunReopenParams, RunReopenResult, RunState};
 
 /// Reopen a finalized run so ChatGPT can continue working on it.
 ///
@@ -131,6 +131,7 @@ mod tests {
             due_date: None,
             blocked_by_run_ids: vec![],
             effort: None,
+            harness_mode: HarnessMode::Deterministic,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

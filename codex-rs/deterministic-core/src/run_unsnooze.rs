@@ -14,7 +14,7 @@
 //! - The unsnooze reason must be non-empty and at most `SNOOZE_REASON_MAX_LEN` characters.
 
 use anyhow::{bail, Result};
-use deterministic_protocol::{RunState, RunUnsnoozeParams, RunUnsnoozeResult, SNOOZE_REASON_MAX_LEN};
+use deterministic_protocol::{HarnessMode, RunState, RunUnsnoozeParams, RunUnsnoozeResult, SNOOZE_REASON_MAX_LEN};
 
 /// Unsnooze a run, clearing its snooze metadata.
 ///
@@ -94,6 +94,7 @@ mod tests {
             due_date: None,
             blocked_by_run_ids: vec![],
             effort: None,
+            harness_mode: HarnessMode::Deterministic,
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         }

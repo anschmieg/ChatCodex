@@ -6,7 +6,7 @@ This document provides practical guidance for developers working on the determin
 
 ### Prerequisites
 
-- Rust toolchain (latest stable)
+- Rust toolchain {{ required_rust_version | default("1.93.0") }} (see `codex-rs/rust-toolchain.toml`)
 - Node.js 22+
 - npm
 
@@ -31,12 +31,16 @@ cd codex-rs
 # Build
 cargo build -p deterministic-protocol -p deterministic-core -p deterministic-daemon
 
-# Test
+# Test  (requires Rust {{ required_rust_version | default("1.93.0") }} as specified in rust-toolchain.toml)
 cargo test -p deterministic-protocol -p deterministic-core -p deterministic-daemon -- --nocapture
 
 # Lint
 cargo clippy -p deterministic-protocol -p deterministic-core -p deterministic-daemon --all-targets -- -D warnings
 ```
+
+> **Note:** If Cargo reports that edition 2024 is unsupported, your local Rust toolchain is too old.
+> The project pins its toolchain in `codex-rs/rust-toolchain.toml`. If you use `rustup`, the
+> toolchain is activated automatically when you `cd` into the directory.
 
 ### TypeScript MCP Gateway
 
@@ -73,11 +77,13 @@ npm ci && npm run build && npm test
 
 When making changes, ensure you maintain these invariants:
 
-### 1. ChatGPT is the Only LLM
+### 1. ChatGPT is the Only LLM (in Deterministic Mode)
 
-- Do not add model provider SDKs (OpenAI, Anthropic, Google, etc.)
-- Do not make API calls to language models
-- Do not add hidden agent loops
+Deterministic mode: no model provider SDKs or API calls, no hidden agent loops.
+
+Hybrid mode (opt-in): ChatGPT orchestrates bounded worker LLM runs via configured OpenAI-compatible providers. Workers return proposed patches only — all actual file changes still go through `apply_patch`.
+
+Do not add Anthropic, OpenAI Direct, or other non-OpenAI-compatible provider integrations in v1.
 
 ### 2. Deterministic Backend
 
