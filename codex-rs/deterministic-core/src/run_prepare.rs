@@ -168,6 +168,34 @@ mod tests {
     }
 
     #[test]
+    fn prepare_defaults_to_deterministic() {
+        let params = RunPrepareParams {
+            workspace_id: "/tmp/ws".to_string(),
+            user_goal: "fix bug".to_string(),
+            focus_paths: vec![],
+            mode: None,
+            policy: None,
+            harness_mode: None,
+        };
+        let (_result, state) = prepare(&params).unwrap();
+        assert_eq!(state.harness_mode, HarnessMode::Deterministic);
+    }
+
+    #[test]
+    fn prepare_accepts_hybrid_mode() {
+        let params = RunPrepareParams {
+            workspace_id: "/tmp/ws".to_string(),
+            user_goal: "fix bug".to_string(),
+            focus_paths: vec![],
+            mode: None,
+            policy: None,
+            harness_mode: Some(HarnessMode::Hybrid),
+        };
+        let (_result, state) = prepare(&params).unwrap();
+        assert_eq!(state.harness_mode, HarnessMode::Hybrid);
+    }
+
+    #[test]
     fn prepare_copies_focus_paths_into_policy() {
         let params = RunPrepareParams {
             workspace_id: "/tmp/ws".to_string(),

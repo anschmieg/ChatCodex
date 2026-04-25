@@ -6,7 +6,7 @@
 //! preserves the full history of the original run.
 
 use anyhow::{bail, Result};
-use deterministic_protocol::{HarnessMode, RunState, RunSupersedeParams, RunSupersedeResult};
+use deterministic_protocol::{RunState, RunSupersedeParams, RunSupersedeResult};
 
 /// Supersede a finalized run by creating a new successor run.
 ///
@@ -90,7 +90,7 @@ pub fn supersede(
         due_date: None,
         blocked_by_run_ids: vec![],
         effort: None,
-        harness_mode: HarnessMode::Deterministic,
+        harness_mode: original_state.harness_mode,
         created_at: now.clone(),
         updated_at: now.clone(),
     };
@@ -433,5 +433,38 @@ mod tests {
         let id = make_successor_run_id("run-abc");
         assert!(id.starts_with("run-abc-successor-"));
         assert!(id.len() > "run-abc-successor-".len());
+    }
+
+    // -----------------------------------------------------------------------
+    // Successor inherits harness_mode from original run
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn supersede_inherits_harness_mode() {
+        let mut original = make_active_state("run-det");
+        finalize_state(&mut original, "completed");
+
+        let params = RunSupersedeParams {
+            run_id: "run-det".into(),
+            new_user_goal: None,
+            reason: "Continue with same mode".into(),
+        };
+        let (_result, successor) = supersede(&params, &mut original, "run-det-v2").unwrap();
+        assert_eq!(successor.harness_mode, HarnessMode::Deterministic);
+    }
+
+    #[test]
+    fn supersede_inherits_hybrid_harness_mode() {
+        let mut original = make_active_state("run-hyb");
+        original.harness_mode = HarnessMode::Hybrid;
+        finalize_state(&mut original, "completed");
+
+        let params = RunSupersedeParams {
+            run_id: "run-hyb".into(),
+            new_user_goal: None,
+            reason: "Continue in hybrid mode".into(),
+        };
+        let (_result, successor) = supersede(&params, &mut original, "run-hyb-v2").unwrap();
+        assert_eq!(successor.harness_mode, HarnessMode::Hybrid);
     }
 }

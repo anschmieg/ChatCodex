@@ -1368,6 +1368,72 @@ mod tests {
         assert_eq!(reloaded.warnings, vec!["caution"]);
     }
 
+    /// Verify that Hybrid harness_mode roundtrips correctly.
+    #[test]
+    fn roundtrip_hybrid_mode() {
+        let store = Store::open_in_memory().unwrap();
+
+
+        let mut state = make_run_state("r_hybrid", "prepared");
+        state.harness_mode = HarnessMode::Hybrid;
+        store.save_run(&state).unwrap();
+
+        let loaded = store.get_run("r_hybrid").unwrap().unwrap();
+        assert_eq!(loaded.harness_mode, HarnessMode::Hybrid);
+    }
+
+    /// Verify that opening an old database (pre-Phase-3, no harness_mode column)
+    /// defaults new rows to Deterministic, and that saving/loading a Hybrid run
+    /// roundtrips correctly even after a schema migration.
+    #[test]
+    fn migration_defaults_deterministic_and_roundtrips_hybrid() {
+        use rusqlite::Connection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("runs.db");
+
+        // Create a pre-Phase-3 schema (no harness_mode column).
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    run_id          TEXT PRIMARY KEY,
+                    workspace_id    TEXT NOT NULL,
+                    user_goal       TEXT NOT NULL,
+                    status          TEXT NOT NULL,
+                    plan            TEXT NOT NULL,
+                    current_step    INTEGER NOT NULL DEFAULT 0,
+                    created_at      TEXT NOT NULL,
+                    updated_at      TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+
+
+            conn.execute(
+                "INSERT INTO runs (run_id, workspace_id, user_goal, status, plan, current_step, created_at, updated_at)
+                 VALUES ('r_old', '/tmp/ws', 'fix bug', 'prepared', '[]', 0, '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(dir.path()).unwrap();
+
+        // Old row loads as Deterministic (migration default).
+        let loaded = store.get_run("r_old").unwrap().unwrap();
+        assert_eq!(loaded.harness_mode, HarnessMode::Deterministic);
+
+        // Save a Hybrid run after migration.
+        let mut hybrid = make_run_state("r_hybrid", "active");
+        hybrid.harness_mode = HarnessMode::Hybrid;
+        store.save_run(&hybrid).unwrap();
+
+        let reloaded = store.get_run("r_hybrid").unwrap().unwrap();
+        assert_eq!(reloaded.harness_mode, HarnessMode::Hybrid);
+    }
+
+
     /// Verify that opening a fresh database creates the full schema.
     #[test]
     fn fresh_database_has_full_schema() {

@@ -234,6 +234,12 @@ impl Method {
             Self::RunSetDependencies,
             // Milestone 24
             Self::RunsQueueOverview,
+            // Milestone 29
+            Self::QueueViewCreate,
+            Self::QueueViewUpdate,
+            Self::QueueViewDelete,
+            Self::QueueViewGet,
+            Self::QueueViewList,
         ]
     }
 }

@@ -95,3 +95,6 @@ CHANGELOG.ignore.md
 __pycache__/
 *.pyc
 
+
+# agent harness runtime state (transient, not project state)
+.pi/

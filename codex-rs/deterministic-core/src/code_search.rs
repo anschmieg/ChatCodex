@@ -35,11 +35,24 @@ pub fn search(params: &CodeSearchParams, workspace_root: &str) -> Result<CodeSea
 
     let max = params.max_results.unwrap_or(50);
 
-    let mut cmd = std::process::Command::new("grep");
-    cmd.arg("-rn");
+    // Prefer ripgrep if available, fall back to grep.
+    // ripgrep is faster, supports better filtering, and is commonly installed.
+    let searcher = if std::process::Command::new("rg").arg("--version").output().is_ok() {
+        "rg"
+    } else {
+        "grep"
+    };
+
+    let mut cmd = std::process::Command::new(searcher);
+    cmd.arg("-n");
+    if searcher == "rg" {
+        cmd.arg("--with-filename"); // rg uses --with-filename instead of -rn equivalent
+    } else {
+        cmd.arg("-r"); // grep needs -r for recursive
+    }
 
     if let Some(glob) = &params.path_glob {
-        cmd.arg("--include");
+        cmd.arg("-g");
         cmd.arg(glob);
     }
 
@@ -56,21 +69,39 @@ pub fn search(params: &CodeSearchParams, workspace_root: &str) -> Result<CodeSea
         if matches.len() >= max {
             break;
         }
-        // Format: ./path:linenum:content
+
+        // Strip "./" prefix that both rg and grep add
         let rest = line.strip_prefix("./").unwrap_or(line);
-        let mut parts = rest.splitn(3, ':');
-        if let (Some(file), Some(line_str), Some(snippet)) =
-            (parts.next(), parts.next(), parts.next())
-        {
-            // Skip binary files
-            if snippet == "Binary file matches" {
-                continue;
-            }
+
+        let (file_path, line_no, snippet) = if searcher == "rg" {
+            // ripgrep format: "path:line:rest of line"
+            // But path may contain ":" (Windows paths or paths with colons), so we split only on first 2 colons
+            let mut colon_iter = rest.split(':');
+            let file = colon_iter.next().unwrap_or("");
+            let line_str = colon_iter.next().unwrap_or("0");
             let line_no: u64 = line_str.parse().unwrap_or(0);
+            let snippet = colon_iter.collect::<Vec<_>>().join(":");
+            (file.to_string(), line_no, snippet)
+        } else {
+            // grep format: "path:linenum:content"
+            let mut parts = rest.splitn(3, ':');
+            let file = parts.next().unwrap_or("");
+            let line_str = parts.next().unwrap_or("0");
+            let line_no: u64 = line_str.parse().unwrap_or(0);
+            let snippet = parts.next().unwrap_or("");
+            (file.to_string(), line_no, snippet.to_string())
+        };
+
+        // Skip binary file matches
+        if snippet == "Binary file matches" {
+            continue;
+        }
+
+        if !file_path.is_empty() && !snippet.is_empty() {
             matches.push(CodeSearchMatch {
-                path: file.to_string(),
+                path: file_path,
                 line: line_no,
-                snippet: snippet.to_string(),
+                snippet,
             });
         }
     }
