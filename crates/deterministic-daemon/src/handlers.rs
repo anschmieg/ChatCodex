@@ -2,7 +2,11 @@
 
 use anyhow::Result;
 use chrono::Utc;
-use deterministic_core::{run_staleness::derive_staleness, run_triage::derive_triage};
+use deterministic_core::{
+    command_policy::CommandPolicy,
+    run_staleness::derive_staleness,
+    run_triage::derive_triage,
+};
 use deterministic_protocol::methods::Method;
 use deterministic_protocol::*;
 
@@ -27,7 +31,7 @@ pub fn dispatch(
         Method::GitStatus => handle_git_status(params, store),
         Method::CodeSearch => handle_code_search(params, store),
         Method::PatchApply => handle_patch_apply(params, store),
-        Method::TestsRun => handle_tests_run(params, store),
+        Method::TestsRun => handle_tests_run(params, store, &CommandPolicy::load(None)),
         Method::GitDiff => handle_git_diff(params, store),
         Method::ApprovalResolve => handle_approval_resolve(params, store),
         // Milestone 7: read-only history and state inspection
@@ -79,6 +83,8 @@ pub fn dispatch(
         Method::HybridWorkerGet => handle_hybrid_worker_get(params, store),
         Method::HybridWorkerCancel => handle_hybrid_worker_cancel(params, store),
         Method::HybridWorkerList => handle_hybrid_worker_list(params, store),
+        // Phase 9: hybrid patch approval gating
+        Method::HybridPatchSubmit => handle_hybrid_patch_submit(params, store),
     }
 }
 
@@ -308,8 +314,15 @@ fn handle_patch_apply(
 fn handle_tests_run(
     params: serde_json::Value,
     store: &Store,
+    command_policy: &CommandPolicy,
 ) -> Result<(serde_json::Value, Option<RunState>)> {
-    let p: TestsRunParams = serde_json::from_value(params)?;
+    let p: TestsRunParams = serde_json::from_value(params.clone())?;
+
+    // Phase 10: Enforce command policy before anything else.
+    if let Err(violation) = command_policy.validate_scope(&p.scope) {
+        anyhow::bail!("command policy rejected: {violation}");
+    }
+
     let ws = store
         .workspace_for_run(&p.run_id)?
         .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
@@ -755,6 +768,7 @@ fn handle_patch_preflight(
     let apply_params = PatchApplyParams {
         run_id: p.run_id,
         edits: p.edits,
+        ..Default::default()
     };
 
     let decision =
@@ -1841,6 +1855,7 @@ fn handle_hybrid_worker_prepare(
         started_at: None,
         completed_at: None,
         cancel_requested: false,
+        context_files: p.context_files.clone(),
     };
 
     store.save_worker_run(&run)?;
@@ -1994,6 +2009,114 @@ fn handle_hybrid_worker_list(
     Ok((serde_json::to_value(result)?, None))
 }
 
+// Phase 9: hybrid patch approval gating
+// Workers return proposed_edits. ChatGPT reviews and submits selected patches
+// via this handler. Creates a pending approval with skip_policy=true so that
+// ChatGPT's approval of the approval allows apply_patch to bypass policy.
+fn handle_hybrid_patch_submit(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: HybridPatchSubmitParams = serde_json::from_value(params)?;
+    let worker = store
+        .get_worker_run(&p.worker_run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown worker run: {}", p.worker_run_id))?;
+
+    // Only succeeded workers can have their patches submitted
+    if worker.status != HybridWorkerStatus::Succeeded {
+        anyhow::bail!(
+            "hybrid.patch.submit requires worker status 'succeeded', got '{}'",
+            worker.status.as_str()
+        );
+    }
+
+    let edits = worker.proposed_edits.ok_or_else(|| {
+        anyhow::anyhow!(
+            "worker run '{}' has no proposed_edits to submit",
+            p.worker_run_id
+        )
+    })?;
+
+    if p.patch_indices.is_empty() {
+        anyhow::bail!("patch_indices must not be empty");
+    }
+
+    // Validate indices
+    let max_idx = edits.len().saturating_sub(1);
+    for idx in &p.patch_indices {
+        if *idx >= edits.len() {
+            anyhow::bail!(
+                "patch index {idx} out of range (only {} edits available)",
+                edits.len()
+            );
+        }
+    }
+
+    // Extract the selected patches (preserving order)
+    let mut selected = Vec::with_capacity(p.patch_indices.len());
+    for idx in &p.patch_indices {
+        selected.push(edits[*idx].clone());
+    }
+
+    // Build a synthetic PatchApplyParams for the approval + retryable_action
+    let apply_params = PatchApplyParams {
+        run_id: p.run_id.clone(),
+        edits: selected.clone(),
+        skip_policy: true,
+        ..Default::default()
+    };
+    let payload_json = serde_json::to_string(&apply_params)
+        .ok()
+        .ok_or_else(|| anyhow::anyhow!("failed to serialize patch params"))?;
+
+    // Create pending approval
+    let mut state = store
+        .get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?;
+
+    let approval = deterministic_core::approval::create_approval(
+        &mut state,
+        &format!("{} hybrid patch(es) submitted for approval", p.patch_indices.len()),
+        &format!(
+            "Worker '{}' proposed {} edit(s); ChatGPT selected {} for approval",
+            p.worker_run_id,
+            edits.len(),
+            p.patch_indices.len()
+        ),
+        &"Submitted via hybrid.patch.submit for ChatGPT review and approval",
+    );
+    state.retryable_action = Some(build_retryable_action(
+        "patch.apply",
+        &format!("{} hybrid patch(es) pending approval", p.patch_indices.len()),
+        Some(payload_json),
+        "skip_policy=true (pre-approved by ChatGPT via hybrid.patch.submit)",
+        "patch.apply",
+    ));
+
+    store.save_approval(&approval)?;
+    store.save_run(&state)?;
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        "hybrid_patch_submit",
+        &format!(
+            "Submitted {} patch(es) from worker '{}' for approval",
+            p.patch_indices.len(),
+            p.worker_run_id
+        ),
+        None,
+    );
+
+    Ok((
+        serde_json::to_value(HybridPatchSubmitResult {
+            approval_ids: vec![approval.approval_id.clone()],
+            submitted_count: p.patch_indices.len(),
+            summary: format!("{} patch(es) submitted from worker '{}' for approval", p.patch_indices.len(), p.worker_run_id),
+            recommended_next_action: "Call approve_action to approve or deny the pending approval, then apply_patch to apply approved patches".to_string(),
+        })?,
+        Some(state),
+    ))
+}
+
 fn ensure_hybrid_enabled(
     hybrid_config: &deterministic_core::HybridConfig,
 ) -> Result<&deterministic_core::HybridProviderProfile> {
@@ -2071,7 +2194,18 @@ mod tests {
         super::dispatch(method, params, store, &disabled_hybrid_config())
     }
 
+    /// Route TestsRun to handle_tests_run with a custom command policy.
+    /// All other methods go through normal dispatch (which uses default policy).
+    fn dispatch_tests_run(
+        params: serde_json::Value,
+        store: &Store,
+        policy: &deterministic_core::command_policy::CommandPolicy,
+    ) -> Result<(serde_json::Value, Option<RunState>)> {
+        handle_tests_run(params, store, policy)
+    }
+
     use crate::persistence::Store;
+    use deterministic_core::command_policy::{CommandPolicy, CommandPolicyMode};
     use deterministic_protocol::{
         RunPolicy, RunPriority, RunSetDependenciesResult, RunsListResult,
     };
@@ -4839,5 +4973,183 @@ mod tests {
             &store,
         );
         assert!(result.is_err());
+    }
+
+    // ----------------------------------------------------------------
+    // Phase 10: test command policy safety
+    // ----------------------------------------------------------------
+
+    fn make_test_params(run_id: &str, scope: &str) -> serde_json::Value {
+        serde_json::json!({
+            "runId": run_id,
+            "scope": scope,
+            "reason": "Phase 10 test",
+            "target": serde_json::Value::Null
+        })
+    }
+
+    #[test]
+    fn tests_run_rejects_unknown_scope_by_default_policy() {
+        let store = Store::open_in_memory().unwrap();
+        let (val, _) = dispatch(Method::RunPrepare, serde_json::json!({
+            "workspaceId": "/tmp/test_ws",
+            "userGoal": "fix",
+            "focusPaths": []
+        }), &store).unwrap();
+        let run_id: String = serde_json::from_value::<RunPrepareResult>(val).unwrap().run_id;
+
+        // "rm -rf /" is not a whitelisted scope — should be rejected
+        let err = dispatch_tests_run(
+            make_test_params(&run_id, "rm -rf /"),
+            &store,
+            &CommandPolicy::default(),
+        ).unwrap_err();
+        assert!(err.to_string().contains("not whitelisted"),
+            "unknown scope should be rejected: {err}");
+    }
+
+    #[test]
+    fn tests_run_rejects_empty_scope() {
+        let store = Store::open_in_memory().unwrap();
+        let (val, _) = dispatch(Method::RunPrepare, serde_json::json!({
+            "workspaceId": "/tmp/test_ws",
+            "userGoal": "fix",
+            "focusPaths": []
+        }), &store).unwrap();
+        let run_id: String = serde_json::from_value::<RunPrepareResult>(val).unwrap().run_id;
+
+        let err = dispatch_tests_run(
+            serde_json::json!({
+                "runId": run_id,
+                "scope": "",
+                "reason": "test",
+                "target": serde_json::Value::Null
+            }),
+            &store,
+            &CommandPolicy::default(),
+        ).unwrap_err();
+        assert!(
+            err.to_string().contains("not whitelisted")
+                || err.to_string().to_lowercase().contains("empty"),
+            "empty scope should be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn tests_run_rejects_shell_metacharacters_in_scope() {
+        let store = Store::open_in_memory().unwrap();
+        let (val, _) = dispatch(Method::RunPrepare, serde_json::json!({
+            "workspaceId": "/tmp/test_ws",
+            "userGoal": "fix",
+            "focusPaths": []
+        }), &store).unwrap();
+        let run_id: String = serde_json::from_value::<RunPrepareResult>(val).unwrap().run_id;
+
+        // Scopes with shell metacharacters are not whitelisted
+        for bad_scope in &[
+            "cargo; rm -rf /",
+            "npm | cat /etc/passwd",
+            "pytest & echo pwned",
+            "make $(malicious)",
+        ] {
+            let err = dispatch_tests_run(
+                make_test_params(&run_id, bad_scope),
+                &store,
+                &CommandPolicy::default(),
+            ).unwrap_err();
+            assert!(err.to_string().contains("not whitelisted"),
+                "scope '{bad_scope}' should be rejected: {err}");
+        }
+    }
+
+    #[test]
+    fn tests_run_known_frameworks_pass_default_policy() {
+        let store = Store::open_in_memory().unwrap();
+        let (val, _) = dispatch(Method::RunPrepare, serde_json::json!({
+            "workspaceId": "/tmp/test_ws",
+            "userGoal": "fix",
+            "focusPaths": []
+        }), &store).unwrap();
+        let run_id: String = serde_json::from_value::<RunPrepareResult>(val).unwrap().run_id;
+
+        // Known frameworks (cargo, npm, pytest, make) should pass command policy
+        // They may fail later (workspace not found, test execution fails) but
+        // NOT at the command policy layer with "not whitelisted"
+        for known_scope in &["cargo", "npm", "pytest", "make"] {
+            let err = dispatch_tests_run(
+                make_test_params(&run_id, known_scope),
+                &store,
+                &CommandPolicy::default(),
+            ).unwrap_err();
+            assert!(
+                !err.to_string().contains("not whitelisted"),
+                "known scope '{known_scope}' must not be rejected at policy layer: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn tests_run_allow_all_policy_passes_any_scope() {
+        let store = Store::open_in_memory().unwrap();
+        let (val, _) = dispatch(Method::RunPrepare, serde_json::json!({
+            "workspaceId": "/tmp/test_ws",
+            "userGoal": "fix",
+            "focusPaths": []
+        }), &store).unwrap();
+        let run_id: String = serde_json::from_value::<RunPrepareResult>(val).unwrap().run_id;
+
+        let allow_all = CommandPolicy {
+            mode: CommandPolicyMode::AllowAll,
+            ..Default::default()
+        };
+
+        // With allow_all policy, "anything" passes command policy check.
+        // It may fail later (workspace not found) but NOT at policy layer.
+        let err = dispatch_tests_run(
+            make_test_params(&run_id, "anything"),
+            &store,
+            &allow_all,
+        ).unwrap_err();
+        assert!(
+            !err.to_string().contains("not whitelisted"),
+            "allow_all policy should not reject any scope: {err}"
+        );
+    }
+
+    #[test]
+    fn tests_run_deny_mode_blocks_listed() {
+        let store = Store::open_in_memory().unwrap();
+        let (val, _) = dispatch(Method::RunPrepare, serde_json::json!({
+            "workspaceId": "/tmp/test_ws",
+            "userGoal": "fix",
+            "focusPaths": []
+        }), &store).unwrap();
+        let run_id: String = serde_json::from_value::<RunPrepareResult>(val).unwrap().run_id;
+
+        let deny_custom = CommandPolicy {
+            mode: CommandPolicyMode::Deny,
+            denied_scopes: ["dangerous_scope"].iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+
+        // "dangerous_scope" should be blocked by deny policy
+        let err = dispatch_tests_run(
+            make_test_params(&run_id, "dangerous_scope"),
+            &store,
+            &deny_custom,
+        ).unwrap_err();
+        assert!(err.to_string().contains("explicitly denied"),
+            "deny policy should reject blocked scope: {err}");
+
+        // "cargo" is not in the deny list, so it should pass policy
+        let err2 = dispatch_tests_run(
+            make_test_params(&run_id, "cargo"),
+            &store,
+            &deny_custom,
+        ).unwrap_err();
+        assert!(
+            !err2.to_string().contains("denied") && !err2.to_string().contains("not whitelisted"),
+            "unlisted scope should not be blocked by deny policy: {err2}"
+        );
     }
 }

@@ -239,7 +239,7 @@ fn validate_edit(edit: &PatchEdit) -> Result<(), String> {
 pub fn worker_system_prompt() -> String {
     r#"You are a code-editing assistant. Produce exactly one JSON object with an "edits" field containing an array of patch edit objects. Each edit must have this structure:
 {
-  "path": "/absolute/file/path",
+  "path": "relative/file/path",
   "operation": "replace|insert|delete",
   "startLine": <number or null>,
   "endLine": <number or null>,
@@ -249,12 +249,13 @@ pub fn worker_system_prompt() -> String {
 
 Rules:
 - Only emit JSON. No markdown fences, no commentary, no explanation.
-- Use absolute paths for all files.
+- Use repo-relative paths only. Do not use absolute paths.
 - "operation": "replace" requires startLine, endLine, oldText, and newText.
 - "operation": "insert" requires startLine (insert after) and newText.
 - "operation": "delete" requires startLine and endLine.
 - If no edits are needed, return { "edits": [] }.
-- All file paths must be valid absolute paths."#.to_string()
+- All file paths must stay inside the workspace and must not contain `..` traversal."#
+        .to_string()
 }
 
 #[cfg(test)]
@@ -266,6 +267,15 @@ mod tests {
         let prompt = worker_system_prompt();
         assert!(!prompt.is_empty());
         assert!(prompt.contains("edits"));
+        assert!(prompt.contains("repo-relative"));
+        assert!(!prompt.contains("/absolute/file/path"));
+    }
+
+    #[test]
+    fn system_prompt_matches_validation_rules() {
+        let prompt = worker_system_prompt();
+        assert!(prompt.contains("Do not use absolute paths"));
+        assert!(prompt.contains("must not contain `..` traversal"));
     }
 
     #[test]
