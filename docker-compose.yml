@@ -1,0 +1,107 @@
+version: "3.9"
+
+# ChatCodex — combined or split deployment
+#
+#   Combined (daemon + gateway in one container):
+#     docker compose up
+#
+#   Split (daemon and gateway as separate containers):
+#     docker compose -f docker-compose.split.yml up
+#
+#   Split with remote MCP gateway accessible from browser:
+#     daemon-host=host.docker.internal on Linux, or
+#     daemon-host=host.docker.internal on Mac
+#     docker compose -f docker-compose.split.yml up -d gateway
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Combined stack (daemon + HTTP gateway in one container)
+  # ---------------------------------------------------------------------------
+  chatcodex:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chatcodex/chatcodex:latest
+    container_name: chatcodex
+    restart: unless-stopped
+    ports:
+      - "19280:19280"   # daemon RPC
+      - "3000:3000"     # MCP HTTP gateway
+    volumes:
+      # Persist run state across restarts
+      - chatcodex-data:/data
+      # Mount local workspace for file access
+      - ${WORKSPACE_DIR:-.}:/workspace
+    environment:
+      DETERMINISTIC_BIND: "0.0.0.0:19280"
+      DETERMINISTIC_STORE_DIR: "/data"
+      DETERMINISTIC_DAEMON_URL: "http://127.0.0.1:19280"
+      MCP_TRANSPORT: "http"
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      # Uncomment to enable hybrid mode:
+      # CHATCODEX_HYBRID_ENABLED: "true"
+      # CHATCODEX_HYBRID_PROVIDER_URL: "http://host.docker.internal:11434/v1"
+      # CHATCODEX_HYBRID_MODEL: "qwen2.5-coder"
+    volumes_from:
+      - chatcodex-data
+
+  # ---------------------------------------------------------------------------
+  # Split deployment: Rust daemon only
+  # ---------------------------------------------------------------------------
+  daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chatcodex/daemon:latest
+    container_name: chatcodex-daemon
+    restart: unless-stopped
+    ports:
+      - "19280:19280"
+    volumes:
+      - chatcodex-data:/data
+      - ${WORKSPACE_DIR:-.}:/workspace
+    environment:
+      DETERMINISTIC_BIND: "0.0.0.0:19280"
+      DETERMINISTIC_STORE_DIR: "/data"
+      DETERMINISTIC_WORKSPACE_ROOT: "/workspace"
+      # Hybrid mode (optional):
+      # CHATCODEX_HYBRID_ENABLED: "true"
+      # CHATCODEX_HYBRID_PROVIDER_URL: "http://localhost:11434/v1"
+      # CHATCODEX_HYBRID_MODEL: "qwen2.5-coder"
+    command: ["/app/deterministic-daemon"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19280/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - split
+
+  # ---------------------------------------------------------------------------
+  # Split deployment: Node.js MCP HTTP gateway only
+  # ---------------------------------------------------------------------------
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chatcodex/gateway:latest
+    container_name: chatcodex-gateway
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DETERMINISTIC_DAEMON_URL: "http://daemon:19280"
+      MCP_TRANSPORT: "http"
+      PORT: "3000"
+      HOST: "0.0.0.0"
+    depends_on:
+      daemon:
+        condition: service_healthy
+    profiles:
+      - split
+
+volumes:
+  chatcodex-data:
+    name: chatcodex-data

@@ -17,6 +17,7 @@ use deterministic_core::HybridConfig;
 pub struct AppState {
     pub store: Store,
     pub hybrid_config: HybridConfig,
+    pub workspace_root: Option<String>,
 }
 
 /// Build the Axum router.
@@ -28,12 +29,28 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 }
 
 async fn healthz(state: State<Arc<AppState>>) -> impl IntoResponse {
-    let hybrid_enabled = state.hybrid_config.is_enabled();
-    let body = if hybrid_enabled {
-        "ok hybrid_enabled"
-    } else {
-        "ok"
+    #[derive(serde::Serialize)]
+    struct HealthzResponse {
+        status: &'static str,
+        version: &'static str,
+        daemon: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workspace_root: Option<String>,
+        hybrid_enabled: bool,
+        timestamp: String,
+    }
+
+    let ws_root = state.workspace_root.clone();
+    let response = HealthzResponse {
+        status: "ok",
+        version: "0.1.0",
+        daemon: "ok",
+        workspace_root: ws_root,
+        hybrid_enabled: state.hybrid_config.is_enabled(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
     };
+
+    let body = serde_json::to_string(&response).unwrap_or_else(|_| String::from("{\"status\":\"ok\"}"));
     (StatusCode::OK, body)
 }
 
@@ -127,6 +144,7 @@ mod tests {
         let state = Arc::new(AppState {
             store,
             hybrid_config,
+            workspace_root: None,
         });
         (build_router(state), dir)
     }

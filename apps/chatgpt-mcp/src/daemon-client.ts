@@ -85,9 +85,15 @@ export class DaemonClient {
       "http://127.0.0.1:19280";
   }
 
-  async healthz(): Promise<boolean> {
-    const resp = await fetch(`${this.baseUrl}/healthz`);
-    return resp.ok;
+  /** Returns the parsed daemon healthz JSON response, or null if unreachable. */
+  async healthz(): Promise<object | null> {
+    try {
+      const resp = await fetch(`${this.baseUrl}/healthz`);
+      if (!resp.ok) return null;
+      return await resp.json() as object;
+    } catch {
+      return null;
+    }
   }
 
   async call<T = unknown>(

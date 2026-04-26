@@ -95,10 +95,14 @@ function sendText(
 }
 
 async function handleHealthz(res: Response, daemonClient: DaemonClient): Promise<void> {
-  const daemonOk = await daemonClient.healthz().catch(() => false);
-  if (daemonOk) {
-    sendJson(res, 200, { status: "ok" });
-    return;
+  try {
+    const daemonHealth = await daemonClient.healthz();
+    if (daemonHealth) {
+      sendJson(res, 200, daemonHealth);
+      return;
+    }
+  } catch {
+    // fall through to degraded
   }
 
   sendJson(res, 503, {

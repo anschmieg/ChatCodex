@@ -13,12 +13,14 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "/tmp/deterministic-daemon".to_string());
     let bind_addr =
         std::env::var("DETERMINISTIC_BIND").unwrap_or_else(|_| "127.0.0.1:19280".to_string());
+    let workspace_root = std::env::var("DETERMINISTIC_WORKSPACE_ROOT").ok();
 
     let store = deterministic_daemon::persistence::Store::open(std::path::Path::new(&store_dir))?;
     let hybrid_config = deterministic_core::HybridConfig::load_from_env();
     let state = Arc::new(deterministic_daemon::router::AppState {
         store,
         hybrid_config: hybrid_config.clone(),
+        workspace_root,
     });
 
     if hybrid_config.is_enabled() {
