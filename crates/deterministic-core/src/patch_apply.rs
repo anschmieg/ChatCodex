@@ -1,7 +1,7 @@
 //! Handler logic for `patch.apply`.
 
 use anyhow::{Context, Result};
-use deterministic_protocol::{PatchApplyParams, PatchApplyResult, PatchEdit};
+use deterministic_protocol::{PatchApplyParams, PatchApplyResult};
 use std::path::Path;
 
 /// Apply a set of edits to files in the workspace.

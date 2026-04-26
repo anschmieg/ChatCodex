@@ -7,7 +7,7 @@
 //! instead of being hardcoded constants.  Callers pass the effective policy
 //! for the current run so that custom thresholds and target lists apply.
 
-use deterministic_protocol::{PatchApplyParams, PatchEdit, RunPolicy, TestsRunParams};
+use deterministic_protocol::{PatchApplyParams, RunPolicy, TestsRunParams};
 
 /// Outcome of a policy evaluation.
 #[derive(Debug, Clone, PartialEq)]

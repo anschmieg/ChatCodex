@@ -2042,7 +2042,7 @@ fn handle_hybrid_patch_submit(
     }
 
     // Validate indices
-    let max_idx = edits.len().saturating_sub(1);
+    let _max_idx = edits.len().saturating_sub(1);
     for idx in &p.patch_indices {
         if *idx >= edits.len() {
             anyhow::bail!(
