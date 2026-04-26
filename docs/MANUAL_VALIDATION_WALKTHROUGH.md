@@ -38,7 +38,6 @@ git commit -m "initial"
 ### Step 1: Verify Daemon
 
 ```bash
-cd codex-rs
 ./target/release/deterministic-daemon --port 3100 --data-dir ./runs &
 curl http://localhost:3100/healthz
 ```

@@ -22,7 +22,7 @@ git pull --ff-only || ABORT=1
 
 echo "[4/8] Verify Rust build/test/lint"
 (
-  cd /Users/adrian/Projects/ChatCodex/codex-rs &&
+  cd /Users/adrian/Projects/ChatCodex &&
   cargo build -p deterministic-protocol -p deterministic-core -p deterministic-daemon &&
   cargo test -p deterministic-protocol -p deterministic-core -p deterministic-daemon -- --nocapture &&
   cargo clippy -p deterministic-protocol -p deterministic-core -p deterministic-daemon --all-targets -- -D warnings
@@ -40,9 +40,9 @@ echo "[6/8] Re-run invariant greps"
 (
   cd /Users/adrian/Projects/ChatCodex &&
   grep -RInE 'turn/start|turn/steer|review/start|codex\(|codex-reply\(|continue_run|resume_thread|resume_codex_thread|agent_step|fix_end_to_end' \
-    codex-rs/deterministic-* apps/chatgpt-mcp/src .github/workflows || true
+    crates/deterministic-* apps/chatgpt-mcp/src .github/workflows || true
   grep -RInE 'openai|anthropic|gemini|ollama|xai|responses api|chat completions|model provider' \
-    codex-rs/deterministic-* apps/chatgpt-mcp || true
+    crates/deterministic-* apps/chatgpt-mcp || true
 ) || ABORT=1
 
 echo "[7/8] Merge/delete branch if everything passed"

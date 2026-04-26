@@ -22,7 +22,7 @@ export MCP_TRANSPORT="${MCP_TRANSPORT:-http}"
 export HOST="${HOST:-0.0.0.0}"
 export PORT="${PORT:-3000}"
 
-/app/codex-rs/target/release/deterministic-daemon &
+/app/target/release/deterministic-daemon &
 daemon_pid=$!
 
 cleanup() {

@@ -1,9 +1,9 @@
 packages:
-  - codex-cli
-  - codex-rs/responses-api-proxy/npm
-  - sdk/typescript
-  - shell-tool-mcp
   - apps/chatgpt-mcp
+  - vendor/codex/codex-cli
+  - vendor/codex/codex-rs/responses-api-proxy/npm
+  - vendor/codex/sdk/typescript
+  - vendor/codex/shell-tool-mcp
 
 ignoredBuiltDependencies:
   - esbuild

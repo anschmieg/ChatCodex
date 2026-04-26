@@ -6,19 +6,21 @@ This document provides practical guidance for developers working on the determin
 
 ### Prerequisites
 
-- Rust toolchain {{ required_rust_version | default("1.93.0") }} (see `codex-rs/rust-toolchain.toml`)
+- Rust toolchain {{ required_rust_version | default("1.93.0") }} (see `rust-toolchain.toml`)
 - Node.js 22+
 - npm
 
 ### Repository Structure
 
 ```
-codex-rs/
+crates/
   deterministic-protocol/   # Shared DTOs and method names
   deterministic-core/       # Deterministic logic, policy, handlers
   deterministic-daemon/     # HTTP JSON-RPC transport, SQLite persistence
 
 apps/chatgpt-mcp/           # TypeScript MCP gateway
+
+vendor/codex/               # Pristine upstream Codex snapshot
 ```
 
 ## Local Verification
@@ -26,7 +28,6 @@ apps/chatgpt-mcp/           # TypeScript MCP gateway
 ### Rust Deterministic Crates
 
 ```bash
-cd codex-rs
 
 # Build
 cargo build -p deterministic-protocol -p deterministic-core -p deterministic-daemon
@@ -39,7 +40,7 @@ cargo clippy -p deterministic-protocol -p deterministic-core -p deterministic-da
 ```
 
 > **Note:** If Cargo reports that edition 2024 is unsupported, your local Rust toolchain is too old.
-> The project pins its toolchain in `codex-rs/rust-toolchain.toml`. If you use `rustup`, the
+> The project pins its toolchain in `rust-toolchain.toml`. If you use `rustup`, the
 > toolchain is activated automatically when you `cd` into the directory.
 
 ### TypeScript MCP Gateway
@@ -63,13 +64,12 @@ Run all checks:
 
 ```bash
 # Rust
-cd codex-rs
 cargo build -p deterministic-protocol -p deterministic-core -p deterministic-daemon
 cargo test -p deterministic-protocol -p deterministic-core -p deterministic-daemon -- --nocapture
 cargo clippy -p deterministic-protocol -p deterministic-core -p deterministic-daemon --all-targets -- -D warnings
 
 # TypeScript
-cd ../apps/chatgpt-mcp
+cd apps/chatgpt-mcp
 npm ci && npm run build && npm test
 ```
 
@@ -115,9 +115,9 @@ Risky operations must be gated by the approval policy:
 ## Adding a New MCP Tool
 
 1. **Define the contract** in `docs/MCP_TOOL_CONTRACTS.md`
-2. **Add types** in `codex-rs/deterministic-protocol/src/types.rs`
-3. **Add method** in `codex-rs/deterministic-protocol/src/methods.rs` (if new internal method)
-4. **Implement handler** in `codex-rs/deterministic-core/src/` or `deterministic-daemon/src/handlers.rs`
+2. **Add types** in `crates/deterministic-protocol/src/types.rs`
+3. **Add method** in `crates/deterministic-protocol/src/methods.rs` (if new internal method)
+4. **Implement handler** in `crates/deterministic-core/src/` or `deterministic-daemon/src/handlers.rs`
 5. **Add schema** in `apps/chatgpt-mcp/src/schemas.ts`
 6. **Register tool** in `apps/chatgpt-mcp/src/tools.ts`
 7. **Update tests** as needed
@@ -146,7 +146,6 @@ When adding new columns:
 ### Rust Tests
 
 ```bash
-cd codex-rs
 cargo test -p deterministic-core -- --nocapture
 cargo test -p deterministic-daemon -- --nocapture
 ```
@@ -172,7 +171,6 @@ The CI workflow (`.github/workflows/milestone-deterministic.yml`) runs:
 The daemon logs to stderr. When running locally:
 
 ```bash
-cd codex-rs
 cargo run -p deterministic-daemon -- --data-dir /tmp/daemon-data
 ```
 

@@ -712,6 +712,117 @@ export const ListQueueViewsInput = {
 };
 
 // ---------------------------------------------------------------
+// Phase 9: Hybrid Patch Approval Gating
+// ---------------------------------------------------------------
+
+/** Input schema for `hybrid_submit_proposed_patches`. */
+export const HybridSubmitProposedPatchesInput = {
+  runId: z
+    .string()
+    .describe(
+      "Parent run ID that owns the hybrid worker. The parent run must have harness_mode='hybrid'.",
+    ),
+  workerRunId: z
+    .string()
+    .describe(
+      "Worker run ID whose proposed patches should be submitted for approval." +
+        " The worker must be in 'succeeded' status.",
+    ),
+  patchIndices: z
+    .array(z.number().int().nonnegative())
+    .describe(
+      "Zero-based indices into the worker run's proposed_edits array." +
+        " Only patches at these indices will be submitted for approval.",
+    ),
+};
+
+// ---------------------------------------------------------------
+// Hybrid Worker Tool Schemas (Phase 8)
+//
+// These tools expose the hybrid.worker.* RPC methods.
+// Hybrid workers are bounded: they receive a task goal and return
+// proposed edits only. ChatGPT remains the orchestrator and must
+// explicitly call apply_patch to apply any edits.
+//
+// No tool in this section applies patches, runs tests, commits, or
+// mutates files directly.
+// ---------------------------------------------------------------
+
+/** Input schema for `hybrid_prepare_worker_run`. */
+export const HybridPrepareWorkerRunInput = {
+  runId: z
+    .string()
+    .describe(
+      "Parent run ID (must have harness_mode='hybrid'). The parent run's goal is used as context for the worker task.",
+    ),
+  taskGoal: z
+    .string()
+    .describe(
+      "The specific task goal for this worker to accomplish. This is a focused, bounded sub-task derived from the parent run's goal.",
+    ),
+  focusPaths: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Optional paths the worker should focus on. Relative to the workspace root.",
+    ),
+  contextFiles: z
+    .array(
+      z.object({
+        path: z.string().describe("Path to the file (relative to workspace root)."),
+        startLine: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Start line (1-indexed)."),
+        endLine: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("End line (1-indexed, inclusive)."),
+      }),
+    )
+    .optional()
+    .describe(
+      "Optional context files to inject into the worker's prompt. Each entry specifies a file path and optional line range.",
+    ),
+};
+
+/** Input schema for `hybrid_start_worker_run`. */
+export const HybridStartWorkerRunInput = {
+  workerRunId: z
+    .string()
+    .describe(
+      "Worker run ID returned by hybrid_prepare_worker_run. The worker must be in 'prepared' status.",
+    ),
+};
+
+/** Input schema for `hybrid_get_worker_run`. */
+export const HybridGetWorkerRunInput = {
+  workerRunId: z.string().describe("Worker run ID to retrieve."),
+};
+
+/** Input schema for `hybrid_cancel_worker_run`. */
+export const HybridCancelWorkerRunInput = {
+  workerRunId: z.string().describe("Worker run ID to cancel."),
+  reason: z
+    .string()
+    .optional()
+    .describe("Optional reason for cancellation (for audit trail)."),
+};
+
+/** Input schema for `hybrid_list_worker_runs`. */
+export const HybridListWorkerRunsInput = {
+  runId: z.string().describe("Parent run ID to list workers for."),
+  status: z
+    .enum(["prepared", "running", "succeeded", "failed", "cancelled"])
+    .optional()
+    .describe("Optional status filter."),
+};
+
+// ---------------------------------------------------------------
 // Queue View Schemas (Milestone 29)
 // ---------------------------------------------------------------
 

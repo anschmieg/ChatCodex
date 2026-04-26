@@ -47,6 +47,7 @@ import {
   DeleteQueueViewInput,
   GetQueueViewInput,
   ListQueueViewsInput,
+  HybridSubmitProposedPatchesInput,
 } from "./schemas.js";
 
 /**
@@ -119,6 +120,14 @@ export const REGISTERED_TOOL_NAMES = [
   "delete_queue_view",
   "get_queue_view",
   "list_queue_views",
+  // Phase 8: hybrid worker tools
+  "hybrid_prepare_worker_run",
+  "hybrid_start_worker_run",
+  "hybrid_get_worker_run",
+  "hybrid_cancel_worker_run",
+  "hybrid_list_worker_runs",
+  // Phase 9: hybrid patch approval gating
+  "hybrid_submit_proposed_patches",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -750,6 +759,38 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
+
+  // ----------------------------------------------------------------
+  // Phase 9: Hybrid Patch Approval Gating
+  //
+  // Workers never call patch.apply directly.  ChatGPT reviews a worker's
+  // proposed_edits and calls this tool to submit selected patches for
+  // approval.  On approval, ChatGPT calls apply_patch which re-evaluates
+  // policy with skip_policy=true and applies the patches.
+  // ----------------------------------------------------------------
+
+  // ---- hybrid_submit_proposed_patches ----
+  server.tool(
+    "hybrid_submit_proposed_patches",
+    "Submit a hybrid worker's proposed patches for approval. " +
+      "The worker must be in 'succeeded' status. " +
+      "On success, one or more pending approvals are created. " +
+      "ChatGPT must call approve_action to approve or deny each approval. " +
+      "On approval, call apply_patch to apply the approved patches. " +
+      "Workers never call apply_patch directly.",
+    HybridSubmitProposedPatchesInput,
+    async (params) => {
+      const result = await client.call("hybrid.patch.submit", {
+        run_id: params.runId,
+        worker_run_id: params.workerRunId,
+        patch_indices: params.patchIndices,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
     },
   );
 }

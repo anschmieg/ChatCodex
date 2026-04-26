@@ -163,7 +163,7 @@ Legend:
 
 ### Rust Daemon Tests
 
-Location: `codex-rs/deterministic-daemon/src/tests.rs` (or adjacent test modules)
+Location: `crates/deterministic-daemon/src/tests.rs` (or adjacent test modules)
 
 Priority tests:
 1. **Lifecycle integration**: prepare → refresh → finalize

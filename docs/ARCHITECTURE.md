@@ -39,32 +39,40 @@ Hybrid mode extension (opt-in):
 
 v1: OpenAI-compatible HTTP only (covers OpenAI, Ollama OpenAI-compatible endpoints, LM Studio, etc.). Anthropic not implemented in v1.
 
-## Why fork upstream Codex
+## How we use upstream Codex
 
-We are preserving deterministic harness semantics from upstream Codex where useful:
+ChatCodex is not a product fork of Codex. Upstream Codex source is vendored under
+`vendor/codex/` as a pristine, updateable snapshot. We preserve deterministic
+harness semantics from upstream Codex where useful:
 - workspace concepts
 - instruction layering
 - sandbox ideas
 - diff and patch mechanics
 - approvals and state concepts
 
-We are **not** preserving:
+We are **not** preserving or patching vendored upstream code for:
 - model ownership
 - turn generation
 - review generation
 - Codex-as-agent APIs
 
+If borrowed behavior needs customization, ChatCodex implements that customization
+in first-party adapters under `crates/` or copies the minimal code with
+attribution and treats it as first-party from then on.
+
 ## Repository structure
 
-- `codex-rs/`
-  - upstream crates remain present
-  - add:
-    - `deterministic-protocol`
-    - `deterministic-core`
-    - `deterministic-daemon`
+- `crates/`
+  - `deterministic-protocol`
+  - `deterministic-core`
+  - `deterministic-daemon`
 
 - `apps/chatgpt-mcp/`
   - TypeScript MCP gateway
+
+- `vendor/codex/`
+  - pristine upstream Codex snapshot
+  - no ChatCodex product patches
 
 ## Rust crates
 

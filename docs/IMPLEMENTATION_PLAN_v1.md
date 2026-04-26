@@ -17,9 +17,9 @@ Acceptance:
 ## Milestone 1: deterministic Rust daemon skeleton
 
 Create crates:
-- `codex-rs/deterministic-protocol`
-- `codex-rs/deterministic-core`
-- `codex-rs/deterministic-daemon`
+- `crates/deterministic-protocol`
+- `crates/deterministic-core`
+- `crates/deterministic-daemon`
 
 Implement:
 - request/response types

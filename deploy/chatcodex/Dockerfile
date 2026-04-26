@@ -19,7 +19,7 @@ COPY . .
 WORKDIR /app/apps/chatgpt-mcp
 RUN npm ci && npm run build
 
-WORKDIR /app/codex-rs
+WORKDIR /app
 RUN cargo build --release -p deterministic-daemon
 
 FROM rust:1.92.0-bookworm

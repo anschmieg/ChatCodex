@@ -85,13 +85,12 @@ cd ChatCodex
 ### 2. Build the Rust Daemon
 
 ```bash
-cd codex-rs
 cargo build --release
 ```
 
 The daemon binary will be at:
 ```
-codex-rs/target/release/deterministic-daemon
+target/release/deterministic-daemon
 ```
 
 ### 3. Build the MCP Gateway
@@ -109,7 +108,6 @@ npm run build
 The daemon is an HTTP JSON-RPC server:
 
 ```bash
-cd codex-rs
 ./target/release/deterministic-daemon --port 3100 --data-dir ./runs
 ```
 

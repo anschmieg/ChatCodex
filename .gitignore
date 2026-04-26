@@ -12,10 +12,11 @@ dist/
 bazel-*
 build/
 out/
+target/
 storybook-static/
 
 # ignore README for publishing
-codex-cli/README.md
+vendor/codex/codex-cli/README.md
 
 # ignore Nix derivation results
 result
@@ -44,7 +45,8 @@ AGENTS.override.md
 
 # runtime data (do not commit working state)
 apps/chatgpt-mcp/.data/
-codex-rs/runs/
+crates/deterministic-daemon/runs/
+vendor/codex/codex-rs/runs/
 
 # logs
 *.log

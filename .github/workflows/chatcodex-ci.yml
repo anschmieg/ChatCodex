@@ -1,0 +1,50 @@
+name: ChatCodex CI
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - "crates/**"
+      - "apps/chatgpt-mcp/**"
+      - ".github/workflows/chatcodex-ci.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - "crates/**"
+      - "apps/chatgpt-mcp/**"
+      - ".github/workflows/chatcodex-ci.yml"
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.0"
+          components: clippy
+      - run: cargo metadata --no-deps
+      - run: cargo test -p deterministic-protocol -p deterministic-core -p deterministic-daemon
+      - run: cargo clippy -p deterministic-protocol -p deterministic-core -p deterministic-daemon --all-targets -- -D warnings
+
+  mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/chatgpt-mcp/package-lock.json
+      - working-directory: apps/chatgpt-mcp
+        run: npm ci
+      - working-directory: apps/chatgpt-mcp
+        run: npm run build
+      - working-directory: apps/chatgpt-mcp
+        run: npm run typecheck
+      - working-directory: apps/chatgpt-mcp
+        run: npm test

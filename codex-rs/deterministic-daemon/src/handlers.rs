@@ -16,6 +16,7 @@ pub fn dispatch(
     method: Method,
     params: serde_json::Value,
     store: &Store,
+    hybrid_config: &deterministic_core::HybridConfig,
 ) -> Result<(serde_json::Value, Option<RunState>)> {
     match method {
         Method::RunPrepare => handle_run_prepare(params, store),
@@ -73,8 +74,8 @@ pub fn dispatch(
         Method::QueueViewGet => handle_queue_view_get(params, store),
         Method::QueueViewList => handle_queue_view_list(params, store),
         // Phase 5: hybrid worker protocol (handlers live in deterministic-daemon)
-        Method::HybridWorkerPrepare => handle_hybrid_worker_prepare(params, store),
-        Method::HybridWorkerStart => handle_hybrid_worker_start(params, store),
+        Method::HybridWorkerPrepare => handle_hybrid_worker_prepare(params, store, hybrid_config),
+        Method::HybridWorkerStart => handle_hybrid_worker_start(params, store, hybrid_config),
         Method::HybridWorkerGet => handle_hybrid_worker_get(params, store),
         Method::HybridWorkerCancel => handle_hybrid_worker_cancel(params, store),
         Method::HybridWorkerList => handle_hybrid_worker_list(params, store),
@@ -1774,6 +1775,7 @@ use deterministic_protocol::{
 fn handle_hybrid_worker_prepare(
     params: serde_json::Value,
     store: &Store,
+    hybrid_config: &deterministic_core::HybridConfig,
 ) -> Result<(serde_json::Value, Option<RunState>)> {
     let p: HybridWorkerPrepareParams = serde_json::from_value(params)?;
     let now = chrono::Utc::now().to_rfc3339();
@@ -1841,7 +1843,8 @@ fn handle_hybrid_worker_get(
 
 fn handle_hybrid_worker_start(
     params: serde_json::Value,
-    _store: &Store,
+    store: &Store,
+    hybrid_config: &deterministic_core::HybridConfig,
 ) -> Result<(serde_json::Value, Option<RunState>)> {
     let p: HybridWorkerStartParams = serde_json::from_value(params)?;
     let result = HybridWorkerStartResult {
@@ -1919,6 +1922,12 @@ fn build_worker_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Test helpers
+    fn disabled_hybrid_config() -> deterministic_core::HybridConfig {
+        deterministic_core::HybridConfig::load_from_env()
+    }
+
     use crate::persistence::Store;
     use deterministic_protocol::{RunPolicy, RunPriority, RunSetDependenciesResult, RunsListResult};
 
@@ -1977,7 +1986,7 @@ mod tests {
             "runId": "r_pf_1",
             "edits": [{ "path": "src/main.rs", "operation": "replace", "newText": "fn main(){}" }]
         });
-        let (val, run_state) = dispatch(Method::PatchPreflight, params, &store).unwrap();
+        let (val, run_state) = dispatch(Method::PatchPreflight, params, &store, &disabled_hybrid_config()).unwrap();
         let result: PreflightResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.decision, PreflightDecision::Proceed);
         assert!(result.action_summary.is_none());
@@ -1997,7 +2006,7 @@ mod tests {
             "runId": "r_pf_2",
             "edits": [{ "path": "src/lib.rs", "operation": "delete", "newText": "" }]
         });
-        let (val, run_state) = dispatch(Method::PatchPreflight, params, &store).unwrap();
+        let (val, run_state) = dispatch(Method::PatchPreflight, params, &store, &disabled_hybrid_config()).unwrap();
         let result: PreflightResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.decision, PreflightDecision::RequiresApproval);
         assert!(result.action_summary.is_some());
@@ -2027,7 +2036,7 @@ mod tests {
             })
             .collect();
         let params = serde_json::json!({ "runId": "r_pf_3", "edits": edits });
-        let (val, _) = dispatch(Method::PatchPreflight, params, &store).unwrap();
+        let (val, _) = dispatch(Method::PatchPreflight, params, &store, &disabled_hybrid_config()).unwrap();
         let result: PreflightResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.decision, PreflightDecision::RequiresApproval);
         // No state mutation
@@ -2047,7 +2056,7 @@ mod tests {
             "runId": "r_pf_nm",
             "edits": [{ "path": "x.rs", "operation": "delete", "newText": "" }]
         });
-        let _ = dispatch(Method::PatchPreflight, params, &store).unwrap();
+        let _ = dispatch(Method::PatchPreflight, params, &store, &disabled_hybrid_config()).unwrap();
 
         let loaded = store.get_run("r_pf_nm").unwrap().unwrap();
         // status unchanged
@@ -2072,7 +2081,7 @@ mod tests {
             "scope": "cargo",
             "reason": "check correctness"
         });
-        let (val, run_state) = dispatch(Method::TestsPreflight, params, &store).unwrap();
+        let (val, run_state) = dispatch(Method::TestsPreflight, params, &store, &disabled_hybrid_config()).unwrap();
         let result: PreflightResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.decision, PreflightDecision::Proceed);
         assert!(result.action_summary.is_none());
@@ -2091,7 +2100,7 @@ mod tests {
             "target": "deploy-prod",
             "reason": "deploy"
         });
-        let (val, run_state) = dispatch(Method::TestsPreflight, params, &store).unwrap();
+        let (val, run_state) = dispatch(Method::TestsPreflight, params, &store, &disabled_hybrid_config()).unwrap();
         let result: PreflightResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.decision, PreflightDecision::RequiresApproval);
         assert!(result.policy_rationale.is_some());
@@ -2113,7 +2122,7 @@ mod tests {
             "target": "test",
             "reason": "run tests"
         });
-        let (val, _) = dispatch(Method::TestsPreflight, params, &store).unwrap();
+        let (val, _) = dispatch(Method::TestsPreflight, params, &store, &disabled_hybrid_config()).unwrap();
         let result: PreflightResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.decision, PreflightDecision::Proceed);
     }
@@ -2131,7 +2140,7 @@ mod tests {
             "target": "deploy-prod",
             "reason": "deploy"
         });
-        let _ = dispatch(Method::TestsPreflight, params, &store).unwrap();
+        let _ = dispatch(Method::TestsPreflight, params, &store, &disabled_hybrid_config()).unwrap();
 
         let loaded = store.get_run("r_tf_nm").unwrap().unwrap();
         assert_eq!(loaded.status, "active");
@@ -2193,7 +2202,7 @@ mod tests {
             "outcomeKind": "completed",
             "summary": "All steps finished"
         });
-        let (val, run_state_opt) = dispatch(Method::RunFinalize, params, &store).unwrap();
+        let (val, run_state_opt) = dispatch(Method::RunFinalize, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunFinalizeResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.outcome_kind, "completed");
         assert_eq!(result.run_id, "r_fin_c");
@@ -2228,7 +2237,7 @@ mod tests {
             "summary": "Tests broke",
             "reason": "compiler error"
         });
-        let (val, _) = dispatch(Method::RunFinalize, params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunFinalize, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunFinalizeResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.outcome_kind, "failed");
         assert_eq!(result.status, "finalized:failed");
@@ -2251,7 +2260,7 @@ mod tests {
             "summary": "No longer needed",
             "reason": "scope changed"
         });
-        let (val, _) = dispatch(Method::RunFinalize, params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunFinalize, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunFinalizeResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.outcome_kind, "abandoned");
         assert_eq!(result.status, "finalized:abandoned");
@@ -2269,7 +2278,7 @@ mod tests {
             "outcomeKind": "unknown_kind",
             "summary": "done"
         });
-        let err = dispatch(Method::RunFinalize, params, &store).unwrap_err();
+        let err = dispatch(Method::RunFinalize, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("invalid outcome_kind"));
 
         // State must not be mutated.
@@ -2290,7 +2299,7 @@ mod tests {
             "outcomeKind": "completed",
             "summary": "Done"
         });
-        dispatch(Method::RunFinalize, params1, &store).unwrap();
+        dispatch(Method::RunFinalize, params1, &store, &disabled_hybrid_config()).unwrap();
 
         // Second finalization must be rejected.
         let params2 = serde_json::json!({
@@ -2298,7 +2307,7 @@ mod tests {
             "outcomeKind": "abandoned",
             "summary": "Trying again"
         });
-        let err = dispatch(Method::RunFinalize, params2, &store).unwrap_err();
+        let err = dispatch(Method::RunFinalize, params2, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("already finalized"));
 
         // Original outcome must be preserved.
@@ -2315,7 +2324,7 @@ mod tests {
             "outcomeKind": "completed",
             "summary": "done"
         });
-        let err = dispatch(Method::RunFinalize, params, &store).unwrap_err();
+        let err = dispatch(Method::RunFinalize, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("unknown run"));
     }
 
@@ -2330,7 +2339,7 @@ mod tests {
             "outcomeKind": "completed",
             "summary": "audit test"
         });
-        dispatch(Method::RunFinalize, params, &store).unwrap();
+        dispatch(Method::RunFinalize, params, &store, &disabled_hybrid_config()).unwrap();
 
         let entries = store.get_audit_entries("r_fin_aud", 10).unwrap();
         let finalized_entry = entries
@@ -2351,7 +2360,7 @@ mod tests {
             "outcomeKind": outcome_kind,
             "summary": format!("Finalized as {outcome_kind}")
         });
-        dispatch(Method::RunFinalize, params, store).unwrap();
+        dispatch(Method::RunFinalize, params, store, &disabled_hybrid_config()).unwrap();
     }
 
     #[test]
@@ -2365,7 +2374,7 @@ mod tests {
             "runId": "r_ro_h1",
             "reason": "Found another bug"
         });
-        let (val, run_state) = dispatch(Method::RunReopen, params, &store).unwrap();
+        let (val, run_state) = dispatch(Method::RunReopen, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunReopenResult = serde_json::from_value(val).unwrap();
 
         assert_eq!(result.run_id, "r_ro_h1");
@@ -2389,7 +2398,7 @@ mod tests {
         finalize_run_in_store(&store, "r_ro_h2", "failed");
 
         let params = serde_json::json!({ "runId": "r_ro_h2", "reason": "New clue" });
-        let (val, _) = dispatch(Method::RunReopen, params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunReopen, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunReopenResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.reopened_from_outcome_kind, "failed");
         assert_eq!(result.status, "active");
@@ -2403,7 +2412,7 @@ mod tests {
         finalize_run_in_store(&store, "r_ro_h3", "abandoned");
 
         let params = serde_json::json!({ "runId": "r_ro_h3", "reason": "Goal updated" });
-        let (val, _) = dispatch(Method::RunReopen, params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunReopen, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunReopenResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.reopened_from_outcome_kind, "abandoned");
         assert_eq!(result.status, "active");
@@ -2416,7 +2425,7 @@ mod tests {
         store.save_run(&state).unwrap();
 
         let params = serde_json::json!({ "runId": "r_ro_h4", "reason": "Should fail" });
-        let err = dispatch(Method::RunReopen, params, &store).unwrap_err();
+        let err = dispatch(Method::RunReopen, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("cannot be reopened"));
 
         // State must not be mutated.
@@ -2429,7 +2438,7 @@ mod tests {
     fn run_reopen_unknown_run_rejected() {
         let store = Store::open_in_memory().unwrap();
         let params = serde_json::json!({ "runId": "nonexistent", "reason": "test" });
-        let err = dispatch(Method::RunReopen, params, &store).unwrap_err();
+        let err = dispatch(Method::RunReopen, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("unknown run"));
     }
 
@@ -2441,7 +2450,7 @@ mod tests {
         finalize_run_in_store(&store, "r_ro_aud", "failed");
 
         let params = serde_json::json!({ "runId": "r_ro_aud", "reason": "new evidence" });
-        dispatch(Method::RunReopen, params, &store).unwrap();
+        dispatch(Method::RunReopen, params, &store, &disabled_hybrid_config()).unwrap();
 
         let entries = store.get_audit_entries("r_ro_aud", 10).unwrap();
         let reopen_entry = entries
@@ -2460,7 +2469,7 @@ mod tests {
         finalize_run_in_store(&store, "r_ro_rt", "completed");
 
         let params = serde_json::json!({ "runId": "r_ro_rt", "reason": "roundtrip test" });
-        dispatch(Method::RunReopen, params, &store).unwrap();
+        dispatch(Method::RunReopen, params, &store, &disabled_hybrid_config()).unwrap();
 
         let loaded = store.get_run("r_ro_rt").unwrap().unwrap();
         let meta = loaded.reopen_metadata.as_ref().unwrap();
@@ -2479,10 +2488,10 @@ mod tests {
         finalize_run_in_store(&store, "r_ro_get", "completed");
 
         let reopen_params = serde_json::json!({ "runId": "r_ro_get", "reason": "check metadata in get" });
-        dispatch(Method::RunReopen, reopen_params, &store).unwrap();
+        dispatch(Method::RunReopen, reopen_params, &store, &disabled_hybrid_config()).unwrap();
 
         let get_params = serde_json::json!({ "runId": "r_ro_get" });
-        let (val, _) = dispatch(Method::RunGet, get_params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunGet, get_params, &store, &disabled_hybrid_config()).unwrap();
         let get_result: RunGetResult = serde_json::from_value(val).unwrap();
         let meta = get_result.reopen_metadata.as_ref().unwrap();
         assert_eq!(meta.reopen_count, 1);
@@ -2502,7 +2511,7 @@ mod tests {
             "runId": "r_sup_1",
             "reason": "scope changed after completion"
         });
-        let (val, successor_state) = dispatch(Method::RunSupersede, params, &store).unwrap();
+        let (val, successor_state) = dispatch(Method::RunSupersede, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunSupersedeResult = serde_json::from_value(val).unwrap();
 
         assert_eq!(result.original_run_id, "r_sup_1");
@@ -2545,7 +2554,7 @@ mod tests {
             "newUserGoal": "fix with better approach",
             "reason": "previous approach failed"
         });
-        let (val, _) = dispatch(Method::RunSupersede, params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunSupersede, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunSupersedeResult = serde_json::from_value(val).unwrap();
 
         let successor = store.get_run(&result.successor_run_id).unwrap().unwrap();
@@ -2564,7 +2573,7 @@ mod tests {
             "runId": "r_sup_active",
             "reason": "trying to supersede active run"
         });
-        let err = dispatch(Method::RunSupersede, params, &store).unwrap_err();
+        let err = dispatch(Method::RunSupersede, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("cannot be superseded"));
         // Original run must be unchanged.
         let orig = store.get_run("r_sup_active").unwrap().unwrap();
@@ -2579,7 +2588,7 @@ mod tests {
             "runId": "nonexistent",
             "reason": "should fail"
         });
-        let err = dispatch(Method::RunSupersede, params, &store).unwrap_err();
+        let err = dispatch(Method::RunSupersede, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("unknown run"));
     }
 
@@ -2594,7 +2603,7 @@ mod tests {
             "runId": "r_sup_audit",
             "reason": "audit test"
         });
-        let (val, _) = dispatch(Method::RunSupersede, params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunSupersede, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunSupersedeResult = serde_json::from_value(val).unwrap();
 
         // Audit entries should have been appended to both runs.
@@ -2620,12 +2629,12 @@ mod tests {
             "runId": "r_sup_get_orig",
             "reason": "checking run.get lineage"
         });
-        let (val, _) = dispatch(Method::RunSupersede, params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunSupersede, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunSupersedeResult = serde_json::from_value(val).unwrap();
 
         // run.get on original should expose superseded_by_run_id
         let get_orig = serde_json::json!({ "runId": "r_sup_get_orig" });
-        let (orig_val, _) = dispatch(Method::RunGet, get_orig, &store).unwrap();
+        let (orig_val, _) = dispatch(Method::RunGet, get_orig, &store, &disabled_hybrid_config()).unwrap();
         let orig_get: RunGetResult = serde_json::from_value(orig_val).unwrap();
         assert_eq!(
             orig_get.superseded_by_run_id.as_deref(),
@@ -2634,7 +2643,7 @@ mod tests {
 
         // run.get on successor should expose supersedes_run_id
         let get_succ = serde_json::json!({ "runId": result.successor_run_id });
-        let (succ_val, _) = dispatch(Method::RunGet, get_succ, &store).unwrap();
+        let (succ_val, _) = dispatch(Method::RunGet, get_succ, &store, &disabled_hybrid_config()).unwrap();
         let succ_get: RunGetResult = serde_json::from_value(succ_val).unwrap();
         assert_eq!(succ_get.supersedes_run_id.as_deref(), Some("r_sup_get_orig"));
     }
@@ -2652,7 +2661,7 @@ mod tests {
             "runId": "r_arch_h",
             "reason": "archiving completed run"
         });
-        let (val, run_state) = dispatch(Method::RunArchive, params, &store).unwrap();
+        let (val, run_state) = dispatch(Method::RunArchive, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunArchiveResult = serde_json::from_value(val).unwrap();
 
         assert_eq!(result.run_id, "r_arch_h");
@@ -2679,7 +2688,7 @@ mod tests {
         finalize_run_in_store(&store, "r_arch_fail", "failed");
 
         let params = serde_json::json!({ "runId": "r_arch_fail", "reason": "failed build" });
-        let (val, _) = dispatch(Method::RunArchive, params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunArchive, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunArchiveResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.run_id, "r_arch_fail");
     }
@@ -2691,7 +2700,7 @@ mod tests {
         store.save_run(&state).unwrap();
         // Status is "active" — not eligible.
         let params = serde_json::json!({ "runId": "r_arch_act", "reason": "should fail" });
-        let err = dispatch(Method::RunArchive, params, &store).unwrap_err();
+        let err = dispatch(Method::RunArchive, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("cannot be archived"));
     }
 
@@ -2702,7 +2711,7 @@ mod tests {
         state.status = "prepared".into();
         store.save_run(&state).unwrap();
         let params = serde_json::json!({ "runId": "r_arch_prep", "reason": "should fail" });
-        let err = dispatch(Method::RunArchive, params, &store).unwrap_err();
+        let err = dispatch(Method::RunArchive, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("cannot be archived"));
     }
 
@@ -2710,7 +2719,7 @@ mod tests {
     fn run_archive_unknown_run_returns_error() {
         let store = Store::open_in_memory().unwrap();
         let params = serde_json::json!({ "runId": "no-such-run", "reason": "reason" });
-        let err = dispatch(Method::RunArchive, params, &store).unwrap_err();
+        let err = dispatch(Method::RunArchive, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("unknown run"));
     }
 
@@ -2722,7 +2731,7 @@ mod tests {
         finalize_run_in_store(&store, "r_arch_audit", "completed");
 
         let params = serde_json::json!({ "runId": "r_arch_audit", "reason": "audit trail test" });
-        dispatch(Method::RunArchive, params, &store).unwrap();
+        dispatch(Method::RunArchive, params, &store, &disabled_hybrid_config()).unwrap();
 
         let audit = store.get_audit_entries("r_arch_audit", 50).unwrap();
         let archived_event = audit.iter().find(|e| e.event_kind == "run_archived");
@@ -2737,11 +2746,11 @@ mod tests {
         finalize_run_in_store(&store, "r_arch_get", "completed");
 
         let params = serde_json::json!({ "runId": "r_arch_get", "reason": "get test" });
-        dispatch(Method::RunArchive, params, &store).unwrap();
+        dispatch(Method::RunArchive, params, &store, &disabled_hybrid_config()).unwrap();
 
         // run.get should expose archive_metadata.
         let get_params = serde_json::json!({ "runId": "r_arch_get" });
-        let (val, _) = dispatch(Method::RunGet, get_params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunGet, get_params, &store, &disabled_hybrid_config()).unwrap();
         let get_result: RunGetResult = serde_json::from_value(val).unwrap();
         assert!(get_result.archive_metadata.is_some(), "archive_metadata must be visible in run.get");
         let meta = get_result.archive_metadata.unwrap();
@@ -2759,11 +2768,11 @@ mod tests {
         store.save_run(&archived_state).unwrap();
         finalize_run_in_store(&store, "r_list_arch", "completed");
         let arch_params = serde_json::json!({ "runId": "r_list_arch", "reason": "list test" });
-        dispatch(Method::RunArchive, arch_params, &store).unwrap();
+        dispatch(Method::RunArchive, arch_params, &store, &disabled_hybrid_config()).unwrap();
 
         // Default list_runs excludes archived.
         let list_params = serde_json::json!({});
-        let (val, _) = dispatch(Method::RunsList, list_params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunsList, list_params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunsListResult = serde_json::from_value(val).unwrap();
         assert!(
             result.runs.iter().any(|r| r.run_id == "r_list_active"),
@@ -2783,11 +2792,11 @@ mod tests {
         store.save_run(&archived_state).unwrap();
         finalize_run_in_store(&store, "r_incl_arch", "completed");
         let arch_params = serde_json::json!({ "runId": "r_incl_arch", "reason": "include test" });
-        dispatch(Method::RunArchive, arch_params, &store).unwrap();
+        dispatch(Method::RunArchive, arch_params, &store, &disabled_hybrid_config()).unwrap();
 
         // include_archived=true should show archived run.
         let list_params = serde_json::json!({ "includeArchived": true });
-        let (val, _) = dispatch(Method::RunsList, list_params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunsList, list_params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunsListResult = serde_json::from_value(val).unwrap();
         assert!(
             result.runs.iter().any(|r| r.run_id == "r_incl_arch"),
@@ -2806,11 +2815,11 @@ mod tests {
         store.save_run(&archived_state).unwrap();
         finalize_run_in_store(&store, "r_ao_arch", "completed");
         let arch_params = serde_json::json!({ "runId": "r_ao_arch", "reason": "archived_only test" });
-        dispatch(Method::RunArchive, arch_params, &store).unwrap();
+        dispatch(Method::RunArchive, arch_params, &store, &disabled_hybrid_config()).unwrap();
 
         // archived_only=true should return only archived run.
         let list_params = serde_json::json!({ "archivedOnly": true });
-        let (val, _) = dispatch(Method::RunsList, list_params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunsList, list_params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunsListResult = serde_json::from_value(val).unwrap();
         assert!(
             !result.runs.iter().any(|r| r.run_id == "r_ao_active"),
@@ -2832,11 +2841,11 @@ mod tests {
         store.save_run(&state).unwrap();
         // Archive it first.
         let arch_params = serde_json::json!({ "runId": "r_unarch_c", "reason": "archive first" });
-        dispatch(Method::RunArchive, arch_params, &store).unwrap();
+        dispatch(Method::RunArchive, arch_params, &store, &disabled_hybrid_config()).unwrap();
 
         // Now unarchive.
         let params = serde_json::json!({ "runId": "r_unarch_c", "reason": "restoring for inspection" });
-        let (val, run_state) = dispatch(Method::RunUnarchive, params, &store).unwrap();
+        let (val, run_state) = dispatch(Method::RunUnarchive, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunUnarchiveResult = serde_json::from_value(val).unwrap();
 
         assert_eq!(result.run_id, "r_unarch_c");
@@ -2864,10 +2873,10 @@ mod tests {
         state.status = "finalized:failed".into();
         store.save_run(&state).unwrap();
         let arch_params = serde_json::json!({ "runId": "r_unarch_f", "reason": "archive" });
-        dispatch(Method::RunArchive, arch_params, &store).unwrap();
+        dispatch(Method::RunArchive, arch_params, &store, &disabled_hybrid_config()).unwrap();
 
         let params = serde_json::json!({ "runId": "r_unarch_f", "reason": "reviewing failed build" });
-        let (val, _) = dispatch(Method::RunUnarchive, params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunUnarchive, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunUnarchiveResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.run_id, "r_unarch_f");
     }
@@ -2880,7 +2889,7 @@ mod tests {
         store.save_run(&state).unwrap();
 
         let params = serde_json::json!({ "runId": "r_unarch_na", "reason": "trying" });
-        let err = dispatch(Method::RunUnarchive, params, &store).unwrap_err();
+        let err = dispatch(Method::RunUnarchive, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("cannot be unarchived") || err.to_string().contains("not archived"));
     }
 
@@ -2888,7 +2897,7 @@ mod tests {
     fn run_unarchive_unknown_run_returns_error() {
         let store = Store::open_in_memory().unwrap();
         let params = serde_json::json!({ "runId": "unknown-99", "reason": "test" });
-        let err = dispatch(Method::RunUnarchive, params, &store).unwrap_err();
+        let err = dispatch(Method::RunUnarchive, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("unknown run"));
     }
 
@@ -2899,10 +2908,10 @@ mod tests {
         state.status = "finalized:completed".into();
         store.save_run(&state).unwrap();
         let arch_params = serde_json::json!({ "runId": "r_unarch_audit", "reason": "archive" });
-        dispatch(Method::RunArchive, arch_params, &store).unwrap();
+        dispatch(Method::RunArchive, arch_params, &store, &disabled_hybrid_config()).unwrap();
 
         let params = serde_json::json!({ "runId": "r_unarch_audit", "reason": "audit test" });
-        dispatch(Method::RunUnarchive, params, &store).unwrap();
+        dispatch(Method::RunUnarchive, params, &store, &disabled_hybrid_config()).unwrap();
 
         let entries = store.get_audit_entries("r_unarch_audit", 50).unwrap();
         let has_unarchive_entry = entries.iter().any(|e| e.event_kind == "run_unarchived");
@@ -2918,19 +2927,19 @@ mod tests {
 
         // Archive the run.
         let arch_params = serde_json::json!({ "runId": "r_restore", "reason": "archive" });
-        dispatch(Method::RunArchive, arch_params, &store).unwrap();
+        dispatch(Method::RunArchive, arch_params, &store, &disabled_hybrid_config()).unwrap();
 
         // Verify it's excluded from default list.
-        let (val, _) = dispatch(Method::RunsList, serde_json::json!({}), &store).unwrap();
+        let (val, _) = dispatch(Method::RunsList, serde_json::json!({}), &store, &disabled_hybrid_config()).unwrap();
         let list: RunsListResult = serde_json::from_value(val).unwrap();
         assert!(!list.runs.iter().any(|r| r.run_id == "r_restore"), "archived run must not appear in default list");
 
         // Unarchive the run.
         let unarch_params = serde_json::json!({ "runId": "r_restore", "reason": "restoring" });
-        dispatch(Method::RunUnarchive, unarch_params, &store).unwrap();
+        dispatch(Method::RunUnarchive, unarch_params, &store, &disabled_hybrid_config()).unwrap();
 
         // Verify it appears in default list after restoration.
-        let (val, _) = dispatch(Method::RunsList, serde_json::json!({}), &store).unwrap();
+        let (val, _) = dispatch(Method::RunsList, serde_json::json!({}), &store, &disabled_hybrid_config()).unwrap();
         let list: RunsListResult = serde_json::from_value(val).unwrap();
         assert!(list.runs.iter().any(|r| r.run_id == "r_restore"), "unarchived run must appear in default list");
     }
@@ -2944,12 +2953,12 @@ mod tests {
 
         // Archive then unarchive.
         let arch_params = serde_json::json!({ "runId": "r_ao_unarch", "reason": "archive" });
-        dispatch(Method::RunArchive, arch_params, &store).unwrap();
+        dispatch(Method::RunArchive, arch_params, &store, &disabled_hybrid_config()).unwrap();
         let unarch_params = serde_json::json!({ "runId": "r_ao_unarch", "reason": "unarchive" });
-        dispatch(Method::RunUnarchive, unarch_params, &store).unwrap();
+        dispatch(Method::RunUnarchive, unarch_params, &store, &disabled_hybrid_config()).unwrap();
 
         // archivedOnly=true must NOT include the restored run.
-        let (val, _) = dispatch(Method::RunsList, serde_json::json!({ "archivedOnly": true }), &store).unwrap();
+        let (val, _) = dispatch(Method::RunsList, serde_json::json!({ "archivedOnly": true }), &store, &disabled_hybrid_config()).unwrap();
         let list: RunsListResult = serde_json::from_value(val).unwrap();
         assert!(!list.runs.iter().any(|r| r.run_id == "r_ao_unarch"), "unarchived run must NOT appear with archivedOnly=true");
     }
@@ -2961,12 +2970,12 @@ mod tests {
         state.status = "finalized:completed".into();
         store.save_run(&state).unwrap();
         let arch_params = serde_json::json!({ "runId": "r_unarch_get", "reason": "archive" });
-        dispatch(Method::RunArchive, arch_params, &store).unwrap();
+        dispatch(Method::RunArchive, arch_params, &store, &disabled_hybrid_config()).unwrap();
         let unarch_params = serde_json::json!({ "runId": "r_unarch_get", "reason": "inspect" });
-        dispatch(Method::RunUnarchive, unarch_params, &store).unwrap();
+        dispatch(Method::RunUnarchive, unarch_params, &store, &disabled_hybrid_config()).unwrap();
 
         let get_params = serde_json::json!({ "runId": "r_unarch_get" });
-        let (val, _) = dispatch(Method::RunGet, get_params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunGet, get_params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunGetResult = serde_json::from_value(val).unwrap();
         assert!(result.unarchive_metadata.is_some(), "unarchive_metadata must be visible in run.get");
         assert!(result.archive_metadata.is_some(), "archive_metadata must still be present in run.get");
@@ -2979,10 +2988,10 @@ mod tests {
         state.status = "finalized:completed".into();
         store.save_run(&state).unwrap();
         let arch_params = serde_json::json!({ "runId": "r_unarch_persist", "reason": "archive" });
-        dispatch(Method::RunArchive, arch_params, &store).unwrap();
+        dispatch(Method::RunArchive, arch_params, &store, &disabled_hybrid_config()).unwrap();
 
         let unarch_params = serde_json::json!({ "runId": "r_unarch_persist", "reason": "persistence test" });
-        dispatch(Method::RunUnarchive, unarch_params, &store).unwrap();
+        dispatch(Method::RunUnarchive, unarch_params, &store, &disabled_hybrid_config()).unwrap();
 
         let loaded = store.get_run("r_unarch_persist").unwrap().unwrap();
         let meta = loaded.unarchive_metadata.expect("unarchive_metadata must persist");
@@ -3006,7 +3015,7 @@ mod tests {
             "runId": "r_ann_labels",
             "labels": ["auth", "infra"]
         });
-        let (val, _) = dispatch(Method::RunAnnotate, params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunAnnotate, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunAnnotateResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.run_id, "r_ann_labels");
         assert_eq!(result.annotation.labels, vec!["auth", "infra"]);
@@ -3022,7 +3031,7 @@ mod tests {
             "runId": "r_ann_note",
             "operatorNote": "tracking the auth regression"
         });
-        let (val, _) = dispatch(Method::RunAnnotate, params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunAnnotate, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunAnnotateResult = serde_json::from_value(val).unwrap();
         assert_eq!(
             result.annotation.operator_note.as_deref(),
@@ -3040,7 +3049,7 @@ mod tests {
             "runId": "r_ann_norm",
             "labels": ["INFRA", "Auth", "auth"]
         });
-        let (val, _) = dispatch(Method::RunAnnotate, params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunAnnotate, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunAnnotateResult = serde_json::from_value(val).unwrap();
         // Normalized, deduped, sorted.
         assert_eq!(result.annotation.labels, vec!["auth", "infra"]);
@@ -3057,7 +3066,7 @@ mod tests {
             "labels": ["ci"],
             "operatorNote": "CI regression"
         });
-        dispatch(Method::RunAnnotate, params, &store).unwrap();
+        dispatch(Method::RunAnnotate, params, &store, &disabled_hybrid_config()).unwrap();
 
         let loaded = store.get_run("r_ann_persist").unwrap().unwrap();
         let annotation = loaded.annotation.expect("annotation must be persisted");
@@ -3075,7 +3084,7 @@ mod tests {
             "runId": "r_ann_audit",
             "labels": ["blocked"]
         });
-        dispatch(Method::RunAnnotate, params, &store).unwrap();
+        dispatch(Method::RunAnnotate, params, &store, &disabled_hybrid_config()).unwrap();
 
         let entries = store.get_audit_entries("r_ann_audit", 50).unwrap();
         let has_entry = entries.iter().any(|e| e.event_kind == "run_annotated");
@@ -3093,10 +3102,10 @@ mod tests {
             "labels": ["feature"],
             "operatorNote": "feature work"
         });
-        dispatch(Method::RunAnnotate, ann_params, &store).unwrap();
+        dispatch(Method::RunAnnotate, ann_params, &store, &disabled_hybrid_config()).unwrap();
 
         let get_params = serde_json::json!({ "runId": "r_ann_get" });
-        let (val, _) = dispatch(Method::RunGet, get_params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunGet, get_params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunGetResult = serde_json::from_value(val).unwrap();
         let annotation = result.annotation.expect("annotation must appear in run.get");
         assert_eq!(annotation.labels, vec!["feature"]);
@@ -3113,9 +3122,9 @@ mod tests {
             "runId": "r_ann_list",
             "labels": ["review"]
         });
-        dispatch(Method::RunAnnotate, ann_params, &store).unwrap();
+        dispatch(Method::RunAnnotate, ann_params, &store, &disabled_hybrid_config()).unwrap();
 
-        let (val, _) = dispatch(Method::RunsList, serde_json::json!({}), &store).unwrap();
+        let (val, _) = dispatch(Method::RunsList, serde_json::json!({}), &store, &disabled_hybrid_config()).unwrap();
         let list: RunsListResult = serde_json::from_value(val).unwrap();
         let summary = list.runs.iter().find(|r| r.run_id == "r_ann_list").unwrap();
         assert_eq!(summary.labels, vec!["review"]);
@@ -3138,7 +3147,7 @@ mod tests {
             "runId": "r_filter_auth",
             "labels": ["auth"]
         });
-        dispatch(Method::RunAnnotate, ann_params, &store).unwrap();
+        dispatch(Method::RunAnnotate, ann_params, &store, &disabled_hybrid_config()).unwrap();
 
         // Filter by label=auth.
         let (val, _) = dispatch(
@@ -3169,7 +3178,7 @@ mod tests {
             "runId": "r_ann_status",
             "labels": ["ci"]
         });
-        dispatch(Method::RunAnnotate, params, &store).unwrap();
+        dispatch(Method::RunAnnotate, params, &store, &disabled_hybrid_config()).unwrap();
 
         let loaded = store.get_run("r_ann_status").unwrap().unwrap();
         assert_eq!(loaded.status, "active", "annotate must not change status");
@@ -3182,7 +3191,7 @@ mod tests {
         store.save_run(&state).unwrap();
 
         let params = serde_json::json!({ "runId": "r_ann_empty" });
-        let err = dispatch(Method::RunAnnotate, params, &store).unwrap_err();
+        let err = dispatch(Method::RunAnnotate, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(
             err.to_string().contains("at least one"),
             "must require at least one of labels/operatorNote"
@@ -3199,7 +3208,7 @@ mod tests {
             "runId": "r_ann_invalid",
             "labels": ["bad label with spaces"]
         });
-        let err = dispatch(Method::RunAnnotate, params, &store).unwrap_err();
+        let err = dispatch(Method::RunAnnotate, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(
             err.to_string().contains("invalid character"),
             "must reject labels with invalid characters"
@@ -3220,7 +3229,7 @@ mod tests {
             "runId": "r_snz_1",
             "reason": "blocked on external dep"
         });
-        let (val, run_state) = dispatch(Method::RunSnooze, params, &store).unwrap();
+        let (val, run_state) = dispatch(Method::RunSnooze, params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunSnoozeResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.run_id, "r_snz_1");
         assert_eq!(result.reason, "blocked on external dep");
@@ -3239,7 +3248,7 @@ mod tests {
             "runId": "r_snz_persist",
             "reason": "deferred"
         });
-        dispatch(Method::RunSnooze, params, &store).unwrap();
+        dispatch(Method::RunSnooze, params, &store, &disabled_hybrid_config()).unwrap();
 
         let loaded = store.get_run("r_snz_persist").unwrap().unwrap();
         assert!(loaded.snooze_metadata.is_some());
@@ -3256,7 +3265,7 @@ mod tests {
             "runId": "r_snz_audit",
             "reason": "audit test"
         });
-        dispatch(Method::RunSnooze, params, &store).unwrap();
+        dispatch(Method::RunSnooze, params, &store, &disabled_hybrid_config()).unwrap();
 
         let history = store.get_run_history("r_snz_audit", 10).unwrap();
         let entry = history.iter().find(|e| e.event_kind == "run_snoozed");
@@ -3274,7 +3283,7 @@ mod tests {
             "runId": "r_snz_status",
             "reason": "snooze"
         });
-        dispatch(Method::RunSnooze, params, &store).unwrap();
+        dispatch(Method::RunSnooze, params, &store, &disabled_hybrid_config()).unwrap();
 
         let loaded = store.get_run("r_snz_status").unwrap().unwrap();
         assert_eq!(loaded.status, "active", "snooze must not change status");
@@ -3290,10 +3299,10 @@ mod tests {
             "runId": "r_snz_list",
             "reason": "defer"
         });
-        dispatch(Method::RunSnooze, params, &store).unwrap();
+        dispatch(Method::RunSnooze, params, &store, &disabled_hybrid_config()).unwrap();
 
         let list_params = serde_json::json!({ "limit": 50 });
-        let (val, _) = dispatch(Method::RunsList, list_params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunsList, list_params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunsListResult = serde_json::from_value(val).unwrap();
         let found = result.runs.iter().any(|r| r.run_id == "r_snz_list");
         assert!(!found, "snoozed run must be excluded from default list");
@@ -3309,10 +3318,10 @@ mod tests {
             "runId": "r_snz_incl",
             "reason": "defer"
         });
-        dispatch(Method::RunSnooze, params, &store).unwrap();
+        dispatch(Method::RunSnooze, params, &store, &disabled_hybrid_config()).unwrap();
 
         let list_params = serde_json::json!({ "limit": 50, "includeSnoozed": true });
-        let (val, _) = dispatch(Method::RunsList, list_params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunsList, list_params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunsListResult = serde_json::from_value(val).unwrap();
         let found = result.runs.iter().any(|r| r.run_id == "r_snz_incl");
         assert!(found, "snoozed run must appear when includeSnoozed=true");
@@ -3330,10 +3339,10 @@ mod tests {
             "runId": "r_snz_only_a",
             "reason": "defer"
         });
-        dispatch(Method::RunSnooze, params, &store).unwrap();
+        dispatch(Method::RunSnooze, params, &store, &disabled_hybrid_config()).unwrap();
 
         let list_params = serde_json::json!({ "limit": 50, "snoozedOnly": true });
-        let (val, _) = dispatch(Method::RunsList, list_params, &store).unwrap();
+        let (val, _) = dispatch(Method::RunsList, list_params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunsListResult = serde_json::from_value(val).unwrap();
         assert!(result.runs.iter().any(|r| r.run_id == "r_snz_only_a"), "snoozed run must appear");
         assert!(!result.runs.iter().any(|r| r.run_id == "r_snz_only_b"), "non-snoozed run must not appear");
@@ -3349,7 +3358,7 @@ mod tests {
             "runId": "r_snz_empty",
             "reason": ""
         });
-        let err = dispatch(Method::RunSnooze, params, &store).unwrap_err();
+        let err = dispatch(Method::RunSnooze, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("must not be empty"));
     }
 
@@ -3364,14 +3373,14 @@ mod tests {
             "runId": "r_unsnz_1",
             "reason": "blocked"
         });
-        dispatch(Method::RunSnooze, snooze_params, &store).unwrap();
+        dispatch(Method::RunSnooze, snooze_params, &store, &disabled_hybrid_config()).unwrap();
 
         // Then unsnooze it.
         let unsnooze_params = serde_json::json!({
             "runId": "r_unsnz_1",
             "reason": "resolved"
         });
-        let (val, run_state) = dispatch(Method::RunUnsnooze, unsnooze_params, &store).unwrap();
+        let (val, run_state) = dispatch(Method::RunUnsnooze, unsnooze_params, &store, &disabled_hybrid_config()).unwrap();
         let result: RunUnsnoozeResult = serde_json::from_value(val).unwrap();
         assert_eq!(result.run_id, "r_unsnz_1");
         assert!(run_state.is_some());
@@ -3431,7 +3440,7 @@ mod tests {
             "runId": "r_unsnz_not",
             "reason": "restore"
         });
-        let err = dispatch(Method::RunUnsnooze, params, &store).unwrap_err();
+        let err = dispatch(Method::RunUnsnooze, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("not snoozed"));
     }
 
@@ -3522,7 +3531,7 @@ mod tests {
             "priority": "urgent",
             "reason": "test"
         });
-        let err = dispatch(Method::RunSetPriority, params, &store).unwrap_err();
+        let err = dispatch(Method::RunSetPriority, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("unknown run"));
     }
 
@@ -3537,7 +3546,7 @@ mod tests {
             "priority": "urgent",
             "reason": ""
         });
-        let err = dispatch(Method::RunSetPriority, params, &store).unwrap_err();
+        let err = dispatch(Method::RunSetPriority, params, &store, &disabled_hybrid_config()).unwrap_err();
         assert!(err.to_string().contains("must not be empty"));
     }
 
@@ -4117,7 +4126,7 @@ mod tests {
         store.save_run(&state_a).unwrap();
         store.save_run(&state_b).unwrap();
 
-        let (val, _) = dispatch(Method::RunsList, serde_json::json!({}), &store).unwrap();
+        let (val, _) = dispatch(Method::RunsList, serde_json::json!({}), &store, &disabled_hybrid_config()).unwrap();
         let result: RunsListResult = serde_json::from_value(val).unwrap();
 
         let summary_b = result.runs.iter().find(|r| r.run_id == "r_lsib_b").unwrap();
@@ -4146,7 +4155,7 @@ mod tests {
         store.save_run(&state_b).unwrap();
         store.save_run(&state_c).unwrap();
 
-        let (val, _) = dispatch(Method::RunsList, serde_json::json!({}), &store).unwrap();
+        let (val, _) = dispatch(Method::RunsList, serde_json::json!({}), &store, &disabled_hybrid_config()).unwrap();
         let result: RunsListResult = serde_json::from_value(val).unwrap();
 
         let summary_a = result.runs.iter().find(|r| r.run_id == "r_ib_a").unwrap();
@@ -4487,7 +4496,7 @@ mod tests {
         let view_id = result.view.view_id;
 
         // List views
-        let (val, _) = dispatch(Method::QueueViewList, serde_json::json!({}), &store).unwrap();
+        let (val, _) = dispatch(Method::QueueViewList, serde_json::json!({}), &store, &disabled_hybrid_config()).unwrap();
         let result: ListQueueViewsResult = serde_json::from_value(val).unwrap();
         assert!(result.count >= 1, "Expected at least 1 view, got {}", result.count);
         let found = result.views.iter().find(|v| v.name == "test-view");
@@ -4527,7 +4536,7 @@ mod tests {
         assert_eq!(result.deleted_view_id, view_id);
 
         // Verify deleted
-        let (val, _) = dispatch(Method::QueueViewList, serde_json::json!({}), &store).unwrap();
+        let (val, _) = dispatch(Method::QueueViewList, serde_json::json!({}), &store, &disabled_hybrid_config()).unwrap();
         let result: ListQueueViewsResult = serde_json::from_value(val).unwrap();
         let still_exists = result.views.iter().any(|v| v.view_id == view_id);
         assert!(!still_exists, "View should have been deleted");

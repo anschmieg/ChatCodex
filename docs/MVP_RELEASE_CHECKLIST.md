@@ -9,7 +9,6 @@ This checklist verifies ChatCodex is ready for MVP evaluation.
 ### Rust Daemon
 
 ```bash
-cd codex-rs
 
 # Build all packages
 cargo build -p deterministic-protocol -p deterministic-core -p deterministic-daemon
@@ -108,10 +107,10 @@ Verification:
 
 ```bash
 # Search for any backend LLM calls
-grep -rn "openai\." --include="*.rs" codex-rs/deterministic-daemon/src codex-rs/deterministic-core/src
-grep -rn "anthropic\." --include="*.rs" codex-rs/deterministic-daemon/src codex-rs/deterministic-core/src
+grep -rn "openai\." --include="*.rs" crates/deterministic-daemon/src crates/deterministic-core/src
+grep -rn "anthropic\." --include="*.rs" crates/deterministic-daemon/src crates/deterministic-core/src
 grep -rn "continue_run\|resume_thread\|resume_codex_thread\|agent_step" --include="*.ts" apps/chatgpt-mcp/src
-grep -rn "continue_run\|resume_thread\|resume_codex_thread\|agent_step" --include="*.rs" codex-rs/deterministic-daemon/src
+grep -rn "continue_run\|resume_thread\|resume_codex_thread\|agent_step" --include="*.rs" crates/deterministic-daemon/src
 ```
 
 - [ ] No backend model calls in daemon
@@ -124,7 +123,7 @@ grep -rn "continue_run\|resume_thread\|resume_codex_thread\|agent_step" --includ
 # Verify no autonomy keywords exist in the codebase
 git grep -nE 'continue_run|resume_thread|resume_codex_thread|agent_step|fix_end_to_end|turn/start|turn/steer|review/start' -- \
   apps/chatgpt-mcp/src \
-  codex-rs/deterministic-daemon/src \
+  crates/deterministic-daemon/src \
   .github/workflows
 ```
 
@@ -150,7 +149,7 @@ Run these before releasing:
 
 ```bash
 # 1. Full build
-cd codex-rs && cargo build --release
+cargo build --release
 
 # 2. Full test
 cargo test -p deterministic-protocol -p deterministic-core -p deterministic-daemon
@@ -164,7 +163,7 @@ cd ../apps/chatgpt-mcp && npm ci && npm run build
 # 5. Invariant grep
 cd ../.. && git grep -nE 'continue_run|resume_thread|resume_codex_thread|agent_step|fix_end_to_end|turn/start|turn/steer|review/start' -- \
   apps/chatgpt-mcp/src \
-  codex-rs/deterministic-daemon/src \
+  crates/deterministic-daemon/src \
   .github/workflows
 ```
 

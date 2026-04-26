@@ -55,7 +55,13 @@ Hybrid workers (when enabled) call an OpenAI-compatible endpoint but never write
    - All test execution happens through `run_tests`.
    - `run_command` is restricted and whitelisted.
 
-4. **Public MCP tool surface**
+4. **Vendored Codex boundary**
+   - Upstream Codex source lives under `vendor/codex/` as a pristine updateable snapshot.
+   - Do not put ChatCodex-owned product code, policy, or bug fixes inside `vendor/codex/`.
+   - Do not patch vendored Codex to support ChatCodex behavior. Add first-party adapters under `crates/`, or copy minimal code with attribution and treat it as first-party.
+   - First-party crates must not depend on Codex TUI, CLI, app-server, login, ChatGPT auth, model-provider, or autonomous turn execution crates.
+
+5. **Public MCP tool surface**
    - `codex_prepare_run`
    - `refresh_run_state`
    - `replan_run`
@@ -74,7 +80,7 @@ Hybrid workers (when enabled) call an OpenAI-compatible endpoint but never write
      - `hybrid_cancel_worker_run`
      - `hybrid_list_worker_runs`
 
-5. **Internal daemon JSON-RPC surface**
+6. **Internal daemon JSON-RPC surface**
    - `run.prepare`
    - `run.refresh`
    - `run.replan`
@@ -106,9 +112,9 @@ That means:
 
 ### Rust
 Create:
-- `codex-rs/deterministic-protocol`
-- `codex-rs/deterministic-core`
-- `codex-rs/deterministic-daemon`
+- `crates/deterministic-protocol`
+- `crates/deterministic-core`
+- `crates/deterministic-daemon`
 
 Implement:
 - protocol types

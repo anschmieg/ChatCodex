@@ -458,7 +458,7 @@ If extending the project, likely next milestones would be:
 ## Repository Structure
 
 ```
-codex-rs/
+crates/
   deterministic-protocol/  # Shared types and method names
   deterministic-core/    # Deterministic logic and policy
   deterministic-daemon/  # HTTP JSON-RPC transport, SQLite persistence
@@ -467,6 +467,7 @@ apps/chatgpt-mcp/        # TypeScript MCP gateway
 
 docs/                    # Architecture and contract documentation
 .github/workflows/       # CI for deterministic subsystem
+vendor/codex/            # Pristine upstream Codex snapshot
 ```
 
 ## Development Verification
@@ -474,5 +475,5 @@ docs/                    # Architecture and contract documentation
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for local verification commands.
 
 
-> **Rust toolchain:** This project pins its Rust toolchain in `codex-rs/rust-toolchain.toml` (currently `1.93.0`).
+> **Rust toolchain:** This project pins its Rust toolchain in `rust-toolchain.toml` (currently `1.93.0`).
 > Tests require this exact version. If Cargo reports edition 2024 unsupported errors, update your Rust toolchain.

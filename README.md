@@ -43,7 +43,7 @@ Hybrid mode extension (opt-in):
 ## Repository structure
 
 ```
-codex-rs/
+crates/
   deterministic-protocol/  # Shared types and method names
   deterministic-core/      # Deterministic logic and policy
   deterministic-daemon/    # HTTP JSON-RPC transport, SQLite persistence
@@ -51,20 +51,21 @@ codex-rs/
 apps/chatgpt-mcp/          # TypeScript MCP gateway
 
 docs/                      # Architecture and contract documentation
+
+vendor/codex/              # Pristine upstream Codex snapshot
 ```
 
 ## Quick start
 
 ### Prerequisites
 
-- Rust 1.93.0 (pinned via `codex-rs/rust-toolchain.toml`)
+- Rust 1.93.0 (pinned via `rust-toolchain.toml`)
 - Node.js 22+
 - npm
 
 ### Build and test (deterministic crates)
 
 ```bash
-cd codex-rs
 cargo build -p deterministic-protocol -p deterministic-core -p deterministic-daemon
 cargo test -p deterministic-protocol -p deterministic-core -p deterministic-daemon
 cargo clippy -p deterministic-protocol -p deterministic-core -p deterministic-daemon --all-targets -- -D warnings
@@ -142,6 +143,13 @@ CHATCODEX_HYBRID_PROVIDER_TEMPERATURE=0.2
 # Start the daemon
 cargo run -p deterministic-daemon
 ```
+
+## Vendored Codex
+
+Upstream Codex source lives under `vendor/codex/` and is treated as a pristine,
+updateable snapshot. ChatCodex-owned code lives outside that tree. If Codex
+behavior needs customization, add a first-party adapter in `crates/` or copy the
+minimal implementation with attribution; do not patch vendored upstream code.
 
 ## Safety model
 

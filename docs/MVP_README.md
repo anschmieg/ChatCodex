@@ -77,7 +77,6 @@ cd ChatCodex
 
 ```bash
 # Build Rust daemon
-cd codex-rs
 cargo build --release
 
 # Build MCP gateway
@@ -90,7 +89,6 @@ npm run build
 
 ```bash
 # Terminal 1: Start daemon
-cd codex-rs
 ./target/release/deterministic-daemon --port 3100 --data-dir ./runs
 
 # Terminal 2: Start gateway

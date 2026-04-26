@@ -31,13 +31,13 @@ Steps:
 - Add these ignore entries:
   ```gitignore
   apps/chatgpt-mcp/.data/
-  codex-rs/runs/
+  crates/deterministic-daemon/runs/
   ```
 - Verify:
   ```bash
   git status --short
   ```
-- Expected: `.data/` and `codex-rs/runs/` no longer appear as untracked files.
+- Expected: `.data/` and `crates/deterministic-daemon/runs/` no longer appear as untracked files.
 
 ### Task 0.2: Fix Rust toolchain verification docs
 
@@ -46,11 +46,10 @@ Files:
 - Modify `docs/PROJECT_STATUS.md`
 
 Steps:
-- Document that Rust tests require `codex-rs/rust-toolchain.toml`, currently pinned to `1.93.0`.
+- Document that Rust tests require `rust-toolchain.toml`, currently pinned to `1.93.0`.
 - Add this command as the expected Rust verification:
   ```bash
-  cd codex-rs
-  cargo test -p deterministic-protocol -p deterministic-core -p deterministic-daemon
+    cargo test -p deterministic-protocol -p deterministic-core -p deterministic-daemon
   ```
 - Add note: if Cargo reports edition 2024 unsupported, the local Rust toolchain is too old.
 
@@ -71,7 +70,6 @@ Expected:
 
 Rust command:
 ```bash
-cd codex-rs
 cargo test -p deterministic-protocol -p deterministic-core -p deterministic-daemon
 ```
 
@@ -159,7 +157,7 @@ npm test
 ### Task 2.2: Fix Rust method registry completeness
 
 Files:
-- Modify `codex-rs/deterministic-protocol/src/methods.rs`
+- Modify `crates/deterministic-protocol/src/methods.rs`
 
 Steps:
 - Add missing queue view methods to `Method::all()`:
@@ -172,7 +170,6 @@ Steps:
 
 Verification:
 ```bash
-cd codex-rs
 cargo test -p deterministic-protocol methods
 ```
 
@@ -181,7 +178,7 @@ cargo test -p deterministic-protocol methods
 ### Task 3.1: Add harness mode protocol types
 
 Files:
-- Modify `codex-rs/deterministic-protocol/src/types.rs`
+- Modify `crates/deterministic-protocol/src/types.rs`
 - Modify `apps/chatgpt-mcp/src/schemas.ts`
 
 Rust types:
@@ -211,7 +208,7 @@ TypeScript schema:
 ### Task 3.2: Persist harness mode
 
 Files:
-- Modify `codex-rs/deterministic-daemon/src/persistence.rs`
+- Modify `crates/deterministic-daemon/src/persistence.rs`
 
 Steps:
 - Add SQLite migration:
@@ -227,7 +224,6 @@ Steps:
 
 Verification:
 ```bash
-cd codex-rs
 cargo test -p deterministic-daemon persistence
 ```
 
@@ -236,9 +232,9 @@ cargo test -p deterministic-daemon persistence
 ### Task 4.1: Add Rust provider config
 
 Files:
-- Create `codex-rs/deterministic-core/src/hybrid_provider.rs`
-- Modify `codex-rs/deterministic-core/src/lib.rs`
-- Modify `codex-rs/deterministic-daemon/src/main.rs`
+- Create `crates/deterministic-core/src/hybrid_provider.rs`
+- Modify `crates/deterministic-core/src/lib.rs`
+- Modify `crates/deterministic-daemon/src/main.rs`
 
 Provider config:
 - Define `HybridProviderProfile`:
@@ -277,8 +273,8 @@ Tests:
 ### Task 5.1: Add worker run DTOs
 
 Files:
-- Modify `codex-rs/deterministic-protocol/src/types.rs`
-- Modify `codex-rs/deterministic-protocol/src/methods.rs`
+- Modify `crates/deterministic-protocol/src/types.rs`
+- Modify `crates/deterministic-protocol/src/methods.rs`
 
 Add methods:
 - `hybrid.worker.prepare`
@@ -319,7 +315,7 @@ Important behavior:
 ### Task 5.2: Add SQLite worker tables
 
 Files:
-- Modify `codex-rs/deterministic-daemon/src/persistence.rs`
+- Modify `crates/deterministic-daemon/src/persistence.rs`
 
 Add table:
 ```sql
@@ -360,7 +356,7 @@ Tests:
 ### Task 6.1: Add provider HTTP client
 
 Files:
-- Create `codex-rs/deterministic-core/src/openai_compatible_worker.rs`
+- Create `crates/deterministic-core/src/openai_compatible_worker.rs`
 
 Implementation:
 - Use existing Rust HTTP dependency already available in workspace if possible.
@@ -420,8 +416,8 @@ Tests:
 ### Task 7.1: Add daemon handlers
 
 Files:
-- Modify `codex-rs/deterministic-daemon/src/handlers.rs`
-- Modify `codex-rs/deterministic-daemon/src/router.rs` only if state needs provider config
+- Modify `crates/deterministic-daemon/src/handlers.rs`
+- Modify `crates/deterministic-daemon/src/router.rs` only if state needs provider config
 
 Behavior:
 - `hybrid.worker.prepare`
@@ -520,7 +516,7 @@ npm test
 ### Task 9.1: Validate create paths before writing
 
 Files:
-- Modify `codex-rs/deterministic-core/src/patch_apply.rs`
+- Modify `crates/deterministic-core/src/patch_apply.rs`
 
 Steps:
 - Compute canonical root once before edit loop.
@@ -544,7 +540,6 @@ Tests:
 
 Verification:
 ```bash
-cd codex-rs
 cargo test -p deterministic-core patch_apply
 ```
 
@@ -553,8 +548,8 @@ cargo test -p deterministic-core patch_apply
 ### Task 10.1: Validate test targets
 
 Files:
-- Modify `codex-rs/deterministic-core/src/tests_run.rs`
-- Modify `codex-rs/deterministic-core/src/approval_policy.rs` if needed
+- Modify `crates/deterministic-core/src/tests_run.rs`
+- Modify `crates/deterministic-core/src/approval_policy.rs` if needed
 
 Rules:
 - `cargo` target may contain only ASCII alphanumeric, `_`, `-`, `:`, `/`, `.`
@@ -572,7 +567,6 @@ Tests:
 
 Verification:
 ```bash
-cd codex-rs
 cargo test -p deterministic-core tests_run approval_policy
 ```
 
@@ -581,7 +575,7 @@ cargo test -p deterministic-core tests_run approval_policy
 ### Task 11.1: Prefer ripgrep
 
 Files:
-- Modify `codex-rs/deterministic-core/src/code_search.rs`
+- Modify `crates/deterministic-core/src/code_search.rs`
 
 Behavior:
 - Try `rg --line-number --no-heading --color never`.
@@ -599,7 +593,6 @@ Tests:
 
 Verification:
 ```bash
-cd codex-rs
 cargo test -p deterministic-core code_search
 ```
 
