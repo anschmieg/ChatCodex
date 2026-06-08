@@ -2190,6 +2190,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-native-harness-mcp"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "codex-core",
+ "rmcp",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "codex-network-proxy"
 version = "0.0.0"
 dependencies = [

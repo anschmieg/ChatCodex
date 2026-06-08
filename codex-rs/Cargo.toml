@@ -34,6 +34,7 @@ members = [
     "login",
     "mcp-server",
     "network-proxy",
+    "native-harness-mcp",
     "ollama",
     "process-hardening",
     "protocol",
@@ -118,6 +119,7 @@ codex-lmstudio = { path = "lmstudio" }
 codex-login = { path = "login" }
 codex-mcp-server = { path = "mcp-server" }
 codex-network-proxy = { path = "network-proxy" }
+codex-native-harness-mcp = { path = "native-harness-mcp" }
 codex-ollama = { path = "ollama" }
 codex-otel = { path = "otel" }
 codex-process-hardening = { path = "process-hardening" }

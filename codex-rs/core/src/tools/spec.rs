@@ -305,6 +305,45 @@ fn unified_exec_allowed_in_environment(
 }
 
 impl ToolsConfig {
+    /// Deterministic model-facing tools for the standalone harness MCP.
+    ///
+    /// This profile deliberately has no model-dependent, network, connector,
+    /// user-interaction, or multi-agent capabilities. Tool definitions and
+    /// handlers are still built by the same registry as a normal Codex turn.
+    pub(crate) fn native_harness() -> Self {
+        Self {
+            available_models: Vec::new(),
+            shell_type: ConfigShellToolType::UnifiedExec,
+            shell_command_backend: ShellCommandBackendConfig::Classic,
+            unified_exec_shell_mode: UnifiedExecShellMode::Direct,
+            allow_login_shell: true,
+            // MCP call arguments are JSON objects, so select Codex's native
+            // function variant instead of translating its freeform grammar.
+            apply_patch_tool_type: Some(ApplyPatchToolType::Function),
+            web_search_mode: None,
+            web_search_config: None,
+            web_search_tool_type: WebSearchToolType::Text,
+            image_gen_tool: false,
+            agent_roles: BTreeMap::new(),
+            search_tool: false,
+            tool_suggest: false,
+            exec_permission_approvals_enabled: false,
+            request_permissions_tool_enabled: false,
+            code_mode_enabled: false,
+            code_mode_only_enabled: false,
+            js_repl_enabled: false,
+            js_repl_tools_only: false,
+            can_request_original_image_detail: false,
+            collab_tools: false,
+            artifact_tools: false,
+            request_user_input: false,
+            default_mode_request_user_input: false,
+            experimental_supported_tools: Vec::new(),
+            agent_jobs_tools: false,
+            agent_jobs_worker_tools: false,
+        }
+    }
+
     pub fn new(params: &ToolsConfigParams) -> Self {
         let ToolsConfigParams {
             model_info,

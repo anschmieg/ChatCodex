@@ -14,9 +14,9 @@
   - TypeScript source builds and typechecks.
   - Existing TypeScript tests are unreliable because ignored stale files in
     `apps/chatgpt-mcp/dist` are included by the test glob.
-  - Rust validation requires the repository toolchain in
-    `codex-rs/rust-toolchain.toml` (`1.93.0`). The shell may resolve an older
-    Homebrew Cargo unless commands use `rustup run 1.93.0`.
+  - Rust `1.93.0` is installed and the native catalog contract test passes.
+  - Validation must set `RUSTC` and `RUSTDOC` to the rustup `1.93.0` binaries
+    because this machine has a broken Homebrew Rust earlier in `PATH`.
 
 ## Goal
 
@@ -95,15 +95,22 @@ including:
    credentials are read-only.
 10. Do not mount the Docker socket.
 
+### MCP Compatibility Note
+
+MCP tool calls carry JSON-object arguments, while Codex's preferred
+`apply_patch` tool is freeform text. The adapter must use Codex's own
+function-form `apply_patch` variant for the MCP catalog and dispatch it through
+the same native handler. Do not invent a ChatCodex-specific patch schema.
+
 ## Work Queue
 
 ### M0: Documentation and Branch Bootstrap
 
-Status: in progress
+Status: completed
 
 - [x] Create `codex/native-harness-mcp`.
 - [x] Record the approved architecture.
-- [ ] Commit design and implementation plan.
+- [x] Commit design and implementation plan.
 
 Acceptance:
 
@@ -112,7 +119,7 @@ Acceptance:
 
 ### M1: Public Native Harness Facade
 
-Status: pending
+Status: in progress
 
 Files expected:
 
@@ -122,9 +129,9 @@ Files expected:
 
 Actions:
 
-- [ ] Add failing tests that request the native tool catalog.
-- [ ] Expose configured `ToolSpec` values without model construction.
-- [ ] Filter agent-owned tools by capability/category, not copied schemas.
+- [x] Add failing tests that request the native tool catalog.
+- [x] Expose configured `ToolSpec` values without model construction.
+- [x] Exclude agent-owned tools by disabling their native capabilities.
 - [ ] Add failing tests for direct native tool dispatch.
 - [ ] Build a harness context using existing Codex session/config primitives.
 - [ ] Dispatch explicit calls through the existing handlers.
@@ -136,9 +143,18 @@ Acceptance:
 - Calls execute through Codex handlers and policy code.
 - No model client or turn-generation API is invoked.
 
+Implemented:
+
+- `codex_core::harness_mcp::native_tool_catalog()` builds the catalog through
+  the existing Codex registry.
+- The initial native profile exposes `exec_command`, `write_stdin`,
+  `update_plan`, `apply_patch`, and `view_image`.
+- Model, web, connector, prompt, code-mode, JavaScript, artifact, and
+  collaboration capabilities are disabled at profile construction.
+
 ### M2: Native MCP Server
 
-Status: pending
+Status: in progress
 
 Files expected:
 
@@ -149,12 +165,14 @@ Files expected:
 
 Actions:
 
-- [ ] Add the crate to the workspace.
-- [ ] Map Codex `ToolSpec` to MCP `Tool` without schema rewriting.
-- [ ] Implement `tools/list`.
+- [x] Add the crate to the workspace.
+- [x] Map Codex function `ToolSpec` values to MCP `Tool` without input-schema
+      rewriting.
+- [x] Implement `tools/list`.
 - [ ] Implement `tools/call`.
-- [ ] Preserve freeform `apply_patch` input.
-- [ ] Add stdio transport.
+- [ ] Use Codex's native function-form `apply_patch` schema because MCP call
+      arguments cannot carry a raw freeform string.
+- [x] Add stdio transport.
 - [ ] Add Streamable HTTP transport.
 - [ ] Add constant-time bearer-token validation.
 - [ ] Add `/healthz`.
@@ -165,6 +183,13 @@ Acceptance:
 - MCP calls return native handler output.
 - Agent-loop tools are absent.
 - Unauthorized remote calls receive HTTP 401.
+
+Implemented:
+
+- `codex-native-harness-mcp` is a Rust workspace package.
+- Its stdio server advertises the native Codex catalog through `tools/list`.
+- `tools/call` currently returns an explicit not-implemented MCP error; no
+  alternate executor or policy path is present.
 
 ### M3: Native Approval Bridge
 

@@ -1,0 +1,23 @@
+[package]
+name = "codex-native-harness-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "codex-native-harness-mcp"
+path = "src/main.rs"
+
+[lib]
+name = "codex_native_harness_mcp"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+codex-core = { workspace = true }
+rmcp = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["io-std", "macros", "rt-multi-thread"] }
