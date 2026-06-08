@@ -4182,6 +4182,231 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_approval_gate_approve_and_resume() {
+        // V2: Approval flow - blocked patch -> approve -> retry patch
+        let store = Store::open_in_memory().unwrap();
+        let (val, _) = dispatch(
+            Method::RunPrepare,
+            serde_json::json!({
+                "workspaceId": "/test/ws",
+                "userGoal": "remove obsolete file",
+                "plan": ["apply patch after approval"]
+            }),
+            &store,
+        )
+        .unwrap();
+        let prepared: RunPrepareResult = serde_json::from_value(val).unwrap();
+        let run_id = prepared.run_id;
+
+        let (val, _) = dispatch(
+            Method::PatchApply,
+            serde_json::json!({
+                "runId": &run_id,
+                "edits": [
+                    {"path": "src/legacy.rs", "operation": "delete", "newText": ""}
+                ]
+            }),
+            &store,
+        )
+        .unwrap();
+        let blocked: PatchApplyResult = serde_json::from_value(val).unwrap();
+        let approval = blocked
+            .approval_required
+            .expect("delete patch should require approval");
+        assert!(blocked.changed_files.is_empty());
+
+        let (val, _) = dispatch(
+            Method::ApprovalResolve,
+            serde_json::json!({
+                "runId": &run_id,
+                "approvalId": approval.approval_id,
+                "decision": "approve",
+                "reason": "operator approved"
+            }),
+            &store,
+        )
+        .unwrap();
+        let approval_result: ApprovalResolveResult = serde_json::from_value(val).unwrap();
+        assert_eq!(approval_result.decision, "approve");
+        assert_eq!(approval_result.recommended_tool.as_deref(), Some("apply_patch"));
+
+        let loaded = store.get_run(&run_id).unwrap().unwrap();
+        let retryable = loaded
+            .retryable_action
+            .expect("retryable action should remain available after approval");
+        assert_eq!(retryable.kind, "patch.apply");
+        assert!(retryable.is_valid);
+        assert!(retryable.is_recommended);
+    }
+
+    #[test]
+    fn lifecycle_replan_updates_run_state() {
+        // V3: Replan flow - prepare -> replan with failure context
+        let store = Store::open_in_memory().unwrap();
+        let (val, _) = dispatch(
+            Method::RunPrepare,
+            serde_json::json!({
+                "workspaceId": "/test/ws",
+                "userGoal": "implement feature",
+                "plan": ["write code", "run tests"]
+            }),
+            &store,
+        )
+        .unwrap();
+        let prepared: RunPrepareResult = serde_json::from_value(val).unwrap();
+        let run_id = prepared.run_id;
+
+        let (val, _) = dispatch(
+            Method::RunReplan,
+            serde_json::json!({
+                "runId": &run_id,
+                "reason": "tests failed due to import mismatch",
+                "newEvidence": ["compile error: unresolved import"],
+                "failureContext": "cargo test failed with unresolved import"
+            }),
+            &store,
+        )
+        .unwrap();
+        let replanned: RunReplanResult = serde_json::from_value(val).unwrap();
+        assert_eq!(replanned.run_id, run_id);
+        assert!(!replanned.replan_summary.is_empty());
+        assert_eq!(replanned.status, "active");
+        assert!(!replanned.pending_steps.is_empty());
+
+        let history = store.get_run_history(&run_id, 10).unwrap();
+        assert!(
+            history.iter().any(|e| e.event_kind == "replan_performed"),
+            "replan should append an audit entry"
+        );
+    }
+
+    #[test]
+    fn lifecycle_queue_inspection_workflow() {
+        // V5: Queue inspection - create runs, prioritize, inspect list + overview
+        let store = Store::open_in_memory().unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunPrepare,
+            serde_json::json!({"workspaceId": "/test/ws", "userGoal": "first goal", "plan": ["a"]}),
+            &store,
+        )
+        .unwrap();
+        let run_a: RunPrepareResult = serde_json::from_value(val).unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunPrepare,
+            serde_json::json!({"workspaceId": "/test/ws", "userGoal": "second goal", "plan": ["b"]}),
+            &store,
+        )
+        .unwrap();
+        let run_b: RunPrepareResult = serde_json::from_value(val).unwrap();
+
+        dispatch(
+            Method::RunSetPriority,
+            serde_json::json!({"runId": &run_a.run_id, "priority": "urgent", "reason": "release blocker"}),
+            &store,
+        )
+        .unwrap();
+        dispatch(
+            Method::RunAssignOwner,
+            serde_json::json!({"runId": &run_a.run_id, "assignee": "alice"}),
+            &store,
+        )
+        .unwrap();
+        dispatch(
+            Method::RunFinalize,
+            serde_json::json!({"runId": &run_b.run_id, "outcomeKind": "completed", "summary": "done"}),
+            &store,
+        )
+        .unwrap();
+
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"limit": 50, "sortByPriority": true}),
+            &store,
+        )
+        .unwrap();
+        let runs: RunsListResult = serde_json::from_value(val).unwrap();
+        assert_eq!(runs.count, 2);
+        assert_eq!(runs.runs[0].run_id, run_a.run_id);
+        assert_eq!(runs.runs[0].priority, RunPriority::Urgent);
+        assert_eq!(runs.runs[0].assignee.as_deref(), Some("alice"));
+        assert!(runs.runs.iter().any(|r| r.status.starts_with("finalized:")));
+
+        let (val, _) = dispatch(Method::RunsQueueOverview, serde_json::json!({}), &store).unwrap();
+        let overview: RunQueueOverview = serde_json::from_value(val).unwrap();
+        assert!(overview.total_visible >= 2);
+        assert!(overview.by_priority.urgent >= 1);
+    }
+
+    #[test]
+    fn lifecycle_metadata_visible_in_run_get_and_list() {
+        // V6: Metadata visibility - annotate/pin/priority/owner/due date are inspectable
+        let store = Store::open_in_memory().unwrap();
+        let (val, _) = dispatch(
+            Method::RunPrepare,
+            serde_json::json!({"workspaceId": "/test/ws", "userGoal": "metadata test", "plan": ["x"]}),
+            &store,
+        )
+        .unwrap();
+        let prepared: RunPrepareResult = serde_json::from_value(val).unwrap();
+        let run_id = prepared.run_id;
+
+        dispatch(
+            Method::RunAnnotate,
+            serde_json::json!({"runId": &run_id, "labels": ["urgent", "backend"], "operatorNote": "watch this"}),
+            &store,
+        )
+        .unwrap();
+        dispatch(
+            Method::RunPin,
+            serde_json::json!({"runId": &run_id, "reason": "priority focus"}),
+            &store,
+        )
+        .unwrap();
+        dispatch(
+            Method::RunSetPriority,
+            serde_json::json!({"runId": &run_id, "priority": "high", "reason": "important"}),
+            &store,
+        )
+        .unwrap();
+        dispatch(
+            Method::RunAssignOwner,
+            serde_json::json!({"runId": &run_id, "assignee": "bob", "note": "owns delivery"}),
+            &store,
+        )
+        .unwrap();
+        dispatch(
+            Method::RunSetDueDate,
+            serde_json::json!({"runId": &run_id, "dueDate": "2030-01-15", "reason": "target release"}),
+            &store,
+        )
+        .unwrap();
+
+        let (val, _) = dispatch(Method::RunGet, serde_json::json!({"runId": &run_id}), &store).unwrap();
+        let state: RunGetResult = serde_json::from_value(val).unwrap();
+        assert_eq!(state.priority, RunPriority::High);
+        assert_eq!(state.run_state.assignee.as_deref(), Some("bob"));
+        assert_eq!(state.due_date.as_deref(), Some("2030-01-15"));
+        assert!(state.pin_metadata.is_some());
+        let annotation = state.annotation.expect("annotation should exist");
+        assert_eq!(annotation.labels, vec!["backend", "urgent"]);
+        assert_eq!(annotation.operator_note.as_deref(), Some("watch this"));
+
+        let (val, _) = dispatch(
+            Method::RunsList,
+            serde_json::json!({"limit": 20, "label": "urgent", "pinnedOnly": true}),
+            &store,
+        )
+        .unwrap();
+        let listed: RunsListResult = serde_json::from_value(val).unwrap();
+        assert_eq!(listed.count, 1);
+        assert_eq!(listed.runs[0].run_id, run_id);
+        assert_eq!(listed.runs[0].priority, RunPriority::High);
+        assert_eq!(listed.runs[0].due_date.as_deref(), Some("2030-01-15"));
+    }
+
+    #[test]
     fn lifecycle_finalize_reopen_finalize() {
         // V4: Recovery - finalize, reopen, finalize again
         let store = Store::open_in_memory().unwrap();

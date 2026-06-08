@@ -163,7 +163,7 @@ Legend:
 
 ### Rust Daemon Tests
 
-Location: `codex-rs/deterministic-daemon/src/tests.rs` (or adjacent test modules)
+Location: `codex-rs/deterministic-daemon/src/handlers.rs` (`#[cfg(test)] mod tests`)
 
 Priority tests:
 1. **Lifecycle integration**: prepare → refresh → finalize
@@ -174,7 +174,7 @@ Priority tests:
 
 ### TypeScript Gateway Tests
 
-Location: `apps/chatgpt-mcp/src/__tests__/` (if exists)
+Location: `apps/chatgpt-mcp/src/*.test.ts`
 
 Priority tests:
 1. **Tool-to-daemon mapping**: Verify tools call correct daemon methods
@@ -238,9 +238,8 @@ MVP is ready when:
 ## Next Steps
 
 1. **Quick start**: See [MVP_README.md](./MVP_README.md) for the fastest path to first use
-2. **Add missing integration tests** for V1-V6
-3. **Create manual walkthrough checklist** (see `MANUAL_VALIDATION_WALKTHROUGH.md`)
-4. **Run manual validations** for each workflow
+2. **Execute and verify integration scenarios** for V1-V6 in daemon + gateway test suites
+3. **Run manual validations** for each workflow (see `MANUAL_VALIDATION_WALKTHROUGH.md`)
+4. **Record evidence** in [VALIDATION_EVIDENCE_REPORT.md](./VALIDATION_EVIDENCE_REPORT.md)
 5. **Document findings** and update readiness assessment
 6. **Fix any blocking issues** discovered during validation
-6. **Quick start**: See [MVP_README.md](./MVP_README.md) for the fastest path to first use

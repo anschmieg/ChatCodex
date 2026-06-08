@@ -413,7 +413,7 @@ Expected:
 
 ## Recording Results
 
-After completing validation, record findings in `docs/MVP_CHECKPOINT_REVIEW.md`:
+After completing validation, record findings in `docs/VALIDATION_EVIDENCE_REPORT.md` (and summarize decisions in `docs/MVP_CHECKPOINT_REVIEW.md`):
 
 ### What Worked
 
@@ -468,8 +468,9 @@ After completing validation, record findings in `docs/MVP_CHECKPOINT_REVIEW.md`:
 After completing manual validation:
 
 1. Update `docs/MVP_CHECKPOINT_REVIEW.md` with findings
-2. File issues for any bugs discovered
-3. Mark completed validations in `docs/VALIDATION_PLAN.md`
+2. Update `docs/VALIDATION_EVIDENCE_REPORT.md` with status, evidence links, and blocker triage
+3. File issues for any bugs discovered
+4. Mark completed validations in `docs/VALIDATION_PLAN.md`
 4. Decide MVP readiness
 
 **Quick start**: See [MVP_README.md](./MVP_README.md) for the fastest path to first use
