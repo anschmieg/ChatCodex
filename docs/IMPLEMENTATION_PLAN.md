@@ -7,7 +7,7 @@
 
 - Branch: `codex/native-harness-mcp`
 - Phase: native harness facade design and implementation
-- Last updated: 2026-06-08
+- Last updated: 2026-06-09
 - Previous approach: custom `deterministic-*` Rust crates plus a TypeScript MCP
   gateway. It remains in the branch temporarily for reference but is deprecated.
 - Current build health:
@@ -15,8 +15,17 @@
   - Existing TypeScript tests are unreliable because ignored stale files in
     `apps/chatgpt-mcp/dist` are included by the test glob.
   - Rust `1.93.0` is installed and the native catalog contract test passes.
-  - Validation must set `RUSTC` and `RUSTDOC` to the rustup `1.93.0` binaries
-    because this machine has a broken Homebrew Rust earlier in `PATH`.
+  - Validation must put the rustup `1.93.0` `bin` directory first in `PATH`
+    and set `RUSTC`, `RUSTDOC`, and `RUSTFMT` explicitly because this machine
+    has a broken Homebrew Rust earlier in `PATH`.
+  - The Ubuntu image builds locally with the full `codex-core` dependency and
+    passes health, bearer-authentication, MCP initialization, non-root, Git,
+    ripgrep, and mount-point smoke checks.
+  - The Rust builder needs more than `2 GiB`; `6 GiB` is the verified local
+    configuration. The runtime image is not expected to need comparable memory.
+  - The Coolify application `okgs4ck888w0ws48wow48co8` tracks branch
+    `codex/chatcodex-coolify-deploy`, builds
+    `/deploy/chatcodex/Dockerfile`, exposes port `3000`, and checks `/healthz`.
 
 ## Goal
 
@@ -173,9 +182,9 @@ Actions:
 - [ ] Use Codex's native function-form `apply_patch` schema because MCP call
       arguments cannot carry a raw freeform string.
 - [x] Add stdio transport.
-- [ ] Add Streamable HTTP transport.
-- [ ] Add constant-time bearer-token validation.
-- [ ] Add `/healthz`.
+- [x] Add Streamable HTTP transport.
+- [x] Add constant-time bearer-token validation.
+- [x] Add `/healthz`.
 
 Acceptance:
 
@@ -188,6 +197,10 @@ Implemented:
 
 - `codex-native-harness-mcp` is a Rust workspace package.
 - Its stdio server advertises the native Codex catalog through `tools/list`.
+- Its HTTP server exposes Streamable HTTP at `/mcp`, requires
+  `CHATCODEX_BEARER_TOKEN` (with `MCP_AUTH_TOKEN` retained as a deployment
+  compatibility alias), and leaves `/healthz` unauthenticated for container
+  orchestration.
 - `tools/call` currently returns an explicit not-implemented MCP error; no
   alternate executor or policy path is present.
 
@@ -228,26 +241,45 @@ Acceptance:
 
 ### M5: Container and Coolify Deployment
 
-Status: pending
+Status: in progress
 
 Files expected:
 
-- `Dockerfile`
-- `docker-compose.yml`
+- `deploy/chatcodex/Dockerfile`
 - `.dockerignore`
 - deployment documentation
 
 Actions:
 
-- [ ] Build the Rust binary in a builder stage.
-- [ ] Create an Ubuntu 24.04 runtime with Git and common shell utilities.
-- [ ] Run as a non-root `chatcodex` user.
+- [x] Build the Rust binary in a builder stage.
+- [x] Create an Ubuntu 24.04 runtime with Git and common shell utilities.
+- [x] Run as a non-root `chatcodex` user.
 - [ ] Make the image filesystem read-only except explicit mounts and tmpfs.
 - [ ] Drop all capabilities and enable `no-new-privileges`.
 - [ ] Add CPU, memory, and PID limits in Compose.
-- [ ] Mount `/workspaces` and `/data`.
+- [ ] Mount `/workspaces` and `/data`; the image creates both mount points,
+      but Coolify persistent storage still needs verification.
 - [ ] Document optional read-only SSH credential mounting.
 - [ ] Add Coolify deployment instructions.
+
+Implemented:
+
+- `deploy/chatcodex/Dockerfile` matches the existing Coolify application path.
+- The runtime image contains Git, curl, ripgrep, and CA certificates and runs
+  as UID `10001`.
+- Container builds disable the upstream workspace's fat LTO, use one Cargo
+  build job, and set `opt-level=0` so full `codex-core` compilation fits
+  moderate Docker/Coolify builders. Builds in a `2 GiB` Colima VM exhausted
+  memory in upstream protocol and core crates; `6 GiB` is verified. BuildKit
+  cache mounts preserve Cargo downloads and compiled dependencies across
+  retries.
+- Local container validation passed on 2026-06-09: `/healthz` returned exactly
+  `{"status":"ok"}`, unauthenticated `/mcp` returned `401`, authenticated MCP
+  initialization succeeded, UID `10001` was active, and Git `2.43.0` plus
+  ripgrep `14.1.0` were available.
+- The active deployment task is to push `codex/native-harness-mcp`, switch
+  application `okgs4ck888w0ws48wow48co8` to that branch, deploy it, and verify
+  both `/healthz` and authenticated `/mcp`.
 
 Acceptance:
 
@@ -285,9 +317,9 @@ Actions:
 - [ ] Exercise a yielded process with `write_stdin`.
 - [ ] Exercise approval approve and deny paths.
 - [ ] Verify workspace escape rejection.
-- [ ] Verify HTTP authentication.
-- [ ] Build and smoke-test the Docker image.
-- [ ] Grep for provider/model calls and forbidden agent-loop surfaces.
+- [x] Verify HTTP authentication.
+- [x] Build and smoke-test the Docker image.
+- [x] Grep for provider/model calls and forbidden agent-loop surfaces.
 
 Acceptance:
 
@@ -298,13 +330,25 @@ Acceptance:
 
 ## Verification Commands
 
-Run from `codex-rs/` unless noted:
+Run from `codex-rs/` unless noted. First pin the working toolchain:
 
 ```bash
-rustup run 1.93.0 cargo fmt --check
-rustup run 1.93.0 cargo test -p codex-core -p native-harness-mcp
-rustup run 1.93.0 cargo clippy -p codex-core -p native-harness-mcp --all-targets -- -D warnings
+export RUST_TOOLCHAIN_BIN="$HOME/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin"
+export PATH="$RUST_TOOLCHAIN_BIN:$PATH"
+export RUSTC="$RUST_TOOLCHAIN_BIN/rustc"
+export RUSTDOC="$RUST_TOOLCHAIN_BIN/rustdoc"
+export RUSTFMT="$RUST_TOOLCHAIN_BIN/rustfmt"
+
+cargo fmt -p codex-native-harness-mcp --check
+cargo test -p codex-native-harness-mcp
+cargo test -p codex-core \
+  harness_mcp::tests::native_catalog_uses_codex_tool_specs_without_agent_tools
+cargo clippy -p codex-native-harness-mcp --all-targets -- -D warnings
 ```
+
+The whole-workspace format check currently fails in the deprecated
+`deterministic-*` crates; do not reformat those unrelated files as part of
+native harness work.
 
 Repository invariant scan:
 
@@ -314,14 +358,17 @@ rg -n \
   codex-rs/native-harness-mcp codex-rs/core/src/harness_mcp.rs
 ```
 
-Container validation:
+Container validation (allocate at least `6 GiB` to the builder):
 
 ```bash
-docker compose build
-docker compose config
-docker compose up -d
-curl -fsS http://127.0.0.1:3000/healthz
-docker compose down
+docker build -f deploy/chatcodex/Dockerfile -t chatcodex:native-dev .
+docker run --rm -d --name chatcodex-native-smoke \
+  -p 3301:3000 \
+  -e MCP_AUTH_TOKEN=container-smoke \
+  chatcodex:native-dev
+curl -fsS http://127.0.0.1:3301/healthz
+docker exec chatcodex-native-smoke git --version
+docker stop chatcodex-native-smoke
 ```
 
 ## Takeover Notes

@@ -1,0 +1,11 @@
+.git
+.github
+.codex
+.agents
+apps
+codex-cli
+codex-rs/target
+docs
+node_modules
+target
+copilot-session-*.md

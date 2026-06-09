@@ -1,4 +1,7 @@
+use std::net::SocketAddr;
+
 use codex_native_harness_mcp::NativeHarnessMcp;
+use codex_native_harness_mcp::http_router;
 use rmcp::ServiceExt;
 
 fn stdio() -> (tokio::io::Stdin, tokio::io::Stdout) {
@@ -7,6 +10,26 @@ fn stdio() -> (tokio::io::Stdin, tokio::io::Stdout) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if std::env::var("CHATCODEX_TRANSPORT").as_deref() == Ok("stdio") {
+        return run_stdio().await;
+    }
+
+    let bind_addr = std::env::var("CHATCODEX_BIND")
+        .unwrap_or_else(|_| "0.0.0.0:3000".to_string())
+        .parse::<SocketAddr>()?;
+    let bearer_token = std::env::var("CHATCODEX_BEARER_TOKEN")
+        .or_else(|_| std::env::var("MCP_AUTH_TOKEN"))
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "CHATCODEX_BEARER_TOKEN or MCP_AUTH_TOKEN must be set for HTTP transport"
+            )
+        })?;
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+    axum::serve(listener, http_router(bearer_token)?).await?;
+    Ok(())
+}
+
+async fn run_stdio() -> anyhow::Result<()> {
     let server = NativeHarnessMcp::new()?;
     let running = server.serve(stdio()).await?;
     running.waiting().await?;

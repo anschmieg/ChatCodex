@@ -2194,6 +2194,7 @@ name = "codex-native-harness-mcp"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "axum",
  "codex-core",
  "rmcp",
  "serde_json",

@@ -5,6 +5,17 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use axum::Router;
+use axum::body::Body;
+use axum::extract::State;
+use axum::http::Request;
+use axum::http::StatusCode;
+use axum::http::header::AUTHORIZATION;
+use axum::middleware;
+use axum::middleware::Next;
+use axum::response::Json;
+use axum::response::Response;
+use axum::routing::get;
 use codex_core::harness_mcp::HarnessToolSpec;
 use codex_core::harness_mcp::native_tool_catalog;
 use rmcp::ErrorData as McpError;
@@ -17,6 +28,10 @@ use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::model::Tool;
+use rmcp::transport::StreamableHttpServerConfig;
+use rmcp::transport::StreamableHttpService;
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use serde_json::json;
 
 #[derive(Clone)]
 pub struct NativeHarnessMcp {
@@ -37,6 +52,60 @@ impl NativeHarnessMcp {
     pub fn tools(&self) -> &[Tool] {
         self.tools.as_slice()
     }
+}
+
+pub fn http_router(bearer_token: String) -> anyhow::Result<Router> {
+    anyhow::ensure!(!bearer_token.is_empty(), "CHATCODEX_BEARER_TOKEN is empty");
+    let service = NativeHarnessMcp::new()?;
+    let expected_bearer = Arc::new(format!("Bearer {bearer_token}"));
+    let mcp_service = StreamableHttpService::new(
+        move || Ok(service.clone()),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default(),
+    );
+
+    Ok(Router::new()
+        .route("/healthz", get(healthz))
+        .nest_service("/mcp", mcp_service)
+        .layer(middleware::from_fn_with_state(
+            expected_bearer,
+            require_bearer,
+        )))
+}
+
+async fn healthz() -> Json<serde_json::Value> {
+    Json(json!({ "status": "ok" }))
+}
+
+async fn require_bearer(
+    State(expected): State<Arc<String>>,
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if request.uri().path() == "/healthz" {
+        return Ok(next.run(request).await);
+    }
+
+    let supplied = request
+        .headers()
+        .get(AUTHORIZATION)
+        .map(axum::http::HeaderValue::as_bytes)
+        .unwrap_or_default();
+    if constant_time_eq(supplied, expected.as_bytes()) {
+        Ok(next.run(request).await)
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = left.len() ^ right.len();
+    for index in 0..left.len().max(right.len()) {
+        let left_byte = left.get(index).copied().unwrap_or_default();
+        let right_byte = right.get(index).copied().unwrap_or_default();
+        difference |= usize::from(left_byte ^ right_byte);
+    }
+    difference == 0
 }
 
 fn tool_from_native_spec(native: HarnessToolSpec) -> anyhow::Result<Tool> {
@@ -115,6 +184,7 @@ impl ServerHandler for NativeHarnessMcp {
 #[cfg(test)]
 mod tests {
     use super::NativeHarnessMcp;
+    use super::constant_time_eq;
 
     #[test]
     fn mcp_catalog_preserves_native_names_and_input_schemas() {
@@ -145,5 +215,12 @@ mod tests {
             apply_patch.input_schema["required"],
             serde_json::json!(["input"])
         );
+    }
+
+    #[test]
+    fn bearer_comparison_checks_content_and_length() {
+        assert!(constant_time_eq(b"Bearer secret", b"Bearer secret"));
+        assert!(!constant_time_eq(b"Bearer secret", b"Bearer other"));
+        assert!(!constant_time_eq(b"Bearer secret", b"Bearer secret-longer"));
     }
 }
