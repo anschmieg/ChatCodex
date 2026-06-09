@@ -267,8 +267,8 @@ Implemented:
 - `deploy/chatcodex/Dockerfile` matches the existing Coolify application path.
 - The runtime image contains Git, curl, ripgrep, and CA certificates and runs
   as UID `10001`.
-- Container builds disable the upstream workspace's fat LTO, use one Cargo
-  build job, and set `opt-level=0` so full `codex-core` compilation fits
+- Container builds disable the upstream workspace's fat LTO, use two Cargo
+  build jobs, and set `opt-level=0` so full `codex-core` compilation fits
   moderate Docker/Coolify builders. Builds in a `2 GiB` Colima VM exhausted
   memory in upstream protocol and core crates; `6 GiB` is verified. BuildKit
   cache mounts preserve Cargo downloads and compiled dependencies across
@@ -280,6 +280,11 @@ Implemented:
 - The active deployment task is to push `codex/native-harness-mcp`, switch
   application `okgs4ck888w0ws48wow48co8` to that branch, deploy it, and verify
   both `/healthz` and authenticated `/mcp`.
+- Coolify deployment `i3ajr3ar5u5ygi35m7pu9cxl` failed on 2026-06-09 when its
+  cold, single-job Rust build was terminated after approximately ten minutes;
+  no Rust compiler error was emitted. A second single-job attempt followed the
+  same timeline and was cancelled before the same ceiling. Builder concurrency
+  is now two jobs to use the deployment server's available CPU.
 
 Acceptance:
 
