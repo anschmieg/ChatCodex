@@ -1,0 +1,53 @@
+[package]
+name = "codex-native-harness-mcp-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "codex_native_harness_mcp_auth"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+askama = { workspace = true }
+axum = { workspace = true, features = ["form", "http1", "json", "query", "tokio"] }
+base64 = { workspace = true }
+rand = { workspace = true }
+rand_core = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+rusqlite = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+time = { workspace = true, features = ["formatting", "macros"] }
+rsa = { workspace = true, features = ["sha2"] }
+pkcs8 = { workspace = true, features = ["pem", "alloc"] }
+spki = { workspace = true, features = ["pem"] }
+pem = { workspace = true }
+signature = { workspace = true, features = ["std"] }
+serde_urlencoded = { workspace = true }
+http-body-util = { workspace = true }
+tokio = { workspace = true, features = [
+    "io-std",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+tower = { workspace = true, features = ["util"] }
+tower-http = { workspace = true, features = ["trace"] }
+tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["io-std", "macros", "net", "rt-multi-thread"] }
+tower = { workspace = true, features = ["util"] }
+urlencoding = { workspace = true }

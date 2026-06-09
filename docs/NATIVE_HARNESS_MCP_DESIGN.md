@@ -91,9 +91,15 @@ The server supports:
 - stdio for local development and protocol tests;
 - Streamable HTTP for ChatGPT and Coolify;
 - `/healthz` for deployment probes;
-- one configured bearer token for the personal remote deployment.
+- the OAuth 2.1 / MCP 2025-11-25 layer implemented in
+  `codex-rs/native-harness-mcp-auth`. The same origin mints and validates
+  access tokens, exposes discovery + JWKS, and serves the streamable MCP
+  transport behind a JWT bearer middleware. Cloudflare Access is the
+  upstream IdP; the consent step reads the team's `CF_Authorization` cookie
+  and verifies it against `<team>/cdn-cgi/access/certs`.
 
-OAuth and multi-user tenancy are intentionally out of scope.
+Multi-user tenancy remains out of scope. The current release is a single
+operator deployment authenticated by the Cloudflare Access team.
 
 ## Migration
 

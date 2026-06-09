@@ -6,8 +6,8 @@
 ## Current Status
 
 - Branch: `codex/native-harness-mcp`
-- Phase: native dispatch complete; OAuth and approval bridge next
-- Last updated: 2026-06-09 16:29 CEST
+- Phase: OAuth 2.1 layer complete; approval bridge next
+- Last updated: 2026-06-09 20:00 CEST
 - Previous approach: custom `deterministic-*` Rust crates plus a TypeScript MCP
   gateway. It remains in the branch temporarily for reference but is deprecated.
 - Current build health:
@@ -347,8 +347,22 @@ Implemented:
   discovery, and removal or replacement of the origin's static-bearer gate.
   The protected MCP endpoint must return `401` with a `Bearer`
   `WWW-Authenticate` challenge rather than a browser `302`.
-- Native `tools/call` dispatch is implemented. OAuth discovery and token
-  validation are now the remaining ChatGPT connection blockers.
+- Native `tools/call` dispatch is implemented.
+- OAuth 2.1 / MCP 2025-11-25 authorization layer is implemented in the new
+  `codex-rs/native-harness-mcp-auth` crate. The HTTP transport no longer
+  relies on `CHATCODEX_BEARER_TOKEN` / `MCP_AUTH_TOKEN`; instead the
+  streamable `/mcp` service is mounted behind a JWT bearer middleware that
+  verifies RS256 access tokens issued by this server. Discovery endpoints
+  (`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`,
+  `/.well-known/jwks.json`) and the full authorization-code + refresh-token
+  flow (`/oauth/{authorize,authorize/decide,register,token,introspect,revoke}`)
+  are exposed by the same binary. Cloudflare Access remains the upstream IdP:
+  the consent step reads the team's `CF_Authorization` cookie and verifies it
+  against the JWKS at `<team>/cdn-cgi/access/certs`. Required env vars on the
+  origin are `CHATCODEX_PUBLIC_BASE_URL`, `CHATCODEX_CF_ACCESS_TEAM`,
+  `CHATCODEX_CF_ACCESS_AUD`. Optional `CHATCODEX_OAUTH_ALLOW_CONFIDENTIAL=1`
+  permits `client_secret_post` registrations (off by default; ChatGPT
+  registers as a public PKCE client).
 - Local rebuild on 2026-06-09 confirmed the dispatch image starts and serves
   MCP traffic. The Dockerfile now installs `libcap-dev` in the builder stage
   so `codex-linux-sandbox`'s vendored `bubblewrap` `build.rs` (pulled in

@@ -22,15 +22,12 @@ async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     let bind_addr = std::env::var("CHATCODEX_BIND")
         .unwrap_or_else(|_| "0.0.0.0:3000".to_string())
         .parse::<SocketAddr>()?;
-    let bearer_token = std::env::var("CHATCODEX_BEARER_TOKEN")
-        .or_else(|_| std::env::var("MCP_AUTH_TOKEN"))
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "CHATCODEX_BEARER_TOKEN or MCP_AUTH_TOKEN must be set for HTTP transport"
-            )
-        })?;
+    // Validate OAuth config eagerly so the operator gets a clear error if
+    // CHATCODEX_PUBLIC_BASE_URL / CHATCODEX_CF_ACCESS_TEAM /
+    // CHATCODEX_CF_ACCESS_AUD are missing or malformed.
+    codex_native_harness_mcp_auth::AuthConfig::from_env()?;
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-    axum::serve(listener, http_router(bearer_token, arg0_paths).await?).await?;
+    axum::serve(listener, http_router(arg0_paths).await?).await?;
     Ok(())
 }
 

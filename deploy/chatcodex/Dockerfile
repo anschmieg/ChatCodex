@@ -39,9 +39,15 @@ COPY --from=builder \
     /tmp/chatcodex \
     /usr/local/bin/chatcodex
 
-ENV CHATCODEX_BIND=0.0.0.0:3000
-ENV CHATCODEX_DATA_DIR=/data
-ENV CHATCODEX_WORKSPACE_ROOT=/workspaces
+ENV CHATCODEX_BIND=0.0.0.0:3000 \
+    CHATCODEX_DATA_DIR=/data \
+    CHATCODEX_WORKSPACE_ROOT=/workspaces \
+    CHATCODEX_PUBLIC_BASE_URL=https://codex.example.invalid \
+    CHATCODEX_CF_ACCESS_TEAM=https://team.cloudflareaccess.com \
+    CHATCODEX_CF_ACCESS_AUD=replace-me-at-deploy-time \
+    CHATCODEX_OAUTH_ACCESS_TTL_SECS=3600 \
+    CHATCODEX_OAUTH_REFRESH_TTL_SECS=2592000
+
 ENV CODEX_HOME=/data/codex
 ENV HOME=/home/chatcodex
 

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Authorize ChatCodex</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 480px; margin: 4em auto; padding: 0 1em; color: #1f2328; }
+    h1 { font-size: 1.5em; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.4em 1em; margin: 1em 0; }
+    dt { font-weight: 600; color: #57606a; }
+    .actions { display: flex; gap: 0.6em; margin-top: 1.5em; }
+    button { padding: 0.5em 0.9em; border: 1px solid #1f2328; border-radius: 4px; cursor: pointer; font: inherit; }
+    button.primary { background: #1f2328; color: #fff; }
+    .error { color: #b3261e; }
+  </style>
+</head>
+<body>
+  <h1>Authorize ChatCodex</h1>
+  {% if let Some(error) = error %}
+  <p class="error">{{ error }}</p>
+  {% endif %}
+  <p>The client <code>{{ client_id }}</code> is requesting access to your ChatCodex MCP server.</p>
+  <dl>
+    <dt>Signed in as</dt><dd>{{ subject }}</dd>
+    {% if let Some(email) = email %}
+    <dt>Email</dt><dd>{{ email }}</dd>
+    {% endif %}
+    <dt>Scope</dt><dd>{{ scope }}</dd>
+    <dt>Redirect</dt><dd><code>{{ redirect_uri }}</code></dd>
+  </dl>
+  <form method="post" action="/oauth/authorize/decide" class="actions">
+    <input type="hidden" name="state" value="{{ state }}" />
+    <input type="hidden" name="client_id" value="{{ client_id }}" />
+    <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}" />
+    <input type="hidden" name="scope" value="{{ scope }}" />
+    <input type="hidden" name="code_challenge" value="{{ code_challenge }}" />
+    <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}" />
+    <button type="submit" name="decision" value="allow" class="primary">Allow</button>
+    <button type="submit" name="decision" value="deny">Deny</button>
+  </form>
+</body>
+</html>

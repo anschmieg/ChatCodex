@@ -2198,10 +2198,44 @@ dependencies = [
  "codex-apply-patch",
  "codex-arg0",
  "codex-core",
+ "codex-native-harness-mcp-auth",
  "rmcp",
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "codex-native-harness-mcp-auth"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "askama",
+ "axum",
+ "base64 0.22.1",
+ "http-body-util",
+ "pem",
+ "pkcs8",
+ "rand 0.9.2",
+ "rand_core 0.6.4",
+ "reqwest",
+ "rsa",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2",
+ "signature",
+ "spki",
+ "tempfile",
+ "time",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "url",
+ "urlencoding",
+ "uuid",
 ]
 
 [[package]]
@@ -7991,6 +8025,7 @@ dependencies = [
  "pkcs1",
  "pkcs8",
  "rand_core 0.6.4",
+ "sha2",
  "signature",
  "spki",
  "subtle",
@@ -10046,6 +10081,7 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

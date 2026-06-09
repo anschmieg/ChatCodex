@@ -20,6 +20,7 @@ anyhow = { workspace = true }
 axum = { workspace = true, features = ["http1", "json", "tokio"] }
 codex-arg0 = { workspace = true }
 codex-core = { workspace = true }
+codex-native-harness-mcp-auth = { workspace = true }
 rmcp = { workspace = true, features = [
     "server",
     "transport-streamable-http-server",

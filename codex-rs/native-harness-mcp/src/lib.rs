@@ -1,4 +1,10 @@
 //! MCP transport adapter for the deterministic Codex harness.
+//!
+//! The HTTP transport is mounted behind an OAuth 2.1 / MCP 2025-11-25
+//! authorization layer provided by `codex-native-harness-mcp-auth`. The
+//! `/mcp` route is protected by a bearer-JWT middleware; discovery,
+//! client registration, authorize/token, and JWKS routes are exposed
+//! publicly so the ChatGPT client can complete the flow.
 
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
@@ -6,15 +12,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::body::Body;
-use axum::extract::State;
-use axum::http::Request;
-use axum::http::StatusCode;
-use axum::http::header::AUTHORIZATION;
-use axum::middleware;
-use axum::middleware::Next;
 use axum::response::Json;
-use axum::response::Response;
 use axum::routing::get;
 use codex_arg0::Arg0DispatchPaths;
 use codex_core::harness_mcp::HarnessToolSpec;
@@ -97,60 +95,72 @@ impl NativeHarnessMcp {
 }
 
 pub async fn http_router(
-    bearer_token: String,
     arg0_paths: Arg0DispatchPaths,
 ) -> anyhow::Result<Router> {
-    anyhow::ensure!(!bearer_token.is_empty(), "CHATCODEX_BEARER_TOKEN is empty");
     let service = NativeHarnessMcp::new_with_arg0_paths(arg0_paths).await?;
-    let expected_bearer = Arc::new(format!("Bearer {bearer_token}"));
     let mcp_service = StreamableHttpService::new(
         move || Ok(service.clone()),
         Arc::new(LocalSessionManager::default()),
         StreamableHttpServerConfig::default(),
     );
 
+    let auth_state = codex_native_harness_mcp_auth::AuthState::from_env()?;
+
     Ok(Router::new()
         .route("/healthz", get(healthz))
-        .nest_service("/mcp", mcp_service)
-        .layer(middleware::from_fn_with_state(
-            expected_bearer,
-            require_bearer,
-        )))
+        .merge(
+            Router::new()
+                .route(
+                    "/.well-known/oauth-authorization-server",
+                    get(codex_native_harness_mcp_auth::well_known::oauth_authorization_server),
+                )
+                .route(
+                    "/.well-known/oauth-protected-resource",
+                    get(codex_native_harness_mcp_auth::well_known::oauth_protected_resource),
+                )
+                .route(
+                    "/.well-known/jwks.json",
+                    get(codex_native_harness_mcp_auth::well_known::jwks),
+                )
+                .route(
+                    "/oauth/authorize",
+                    get(codex_native_harness_mcp_auth::authorize::authorize),
+                )
+                .route(
+                    "/oauth/authorize/decide",
+                    axum::routing::post(codex_native_harness_mcp_auth::authorize::decide),
+                )
+                .route(
+                    "/oauth/register",
+                    axum::routing::post(codex_native_harness_mcp_auth::clients::register),
+                )
+                .route(
+                    "/oauth/token",
+                    axum::routing::post(codex_native_harness_mcp_auth::token::token),
+                )
+                .route(
+                    "/oauth/introspect",
+                    axum::routing::post(codex_native_harness_mcp_auth::token::introspect),
+                )
+                .route(
+                    "/oauth/revoke",
+                    axum::routing::post(codex_native_harness_mcp_auth::token::revoke),
+                )
+                .with_state(auth_state.clone()),
+        )
+        .nest(
+            "/mcp",
+            Router::new()
+                .fallback_service(mcp_service)
+                .layer(axum::middleware::from_fn_with_state(
+                    auth_state,
+                    codex_native_harness_mcp_auth::middleware::require_bearer,
+                )),
+        ))
 }
 
 async fn healthz() -> Json<serde_json::Value> {
     Json(json!({ "status": "ok" }))
-}
-
-async fn require_bearer(
-    State(expected): State<Arc<String>>,
-    request: Request<Body>,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    if request.uri().path() == "/healthz" {
-        return Ok(next.run(request).await);
-    }
-
-    let supplied = request
-        .headers()
-        .get(AUTHORIZATION)
-        .map(axum::http::HeaderValue::as_bytes)
-        .unwrap_or_default();
-    if constant_time_eq(supplied, expected.as_bytes()) {
-        Ok(next.run(request).await)
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
-    }
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let mut difference = left.len() ^ right.len();
-    for index in 0..left.len().max(right.len()) {
-        let left_byte = left.get(index).copied().unwrap_or_default();
-        let right_byte = right.get(index).copied().unwrap_or_default();
-        difference |= usize::from(left_byte ^ right_byte);
-    }
-    difference == 0
 }
 
 fn tool_from_native_spec(native: HarnessToolSpec) -> anyhow::Result<Tool> {
@@ -241,7 +251,6 @@ impl ServerHandler for NativeHarnessMcp {
 #[cfg(test)]
 mod tests {
     use super::NativeHarnessMcp;
-    use super::constant_time_eq;
 
     #[tokio::test]
     async fn mcp_catalog_preserves_native_names_and_input_schemas() {
@@ -282,10 +291,5 @@ mod tests {
         );
     }
 
-    #[test]
-    fn bearer_comparison_checks_content_and_length() {
-        assert!(constant_time_eq(b"Bearer secret", b"Bearer secret"));
-        assert!(!constant_time_eq(b"Bearer secret", b"Bearer other"));
-        assert!(!constant_time_eq(b"Bearer secret", b"Bearer secret-longer"));
-    }
 }
+
