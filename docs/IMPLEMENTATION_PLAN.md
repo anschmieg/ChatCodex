@@ -29,6 +29,10 @@
   - Coolify deployment `e2qfqjefe8zg3uso0rmsomq5` successfully deployed commit
     `d9feb912bda5863cbc8fc0f68ceaf4de747dd5ed` on 2026-06-09. The application
     is `running:healthy` with zero restarts.
+  - The deployed endpoint is not yet connectable from ChatGPT. Cloudflare
+    Access currently returns a browser-oriented `302`/WARP challenge instead
+    of MCP OAuth discovery, and the origin accepts only one static bearer
+    secret. `tools/call` is also still intentionally unimplemented.
 
 ## Goal
 
@@ -293,6 +297,14 @@ Implemented:
   by Cloudflare Access and requests WARP authentication. Bearer enforcement and
   MCP initialization are verified against the exact image locally; deployed
   `/healthz` is verified by Coolify from inside the production container.
+- ChatGPT readiness requires Cloudflare Access Managed OAuth (or another
+  MCP-compliant OAuth 2.1 authorization server), RFC 9728 protected-resource
+  discovery, and removal or replacement of the origin's static-bearer gate.
+  The protected MCP endpoint must return `401` with a `Bearer`
+  `WWW-Authenticate` challenge rather than a browser `302`.
+- Authentication work alone is insufficient: direct native `tools/call`
+  dispatch must be implemented before ChatGPT can use the advertised coding
+  tools.
 
 Acceptance:
 
