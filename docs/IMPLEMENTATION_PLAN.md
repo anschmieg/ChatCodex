@@ -24,8 +24,11 @@
   - The Rust builder needs more than `2 GiB`; `6 GiB` is the verified local
     configuration. The runtime image is not expected to need comparable memory.
   - The Coolify application `okgs4ck888w0ws48wow48co8` tracks branch
-    `codex/chatcodex-coolify-deploy`, builds
+    `codex/native-harness-mcp`, builds
     `/deploy/chatcodex/Dockerfile`, exposes port `3000`, and checks `/healthz`.
+  - Coolify deployment `e2qfqjefe8zg3uso0rmsomq5` successfully deployed commit
+    `d9feb912bda5863cbc8fc0f68ceaf4de747dd5ed` on 2026-06-09. The application
+    is `running:healthy` with zero restarts.
 
 ## Goal
 
@@ -277,14 +280,19 @@ Implemented:
   `{"status":"ok"}`, unauthenticated `/mcp` returned `401`, authenticated MCP
   initialization succeeded, UID `10001` was active, and Git `2.43.0` plus
   ripgrep `14.1.0` were available.
-- The active deployment task is to push `codex/native-harness-mcp`, switch
-  application `okgs4ck888w0ws48wow48co8` to that branch, deploy it, and verify
-  both `/healthz` and authenticated `/mcp`.
+- Application `okgs4ck888w0ws48wow48co8` now runs this branch at
+  `https://codex.nothing.pink`. Coolify's in-container health check passed on
+  its first attempt during the rolling update.
 - Coolify deployment `i3ajr3ar5u5ygi35m7pu9cxl` failed on 2026-06-09 when its
   cold, single-job Rust build was terminated after approximately ten minutes;
   no Rust compiler error was emitted. A second single-job attempt followed the
   same timeline and was cancelled before the same ceiling. Builder concurrency
-  is now two jobs to use the deployment server's available CPU.
+  is now two jobs to use the deployment server's available CPU; the succeeding
+  build completed the rolling update in approximately ten minutes.
+- Direct public HTTP verification from this development machine is intercepted
+  by Cloudflare Access and requests WARP authentication. Bearer enforcement and
+  MCP initialization are verified against the exact image locally; deployed
+  `/healthz` is verified by Coolify from inside the production container.
 
 Acceptance:
 
