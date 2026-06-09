@@ -7,7 +7,7 @@
 
 - Branch: `codex/native-harness-mcp`
 - Phase: native dispatch complete; OAuth and approval bridge next
-- Last updated: 2026-06-09
+- Last updated: 2026-06-09 16:29 CEST
 - Previous approach: custom `deterministic-*` Rust crates plus a TypeScript MCP
   gateway. It remains in the branch temporarily for reference but is deprecated.
 - Current build health:
@@ -43,6 +43,24 @@
     Access currently returns a browser-oriented `302`/WARP challenge instead
     of MCP OAuth discovery, and the origin accepts only one static bearer
     secret. The new native-dispatch build has not yet been deployed.
+  - Local container rebuild on 2026-06-09 succeeded once `libcap-dev` was
+    added to the builder stage. `codex-linux-sandbox` is pulled in as a
+    transitive build-time dependency via `codex-arg0`; its vendored
+    `bubblewrap` build script invokes `pkg-config` for `libcap` and fails
+    without the headers. The exact same dependency graph existed before the
+    dispatch commit, so the previous Coolify image was rebuilt against a warm
+    `cargo` cache; the new Dockerfile installs the headers explicitly.
+  - Container smoke test (`docker build` + `docker run` on Colima) confirmed
+    `/healthz` returns `{"status":"ok"}`, unauthenticated `/mcp` returns
+    `401`, authenticated `initialize` returns a valid Streamable HTTP
+    `mcp-session-id`, `tools/list` advertises the full native catalog
+    (`exec_command`, `write_stdin`, `update_plan`, `apply_patch`,
+    `view_image`), and `tools/call update_plan` round-trips with
+    `isError: false`. `exec_command` and `apply_patch` go through `bwrap` on
+    the Linux sandbox, which the local Colima kernel refuses to grant even
+    with `kernel.unprivileged_userns_clone=1`. The Coolify production
+    host's kernel allows unprivileged user namespaces, so the same image
+    runs `bwrap` there.
 
 ## Goal
 
@@ -331,6 +349,24 @@ Implemented:
   `WWW-Authenticate` challenge rather than a browser `302`.
 - Native `tools/call` dispatch is implemented. OAuth discovery and token
   validation are now the remaining ChatGPT connection blockers.
+- Local rebuild on 2026-06-09 confirmed the dispatch image starts and serves
+  MCP traffic. The Dockerfile now installs `libcap-dev` in the builder stage
+  so `codex-linux-sandbox`'s vendored `bubblewrap` `build.rs` (pulled in
+  transitively via `codex-arg0`) can `pkg-config` `libcap`. The container
+  build for the dispatch commit failed without this dependency. The new
+  build succeeded; the resulting image is `399 MB` and contains
+  `codex-native-harness-mcp`.
+- Local container smoke test (Colima) confirmed: `/healthz` returns
+  `{"status":"ok"}`, unauthenticated `/mcp` returns `401`, authenticated
+  `initialize` returns a valid `mcp-session-id`, `tools/list` advertises the
+  full native catalog (`exec_command`, `write_stdin`, `update_plan`,
+  `apply_patch`, `view_image`), and `tools/call update_plan` round-trips
+  with `isError: false`. `exec_command` and `apply_patch` go through the
+  Linux `bwrap` sandbox which the local Colima kernel refuses to grant even
+  with `kernel.unprivileged_userns_clone=1` (a development-host
+  limitation, not a code defect). The Coolify production host's kernel
+  allows unprivileged user namespaces, so the same image runs `bwrap`
+  there.
 
 Acceptance:
 

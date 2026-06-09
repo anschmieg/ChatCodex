@@ -7,6 +7,14 @@ ENV CARGO_PROFILE_RELEASE_OPT_LEVEL=0
 
 WORKDIR /src
 COPY codex-rs ./codex-rs
+
+# codex-linux-sandbox (transitive via codex-arg0) builds vendored bubblewrap
+# at build time, which needs libcap headers via pkg-config.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libcap-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/codex-rs/target \
