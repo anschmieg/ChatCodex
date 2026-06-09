@@ -29,7 +29,6 @@ use crate::exec_policy::ExecPolicyManager;
 use crate::features::FEATURES;
 use crate::features::Feature;
 use crate::features::maybe_push_unstable_features_warning;
-#[cfg(test)]
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use crate::models_manager::manager::ModelsManager;
 use crate::models_manager::manager::RefreshStrategy;
@@ -1128,6 +1127,165 @@ pub(crate) struct SessionSettingsUpdate {
 }
 
 impl Session {
+    pub(crate) async fn new_native_harness(
+        config: Arc<Config>,
+    ) -> anyhow::Result<(Arc<Self>, Arc<TurnContext>, Receiver<Event>)> {
+        let (tx_event, rx_event) = async_channel::unbounded();
+        let conversation_id = ThreadId::default();
+        let auth_manager = Arc::new(AuthManager::new(
+            config.codex_home.clone(),
+            false,
+            config.cli_auth_credentials_store_mode,
+        ));
+        let models_manager = Arc::new(ModelsManager::new(
+            config.codex_home.clone(),
+            Arc::clone(&auth_manager),
+            config.model_catalog.clone(),
+            CollaborationModesConfig::default(),
+        ));
+        let model = ModelsManager::get_model_offline_for_tests(config.model.as_deref());
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests(model.as_str(), &config);
+        let collaboration_mode = CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model,
+                reasoning_effort: config.model_reasoning_effort,
+                developer_instructions: None,
+            },
+        };
+        let session_configuration = SessionConfiguration {
+            provider: config.model_provider.clone(),
+            collaboration_mode,
+            model_reasoning_summary: config.model_reasoning_summary,
+            developer_instructions: config.developer_instructions.clone(),
+            user_instructions: config.user_instructions.clone(),
+            service_tier: None,
+            personality: config.personality,
+            base_instructions: String::new(),
+            compact_prompt: None,
+            approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
+            sandbox_policy: config.permissions.sandbox_policy.clone(),
+            file_system_sandbox_policy: config.permissions.file_system_sandbox_policy.clone(),
+            network_sandbox_policy: config.permissions.network_sandbox_policy,
+            windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
+            cwd: config.cwd.clone(),
+            codex_home: config.codex_home.clone(),
+            thread_name: None,
+            original_config_do_not_use: Arc::clone(&config),
+            metrics_service_name: None,
+            app_server_client_name: Some("chatcodex-native-harness".to_string()),
+            session_source: SessionSource::Exec,
+            dynamic_tools: Vec::new(),
+            persist_extended_history: false,
+            inherited_shell_snapshot: None,
+        };
+        let per_turn_config = Self::build_per_turn_config(&session_configuration);
+        let session_telemetry = SessionTelemetry::new(
+            conversation_id,
+            session_configuration.collaboration_mode.model(),
+            model_info.slug.as_str(),
+            None,
+            None,
+            None,
+            "chatcodex-native-harness".to_string(),
+            false,
+            "mcp".to_string(),
+            SessionSource::Exec,
+        );
+        let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.clone()));
+        let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
+        let skills_manager = Arc::new(SkillsManager::new(
+            config.codex_home.clone(),
+            Arc::clone(&plugins_manager),
+            true,
+        ));
+        let user_shell = Arc::new(shell::default_user_shell());
+        let services = SessionServices {
+            mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::new_uninitialized(
+                &config.permissions.approval_policy,
+            ))),
+            mcp_startup_cancellation_token: Mutex::new(CancellationToken::new()),
+            unified_exec_manager: UnifiedExecProcessManager::new(
+                config.background_terminal_max_timeout,
+            ),
+            shell_zsh_path: None,
+            main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
+            analytics_events_client: AnalyticsEventsClient::new(
+                Arc::clone(&config),
+                Arc::clone(&auth_manager),
+            ),
+            hooks: Hooks::new(HooksConfig::default()),
+            rollout: Mutex::new(None),
+            user_shell: Arc::clone(&user_shell),
+            shell_snapshot_tx: watch::channel(None).0,
+            show_raw_agent_reasoning: false,
+            exec_policy: ExecPolicyManager::default(),
+            auth_manager: Arc::clone(&auth_manager),
+            session_telemetry: session_telemetry.clone(),
+            models_manager: Arc::clone(&models_manager),
+            tool_approvals: Mutex::new(ApprovalStore::default()),
+            execve_session_approvals: RwLock::new(HashMap::new()),
+            skills_manager,
+            plugins_manager,
+            mcp_manager,
+            file_watcher: Arc::new(FileWatcher::noop()),
+            agent_control: AgentControl::default(),
+            network_proxy: None,
+            network_approval: Arc::new(NetworkApprovalService::default()),
+            state_db: None,
+            model_client: ModelClient::new(
+                None,
+                conversation_id,
+                session_configuration.provider.clone(),
+                session_configuration.session_source.clone(),
+                config.model_verbosity,
+                false,
+                false,
+                false,
+                None,
+            ),
+            code_mode_service: crate::tools::code_mode::CodeModeService::new(None),
+        };
+        let js_repl = Arc::new(JsReplHandle::with_node_path(None, Vec::new()));
+        let skills_outcome = Arc::new(services.skills_manager.skills_for_config(&per_turn_config));
+        let mut turn_context = Self::make_turn_context(
+            None,
+            &session_telemetry,
+            session_configuration.provider.clone(),
+            &session_configuration,
+            user_shell.as_ref(),
+            None,
+            config.main_execve_wrapper_exe.as_ref(),
+            per_turn_config,
+            model_info,
+            &models_manager,
+            None,
+            "native-harness".to_string(),
+            Arc::clone(&js_repl),
+            skills_outcome,
+        );
+        turn_context.tools_config = ToolsConfig::native_harness();
+        let turn_context = Arc::new(turn_context);
+        let session = Arc::new(Session {
+            conversation_id,
+            tx_event,
+            agent_status: watch::channel(AgentStatus::PendingInit).0,
+            out_of_band_elicitation_paused: watch::channel(false).0,
+            state: Mutex::new(SessionState::new(session_configuration)),
+            features: config.features.clone(),
+            pending_mcp_server_refresh_config: Mutex::new(None),
+            conversation: Arc::new(RealtimeConversationManager::new()),
+            active_turn: Mutex::new(None),
+            services,
+            js_repl,
+            next_internal_sub_id: AtomicU64::new(0),
+        });
+
+        Ok((session, turn_context, rx_event))
+    }
+
     /// Builds the `x-codex-beta-features` header value for this session.
     ///
     /// `ModelClient` is session-scoped and intentionally does not depend on the full `Config`, so

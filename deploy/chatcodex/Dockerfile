@@ -32,7 +32,9 @@ COPY --from=builder \
     /usr/local/bin/chatcodex
 
 ENV CHATCODEX_BIND=0.0.0.0:3000
+ENV CHATCODEX_DATA_DIR=/data
 ENV CHATCODEX_WORKSPACE_ROOT=/workspaces
+ENV CODEX_HOME=/data/codex
 ENV HOME=/home/chatcodex
 
 EXPOSE 3000

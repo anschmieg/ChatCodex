@@ -6,7 +6,7 @@
 ## Current Status
 
 - Branch: `codex/native-harness-mcp`
-- Phase: native harness facade design and implementation
+- Phase: native dispatch complete; OAuth and approval bridge next
 - Last updated: 2026-06-09
 - Previous approach: custom `deterministic-*` Rust crates plus a TypeScript MCP
   gateway. It remains in the branch temporarily for reference but is deprecated.
@@ -29,10 +29,20 @@
   - Coolify deployment `e2qfqjefe8zg3uso0rmsomq5` successfully deployed commit
     `d9feb912bda5863cbc8fc0f68ceaf4de747dd5ed` on 2026-06-09. The application
     is `running:healthy` with zero restarts.
+  - Local native dispatch tests pass for `exec_command`, persistent
+    `write_stdin` sessions, and the executable's native `apply_patch`
+    self-invocation mode.
+  - A stdio MCP smoke test successfully called `update_plan` through
+    `tools/call` and received the native `Plan updated` result.
+  - Focused core tests, native MCP crate tests, touched-file formatting, and
+    Clippy with warnings denied pass for the native-dispatch implementation.
+  - Rebuilding the Docker image for this commit is currently blocked because
+    the local Docker socket requires escalation and the Codex approval service
+    is rejecting escalations after the account reached its usage limit.
   - The deployed endpoint is not yet connectable from ChatGPT. Cloudflare
     Access currently returns a browser-oriented `302`/WARP challenge instead
     of MCP OAuth discovery, and the origin accepts only one static bearer
-    secret. `tools/call` is also still intentionally unimplemented.
+    secret. The new native-dispatch build has not yet been deployed.
 
 ## Goal
 
@@ -55,8 +65,10 @@ User
   -> sandbox / filesystem / process / git
 ```
 
-There is no provider SDK, model request, Codex turn, review generation, hidden
-agent loop, or autonomous continuation in the backend.
+There is no model request, Codex turn, review generation, hidden agent loop, or
+autonomous continuation in the backend. Upstream `SessionServices` currently
+requires an inert `ModelClient` value; ChatCodex constructs it without
+authentication and never schedules prewarm or invokes it.
 
 ## Product Scope
 
@@ -99,7 +111,7 @@ including:
 1. Implement the MCP server in Rust, not TypeScript.
 2. Add the smallest public facade to `codex-core` needed to:
    - construct the native configured tool specs and registry;
-   - construct a harness execution context without a model client;
+   - construct a harness execution context without starting model work;
    - dispatch one explicit tool call and return its native output.
 3. Do not copy Codex schemas into the adapter.
 4. Reuse Codex approval and sandbox machinery.
@@ -135,7 +147,7 @@ Acceptance:
 
 ### M1: Public Native Harness Facade
 
-Status: in progress
+Status: completed
 
 Files expected:
 
@@ -148,10 +160,10 @@ Actions:
 - [x] Add failing tests that request the native tool catalog.
 - [x] Expose configured `ToolSpec` values without model construction.
 - [x] Exclude agent-owned tools by disabling their native capabilities.
-- [ ] Add failing tests for direct native tool dispatch.
-- [ ] Build a harness context using existing Codex session/config primitives.
-- [ ] Dispatch explicit calls through the existing handlers.
-- [ ] Verify `exec_command`, `write_stdin`, and `apply_patch`.
+- [x] Add failing tests for direct native tool dispatch.
+- [x] Build a harness context using existing Codex session/config primitives.
+- [x] Dispatch explicit calls through the existing handlers.
+- [x] Verify `exec_command`, `write_stdin`, and `apply_patch`.
 
 Acceptance:
 
@@ -167,10 +179,18 @@ Implemented:
   `update_plan`, `apply_patch`, and `view_image`.
 - Model, web, connector, prompt, code-mode, JavaScript, artifact, and
   collaboration capabilities are disabled at profile construction.
+- `NativeHarness` owns one persistent native `Session`, `TurnContext`,
+  `ToolRouter`, and diff tracker. Calls use `ToolCallSource::Direct`; no turn
+  or agent loop is started.
+- The harness uses `workspace-write` plus `AskForApproval::Never` until M3.
+  Native policy and sandbox code remain authoritative, and operations that
+  require escalation fail instead of waiting for an unavailable approval UI.
+- Unit tests use `DangerFullAccess` only to avoid unsupported nested
+  `sandbox-exec` inside the Codex desktop test sandbox.
 
 ### M2: Native MCP Server
 
-Status: in progress
+Status: completed
 
 Files expected:
 
@@ -185,8 +205,8 @@ Actions:
 - [x] Map Codex function `ToolSpec` values to MCP `Tool` without input-schema
       rewriting.
 - [x] Implement `tools/list`.
-- [ ] Implement `tools/call`.
-- [ ] Use Codex's native function-form `apply_patch` schema because MCP call
+- [x] Implement `tools/call`.
+- [x] Use Codex's native function-form `apply_patch` schema because MCP call
       arguments cannot carry a raw freeform string.
 - [x] Add stdio transport.
 - [x] Add Streamable HTTP transport.
@@ -208,8 +228,13 @@ Implemented:
   `CHATCODEX_BEARER_TOKEN` (with `MCP_AUTH_TOKEN` retained as a deployment
   compatibility alias), and leaves `/healthz` unauthenticated for container
   orchestration.
-- `tools/call` currently returns an explicit not-implemented MCP error; no
-  alternate executor or policy path is present.
+- `tools/call` serializes the MCP argument object directly into Codex's native
+  function payload and dispatches one named handler. Native object output is
+  returned as MCP `structuredContent`.
+- One shared `NativeHarness` preserves unified-exec process IDs across
+  `exec_command` and `write_stdin` calls.
+- The executable uses Codex's standard `codex-arg0` dispatcher for native
+  `apply_patch` self-invocation and Linux sandbox/helper paths.
 
 ### M3: Native Approval Bridge
 
@@ -231,14 +256,14 @@ Acceptance:
 
 ### M4: Workspace Confinement
 
-Status: pending
+Status: in progress
 
 Actions:
 
-- [ ] Read `CHATCODEX_WORKSPACE_ROOT`, defaulting to `/workspaces`.
+- [x] Read `CHATCODEX_WORKSPACE_ROOT`, defaulting to `/workspaces`.
 - [ ] Resolve configured project paths beneath the canonical workspace root.
 - [ ] Reject absolute or traversing paths outside the root.
-- [ ] Set Codex sandbox mode to `workspace-write`.
+- [x] Set Codex sandbox mode to `workspace-write`.
 - [ ] Ensure escalation cannot grant access outside container-mounted roots.
 
 Acceptance:
@@ -274,6 +299,8 @@ Implemented:
 - `deploy/chatcodex/Dockerfile` matches the existing Coolify application path.
 - The runtime image contains Git, curl, ripgrep, and CA certificates and runs
   as UID `10001`.
+- The image sets `CHATCODEX_DATA_DIR=/data` and `CODEX_HOME=/data/codex`, so
+  native helper aliases and harness state live on the data mount.
 - Container builds disable the upstream workspace's fat LTO, use two Cargo
   build jobs, and set `opt-level=0` so full `codex-core` compilation fits
   moderate Docker/Coolify builders. Builds in a `2 GiB` Colima VM exhausted
@@ -302,9 +329,8 @@ Implemented:
   discovery, and removal or replacement of the origin's static-bearer gate.
   The protected MCP endpoint must return `401` with a `Bearer`
   `WWW-Authenticate` challenge rather than a browser `302`.
-- Authentication work alone is insufficient: direct native `tools/call`
-  dispatch must be implemented before ChatGPT can use the advertised coding
-  tools.
+- Native `tools/call` dispatch is implemented. OAuth discovery and token
+  validation are now the remaining ChatGPT connection blockers.
 
 Acceptance:
 
@@ -337,9 +363,9 @@ Status: pending
 Actions:
 
 - [ ] Compare MCP catalog names and schemas with the native Codex catalog.
-- [ ] Exercise `exec_command` with `git status`.
-- [ ] Exercise `apply_patch`.
-- [ ] Exercise a yielded process with `write_stdin`.
+- [ ] Exercise `exec_command` with `git status` in the container.
+- [x] Exercise native `apply_patch` self-invocation.
+- [x] Exercise a yielded process with `write_stdin`.
 - [ ] Exercise approval approve and deny paths.
 - [ ] Verify workspace escape rejection.
 - [x] Verify HTTP authentication.
@@ -352,6 +378,18 @@ Acceptance:
   tools.
 - The backend never starts a Codex/model turn.
 - All focused tests, Clippy, formatting, and container checks pass.
+
+Latest focused evidence:
+
+- `cargo test -p codex-native-harness-mcp` passes, including native
+  apply-patch mode.
+- `cargo test -p codex-core harness_mcp::tests --no-default-features` passes
+  all four catalog/dispatch tests.
+- `cargo clippy -p codex-native-harness-mcp --all-targets -- -D warnings`
+  passes.
+- A raw stdio MCP exchange completed `initialize` and
+  `tools/call(update_plan)` with `isError: false`.
+- Docker and Coolify verification remain pending for this exact commit.
 
 ## Verification Commands
 
@@ -367,7 +405,7 @@ export RUSTFMT="$RUST_TOOLCHAIN_BIN/rustfmt"
 cargo fmt -p codex-native-harness-mcp --check
 cargo test -p codex-native-harness-mcp
 cargo test -p codex-core \
-  harness_mcp::tests::native_catalog_uses_codex_tool_specs_without_agent_tools
+  harness_mcp::tests
 cargo clippy -p codex-native-harness-mcp --all-targets -- -D warnings
 ```
 

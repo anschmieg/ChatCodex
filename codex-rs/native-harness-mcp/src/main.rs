@@ -1,5 +1,7 @@
 use std::net::SocketAddr;
 
+use codex_arg0::Arg0DispatchPaths;
+use codex_arg0::arg0_dispatch_or_else;
 use codex_native_harness_mcp::NativeHarnessMcp;
 use codex_native_harness_mcp::http_router;
 use rmcp::ServiceExt;
@@ -8,10 +10,13 @@ fn stdio() -> (tokio::io::Stdin, tokio::io::Stdout) {
     (tokio::io::stdin(), tokio::io::stdout())
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    arg0_dispatch_or_else(run)
+}
+
+async fn run(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     if std::env::var("CHATCODEX_TRANSPORT").as_deref() == Ok("stdio") {
-        return run_stdio().await;
+        return run_stdio(arg0_paths).await;
     }
 
     let bind_addr = std::env::var("CHATCODEX_BIND")
@@ -25,12 +30,12 @@ async fn main() -> anyhow::Result<()> {
             )
         })?;
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-    axum::serve(listener, http_router(bearer_token)?).await?;
+    axum::serve(listener, http_router(bearer_token, arg0_paths).await?).await?;
     Ok(())
 }
 
-async fn run_stdio() -> anyhow::Result<()> {
-    let server = NativeHarnessMcp::new()?;
+async fn run_stdio(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
+    let server = NativeHarnessMcp::new_with_arg0_paths(arg0_paths).await?;
     let running = server.serve(stdio()).await?;
     running.waiting().await?;
     Ok(())

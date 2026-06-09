@@ -2195,9 +2195,12 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "axum",
+ "codex-apply-patch",
+ "codex-arg0",
  "codex-core",
  "rmcp",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

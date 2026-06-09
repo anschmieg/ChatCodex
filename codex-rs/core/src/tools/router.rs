@@ -286,6 +286,25 @@ impl ToolRouter {
         }
     }
 
+    pub(crate) async fn dispatch_native_harness_call(
+        &self,
+        session: Arc<Session>,
+        turn: Arc<TurnContext>,
+        tracker: SharedTurnDiffTracker,
+        call: ToolCall,
+    ) -> Result<(ResponseInputItem, serde_json::Value), FunctionCallError> {
+        Ok(self
+            .dispatch_tool_call_with_code_mode_result(
+                session,
+                turn,
+                tracker,
+                call,
+                ToolCallSource::Direct,
+            )
+            .await?
+            .into_response_and_code_mode_result())
+    }
+
     fn failure_result(
         call_id: String,
         payload_outputs_custom: bool,

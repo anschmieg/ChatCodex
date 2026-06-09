@@ -16,7 +16,9 @@ use axum::middleware::Next;
 use axum::response::Json;
 use axum::response::Response;
 use axum::routing::get;
+use codex_arg0::Arg0DispatchPaths;
 use codex_core::harness_mcp::HarnessToolSpec;
+use codex_core::harness_mcp::NativeHarness;
 use codex_core::harness_mcp::native_tool_catalog;
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
@@ -36,16 +38,56 @@ use serde_json::json;
 #[derive(Clone)]
 pub struct NativeHarnessMcp {
     tools: Arc<Vec<Tool>>,
+    harness: NativeHarness,
 }
 
 impl NativeHarnessMcp {
-    pub fn new() -> anyhow::Result<Self> {
+    pub async fn new() -> anyhow::Result<Self> {
+        Self::new_with_arg0_paths(Arg0DispatchPaths::default()).await
+    }
+
+    pub async fn new_with_arg0_paths(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<Self> {
+        let workspace = std::env::var_os("CHATCODEX_WORKSPACE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/workspaces"));
+        Self::new_for_paths(workspace, None, arg0_paths).await
+    }
+
+    async fn new_for_paths(
+        workspace: impl AsRef<std::path::Path>,
+        data_dir: Option<&std::path::Path>,
+        arg0_paths: Arg0DispatchPaths,
+    ) -> anyhow::Result<Self> {
         let tools = native_tool_catalog()?
             .into_iter()
             .map(tool_from_native_spec)
             .collect::<anyhow::Result<Vec<_>>>()?;
+        let harness = match data_dir {
+            Some(data_dir) => {
+                NativeHarness::new_with_runtime_paths(
+                    workspace,
+                    data_dir,
+                    arg0_paths.codex_linux_sandbox_exe,
+                    arg0_paths.main_execve_wrapper_exe,
+                )
+                .await?
+            }
+            None => {
+                let data_dir = std::env::var_os("CHATCODEX_DATA_DIR")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| std::path::PathBuf::from("/data"));
+                NativeHarness::new_with_runtime_paths(
+                    workspace,
+                    data_dir,
+                    arg0_paths.codex_linux_sandbox_exe,
+                    arg0_paths.main_execve_wrapper_exe,
+                )
+                .await?
+            }
+        };
         Ok(Self {
             tools: Arc::new(tools),
+            harness,
         })
     }
 
@@ -54,9 +96,12 @@ impl NativeHarnessMcp {
     }
 }
 
-pub fn http_router(bearer_token: String) -> anyhow::Result<Router> {
+pub async fn http_router(
+    bearer_token: String,
+    arg0_paths: Arg0DispatchPaths,
+) -> anyhow::Result<Router> {
     anyhow::ensure!(!bearer_token.is_empty(), "CHATCODEX_BEARER_TOKEN is empty");
-    let service = NativeHarnessMcp::new()?;
+    let service = NativeHarnessMcp::new_with_arg0_paths(arg0_paths).await?;
     let expected_bearer = Arc::new(format!("Bearer {bearer_token}"));
     let mcp_service = StreamableHttpService::new(
         move || Ok(service.clone()),
@@ -171,13 +216,25 @@ impl ServerHandler for NativeHarnessMcp {
         request: CallToolRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Err(McpError::internal_error(
-            format!(
-                "native dispatch is not implemented yet for {}",
-                request.name
-            ),
-            None,
-        ))
+        let arguments = serde_json::Value::Object(request.arguments.unwrap_or_default());
+        let result = self
+            .harness
+            .call(request.name.as_ref(), arguments)
+            .await
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        let content = result
+            .content
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+
+        Ok(CallToolResult {
+            content,
+            structured_content: result.structured_content,
+            is_error: result.is_error,
+            meta: None,
+        })
     }
 }
 
@@ -186,9 +243,17 @@ mod tests {
     use super::NativeHarnessMcp;
     use super::constant_time_eq;
 
-    #[test]
-    fn mcp_catalog_preserves_native_names_and_input_schemas() {
-        let server = NativeHarnessMcp::new().expect("native MCP server");
+    #[tokio::test]
+    async fn mcp_catalog_preserves_native_names_and_input_schemas() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let data = tempfile::tempdir().expect("data");
+        let server = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            Some(data.path()),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("native MCP server");
         let names = server
             .tools()
             .iter()
