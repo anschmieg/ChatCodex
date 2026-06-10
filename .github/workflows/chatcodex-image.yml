@@ -164,8 +164,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          ANON_TOKEN="$(curl -fsSL 'https://ghcr.io/token?scope=repository:anschmieg/chatcodex:pull&service=ghcr.io' | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])')"
           curl -fsSL \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: Bearer ${ANON_TOKEN}" \
             -H "Accept: application/vnd.oci.image.manifest.v1+json" \
             "https://ghcr.io/v2/anschmieg/chatcodex/manifests/${{ needs.resolve-ref.outputs.image_tag }}" \
             | head -c 400 >&2
