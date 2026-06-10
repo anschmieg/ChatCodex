@@ -26,7 +26,7 @@ name: chatcodex-image
 #   COOLIFY_API_TOKEN          — bearer token with read+write on the app,
 #       used to point the app at the freshly built `<sha>` tag and to poll
 #       the resulting deployment's status.
-#   COOLIFY_APP_UUID           — `okgs4ck888w0ws48wow48co8` for the
+#   COOLIFY_APP_UUID           — `d3mcg7hwb1aoyno8ok4jxdry` for the
 #       production ChatCodex app.
 #
 # Tags produced:
@@ -124,7 +124,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_PAT }}
 
       - name: Build and push with cross-compilation + multi-level caching
         id: build
@@ -204,7 +204,7 @@ jobs:
             echo "url=${WEBHOOK_URL}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Re-point Coolify at the freshly built image tag and flip build_pack once
+      - name: Re-point Coolify at the freshly built image tag
         shell: bash
         env:
           API_BASE: ${{ secrets.COOLIFY_API_BASE_URL }}
@@ -216,13 +216,11 @@ jobs:
             echo "::error::COOLIFY_API_BASE_URL / COOLIFY_API_TOKEN / COOLIFY_APP_UUID must be set" >&2
             exit 1
           fi
-          # One-time build_pack flip (idempotent; Coolify accepts the same value)
+          # Update the image tag the app should pull
           payload=$(cat <<JSON
           {
-            "build_pack": "dockerimage",
             "docker_registry_image_name": "ghcr.io/anschmieg/chatcodex",
-            "docker_registry_image_tag":  "${IMAGE_TAG}",
-            "static_image":                "ghcr.io/anschmieg/chatcodex:${IMAGE_TAG}"
+            "docker_registry_image_tag":  "${IMAGE_TAG}"
           }
           JSON
           )
