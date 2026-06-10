@@ -175,7 +175,7 @@ jobs:
   deploy:
     name: Trigger Coolify redeploy and poll to completion
     needs: [resolve-ref, build]
-    if: ${{ inputs.force_redeploy != false }}
+    if: ${{ inputs.force_redeploy != false || github.event_name == 'push' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
