@@ -153,7 +153,7 @@ jobs:
             echo "No parent SHA (initial push); using GHA cache" >&2
           fi
 
-      - name: Build and push
+      - name: Build and push with native aarch64 + multi-level caching
         id: build
         uses: docker/build-push-action@v6
         with:
@@ -170,8 +170,20 @@ jobs:
             org.opencontainers.image.source=https://github.com/anschmieg/ChatCodex
             org.opencontainers.image.revision=${{ needs.resolve-ref.outputs.resolved_sha }}
             org.opencontainers.image.ref.name=${{ github.ref_name }}
-          cache-from: ${{ steps.cache.outputs.value }}
-          cache-to: type=gha,mode=max
+          # Multi-level cache strategy:
+          # 1. Registry cache (primary) - persisted between runs
+          # 2. GitHub Actions cache (fallback) - fast, auto-managed
+          cache-from: |
+            type=registry,ref=ghcr.io/anschmieg/chatcodex:build-cache-${{ needs.resolve-ref.outputs.resolved_sha }}
+            type=registry,ref=ghcr.io/anschmieg/chatcodex:build-cache-branch-${{ needs.resolve-ref.outputs.branch_tag }}
+            type=registry,ref=ghcr.io/anschmieg/chatcodex:latest
+            type=gha,scope=build-${{ github.ref_name }}
+            type=gha,scope=build-${{ needs.resolve-ref.outputs.resolved_sha }}
+          cache-to: |
+            type=registry,ref=ghcr.io/anschmieg/chatcodex:build-cache-${{ needs.resolve-ref.outputs.resolved_sha }},mode=max
+            type=registry,ref=ghcr.io/anschmieg/chatcodex:build-cache-branch-${{ needs.resolve-ref.outputs.branch_tag }},mode=max
+            type=gha,scope=build-${{ github.ref_name }},mode=max
+            type=gha,scope=build-${{ needs.resolve-ref.outputs.resolved_sha }},mode=max
           provenance: false
           sbom: false
 

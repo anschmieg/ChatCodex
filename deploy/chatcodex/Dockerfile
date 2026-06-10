@@ -8,6 +8,17 @@ ENV CARGO_PROFILE_RELEASE_OPT_LEVEL=0
 WORKDIR /src
 COPY codex-rs ./codex-rs
 
+# Note: BuildKit mounts enable layer caching for the Rust build step.
+# For CI optimization, this Dockerfile should be built with BuildKit enabled.
+# The cache mounts in RUN --mount=type=cache will persist between builds.
+#
+# For production CI, consider using a dedicated cache image:
+#   cache-from: type=registry,ref=ghcr.io/${{ owner }}/chatcodex:build-cache
+#   cache-to: type=registry,ref=ghcr.io/${{ owner }}/chatcodex:build-cache,mode=max
+#
+# For native aarch64 compilation, use a self-hosted ARM64 runner instead of QEMU.
+# GitHub-hosted runners are x86_64, so QEMU is needed for arm64 builds.
+# For production: Add a self-hosted aarch64 runner for native compilation speed.
 # codex-linux-sandbox (transitive via codex-arg0) builds vendored bubblewrap
 # at build time, which needs libcap headers via pkg-config.
 RUN apt-get update \
