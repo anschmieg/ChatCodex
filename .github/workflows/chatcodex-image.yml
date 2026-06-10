@@ -219,7 +219,7 @@ jobs:
             echo "url=${WEBHOOK_URL}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Re-point Coolify at the freshly built image tag
+      - name: Re-point Coolify at the freshly built image tag and flip build_pack once
         shell: bash
         env:
           API_BASE: ${{ secrets.COOLIFY_API_BASE_URL }}
@@ -231,8 +231,10 @@ jobs:
             echo "::error::COOLIFY_API_BASE_URL / COOLIFY_API_TOKEN / COOLIFY_APP_UUID must be set" >&2
             exit 1
           fi
+          # One-time build_pack flip (idempotent; Coolify accepts the same value)
           payload=$(cat <<JSON
           {
+            "build_pack": "dockerimage",
             "docker_registry_image_name": "ghcr.io/anschmieg/chatcodex",
             "docker_registry_image_tag":  "${IMAGE_TAG}",
             "static_image":                "ghcr.io/anschmieg/chatcodex:${IMAGE_TAG}"
