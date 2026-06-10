@@ -1,39 +1,77 @@
-FROM rust:1.93.0-bookworm AS builder
+# syntax=docker/dockerfile:1
+#
+# Multi-stage Dockerfile for ChatCodex.
+#
+# Architecture strategy:
+#   On x86_64 CI runners: cross-compile to aarch64-unknown-linux-gnu using
+#     gcc-aarch64-linux-gnu (no QEMU emulation for the Rust build).
+#   On aarch64 hosts (e.g. local Mac via Colima): compile natively.
+#
+# The builder stage runs on BUILDPLATFORM (the host architecture). The
+# runtime stage runs on TARGETPLATFORM (linux/arm64 for Coolify).
 
-ENV CARGO_BUILD_JOBS=2
-ENV CARGO_PROFILE_RELEASE_LTO=false
-ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
-ENV CARGO_PROFILE_RELEASE_OPT_LEVEL=0
+# ---------- builder: cross-compile or native compile ----------
+FROM --platform=$BUILDPLATFORM rust:1.93.0-bookworm AS builder
+
+ARG TARGETPLATFORM
+
+# Install build dependencies.
+# On amd64 hosts we need the aarch64 cross-compilation toolchain + arm64
+# libcap for the vendored bubblewrap build in codex-linux-sandbox.
+# On arm64 hosts we just need the native toolchain.
+RUN arch="$(dpkg --print-architecture)" && \
+    if [ "$arch" = "amd64" ]; then \
+        dpkg --add-architecture arm64 && \
+        apt-get update && \
+        apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            libcap-dev:arm64 \
+            pkg-config \
+        && rm -rf /var/lib/apt/lists/* && \
+        rustup target add aarch64-unknown-linux-gnu; \
+    else \
+        apt-get update && \
+        apt-get install -y --no-install-recommends \
+            gcc \
+            libcap-dev \
+            pkg-config \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# Cross-compilation environment (harmless on native aarch64 builds where
+# aarch64-linux-gnu-gcc is just the native compiler).
+ENV CARGO_BUILD_JOBS=2 \
+    CARGO_PROFILE_RELEASE_LTO=false \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+    CARGO_PROFILE_RELEASE_OPT_LEVEL=0 \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+    CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
+    PKG_CONFIG_ALLOW_CROSS=1 \
+    PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
 
 WORKDIR /src
 COPY codex-rs ./codex-rs
 
-# Note: BuildKit mounts enable layer caching for the Rust build step.
-# For CI optimization, this Dockerfile should be built with BuildKit enabled.
-# The cache mounts in RUN --mount=type=cache will persist between builds.
-#
-# For production CI, consider using a dedicated cache image:
-#   cache-from: type=registry,ref=ghcr.io/${{ owner }}/chatcodex:build-cache
-#   cache-to: type=registry,ref=ghcr.io/${{ owner }}/chatcodex:build-cache,mode=max
-#
-# For native aarch64 compilation, use a self-hosted ARM64 runner instead of QEMU.
-# GitHub-hosted runners are x86_64, so QEMU is needed for arm64 builds.
-# For production: Add a self-hosted aarch64 runner for native compilation speed.
-# codex-linux-sandbox (transitive via codex-arg0) builds vendored bubblewrap
-# at build time, which needs libcap headers via pkg-config.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        libcap-dev \
-    && rm -rf /var/lib/apt/lists/*
-
+# Build the binary. On amd64 we cross-compile to aarch64; on arm64 we
+# compile natively (the target triple happens to be the same).
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/codex-rs/target \
-    cd codex-rs \
-    && cargo build --release -p codex-native-harness-mcp \
-    && cp target/release/codex-native-harness-mcp /tmp/chatcodex
+    arch="$(dpkg --print-architecture)" && \
+    if [ "$arch" = "amd64" ]; then \
+        TARGET="aarch64-unknown-linux-gnu"; \
+    else \
+        TARGET="$(rustc -vV | grep 'host:' | awk '{print $2}')"; \
+    fi && \
+    echo "Building for target: $TARGET on arch: $arch" && \
+    cd codex-rs && \
+    cargo build --release --target "$TARGET" -p codex-native-harness-mcp && \
+    cp "target/$TARGET/release/codex-native-harness-mcp" /tmp/chatcodex
 
-FROM ubuntu:24.04
+# ---------- runtime: minimal Ubuntu image ----------
+FROM --platform=$TARGETPLATFORM ubuntu:24.04
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
