@@ -27,6 +27,7 @@ RUN arch="$(dpkg --print-architecture)" && \
             gcc-aarch64-linux-gnu \
             libc6-dev-arm64-cross \
             libcap-dev:arm64 \
+            liblzma-dev:arm64 \
             pkg-config \
         && rm -rf /var/lib/apt/lists/* && \
         rustup target add aarch64-unknown-linux-gnu; \
