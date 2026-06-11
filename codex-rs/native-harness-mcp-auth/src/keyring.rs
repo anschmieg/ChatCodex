@@ -111,11 +111,12 @@ pub fn verify_jwt(
     if iss != issuer {
         return Ok(None);
     }
-    let aud = claims
-        .get("aud")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("JWT missing aud claim"))?;
-    if aud != audience {
+    let aud_ok = match claims.get("aud") {
+        Some(serde_json::Value::String(s)) => s == audience,
+        Some(serde_json::Value::Array(arr)) => arr.iter().any(|v| v.as_str() == Some(audience)),
+        _ => false,
+    };
+    if !aud_ok {
         return Ok(None);
     }
     let signature = URL_SAFE_NO_PAD
