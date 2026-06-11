@@ -4,15 +4,14 @@ name: chatcodex-image
 #
 # This workflow exists because the Coolify production node OOMs while
 # compiling the `codex-native-harness-mcp-auth` closure graph. Building the
-# image on GitHub-hosted runners (16 GiB x86_64) and shipping a prebuilt
+# image on GitHub's ARM64 runners and shipping a prebuilt
 # `ghcr.io/anschmieg/chatcodex:<sha>` to the Coolify "Docker Image" build
 # pack avoids the builder memory cliff entirely.
 #
 # Architecture:
-#   The Coolify production node is aarch64. We cross-compile from the
-#   x86_64 GitHub runner using gcc-aarch64-linux-gnu (no QEMU emulation
-#   for the Rust build). The Dockerfile handles this automatically via
-#   BUILDPLATFORM/TARGETPLATFORM.
+#   The Coolify production node is aarch64. We build natively on an ARM64
+#   GitHub runner so that Docker builds the linux/arm64 image without
+#   cross-compilation overhead or QEMU emulation.
 #
 # Required secrets:
 #   COOLIFY_API_BASE_URL       — e.g. `https://panel.nothing.pink/api/v1`
@@ -59,7 +58,7 @@ env:
 jobs:
   resolve-ref:
     name: Resolve ref and compute image tag
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     outputs:
       resolved_sha: ${{ steps.resolve.outputs.sha }}
       short_sha: ${{ steps.resolve.outputs.short }}
@@ -101,7 +100,7 @@ jobs:
   build:
     name: Build and push image
     needs: resolve-ref
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -119,7 +118,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PAT }}
 
-      - name: Build and push with cross-compilation + multi-level caching
+      - name: Build and push with native ARM64 + multi-level caching
         id: build
         uses: docker/build-push-action@v6
         with:
@@ -169,7 +168,7 @@ jobs:
     name: Trigger Coolify redeploy and poll to completion
     needs: [resolve-ref, build]
     if: ${{ inputs.force_redeploy != false || github.event_name == 'push' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     env:
       IMAGE_TAG: ${{ needs.resolve-ref.outputs.image_tag }}
