@@ -202,7 +202,7 @@ impl CfAccessVerifier {
         let key = jwk_to_entry(jwk)?;
         let Some(claims) = verify_jwt(
             token,
-            &self.inner.certs_uri,
+            &self.inner.team_origin,
             &self.inner.expected_aud,
             &key,
             now(),
