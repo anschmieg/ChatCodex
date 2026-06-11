@@ -15,17 +15,10 @@ name: chatcodex-image
 #   BUILDPLATFORM/TARGETPLATFORM.
 #
 # Required secrets:
-#   COOLIFY_DEPLOY_WEBHOOK_URL — full URL of the manual GitHub webhook on the
-#       Coolify application, including the `?uuid=...&force=...` query
-#       parameters. The webhook secret is the app's
-#       `manual_webhook_secret_github`; the workflow signs the body with
-#       HMAC-SHA1 and sets `X-Hub-Signature: sha1=...` to match Coolify.
-#   COOLIFY_WEBHOOK_SECRET     — the matching `manual_webhook_secret_github`
-#       value (see `GET /applications/{uuid}` on the Coolify host).
 #   COOLIFY_API_BASE_URL       — e.g. `https://panel.nothing.pink/api/v1`
 #   COOLIFY_API_TOKEN          — bearer token with read+write on the app,
-#       used to point the app at the freshly built `<sha>` tag and to poll
-#       the resulting deployment's status.
+#       used to point the app at the freshly built `<sha>` tag, trigger
+#       a deploy, and poll the resulting deployment's status.
 #   COOLIFY_APP_UUID           — `d3mcg7hwb1aoyno8ok4jxdry` for the
 #       production ChatCodex app.
 #
@@ -181,29 +174,28 @@ jobs:
     env:
       IMAGE_TAG: ${{ needs.resolve-ref.outputs.image_tag }}
     steps:
-      - name: Validate webhook inputs
-        id: sign
+      - name: Validate deploy inputs
+        id: validate
         shell: bash
         env:
-          WEBHOOK_URL: ${{ secrets.COOLIFY_DEPLOY_WEBHOOK_URL }}
-          WEBHOOK_SECRET: ${{ secrets.COOLIFY_WEBHOOK_SECRET }}
+          API_BASE: ${{ secrets.COOLIFY_API_BASE_URL }}
+          API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
         run: |
           set -euo pipefail
-          if [[ -z "${WEBHOOK_URL}" ]]; then
-            echo "::error::COOLIFY_DEPLOY_WEBHOOK_URL is not set" >&2
+          if [[ -z "${API_BASE}" ]]; then
+            echo "::error::COOLIFY_API_BASE_URL is not set" >&2
             exit 1
           fi
-          if [[ -z "${WEBHOOK_SECRET}" ]]; then
-            echo "::error::COOLIFY_WEBHOOK_SECRET is not set" >&2
+          if [[ -z "${API_TOKEN}" ]]; then
+            echo "::error::COOLIFY_API_TOKEN is not set" >&2
             exit 1
           fi
-          # Empty body, identical to what GitHub itself would post. Coolify
-          # expects X-Hub-Signature: sha1=<hex(hmac_sha1(secret, body))>.
-          sig="sha1=$(printf '' | openssl dgst -sha1 -hmac "${WEBHOOK_SECRET}" -binary | xxd -p -c 256)"
-          {
-            echo "signature=${sig}"
-            echo "url=${WEBHOOK_URL}"
-          } >> "$GITHUB_OUTPUT"
+          if [[ -z "${APP_UUID}" ]]; then
+            echo "::error::COOLIFY_APP_UUID is not set" >&2
+            exit 1
+          fi
+          echo "Deploy inputs validated" >&2
 
       - name: Re-point Coolify at the freshly built image tag
         shell: bash
@@ -240,25 +232,26 @@ jobs:
             exit 1
           fi
 
-      - name: Hit the Coolify deploy webhook
+      - name: Trigger Coolify deploy via API
         shell: bash
         env:
-          WEBHOOK_URL: ${{ steps.sign.outputs.url }}
-          SIGNATURE:   ${{ steps.sign.outputs.signature }}
+          API_BASE: ${{ secrets.COOLIFY_API_BASE_URL }}
+          API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
         run: |
           set -euo pipefail
           http_code=$(curl -sS -o /tmp/coolify-trigger.json -w "%{http_code}" \
             -X POST \
+            -H "Authorization: Bearer ${API_TOKEN}" \
             -H "Content-Type: application/json" \
-            -H "X-Hub-Signature: ${SIGNATURE}" \
-            -H "X-GitHub-Event: push" \
+            -H "Accept: application/json" \
             --data-binary "" \
-            "${WEBHOOK_URL}")
-          echo "POST webhook -> ${http_code}" >&2
+            "${API_BASE}/deploy?uuid=${APP_UUID}&force=false")
+          echo "POST /deploy -> ${http_code}" >&2
           cat /tmp/coolify-trigger.json >&2
           echo >&2
           if [[ "${http_code}" -lt 200 || "${http_code}" -ge 300 ]]; then
-            echo "::error::Coolify deploy webhook returned ${http_code}" >&2
+            echo "::error::Coolify deploy API returned ${http_code}" >&2
             exit 1
           fi
           python3 -c "
@@ -271,7 +264,6 @@ jobs:
           open('/tmp/coolify-deployment-uuid','w').write(du)
           print('Deployment UUID:', du, file=sys.stderr)
           "
-
       - name: Poll the deployment to completion
         env:
           API_BASE: ${{ secrets.COOLIFY_API_BASE_URL }}
