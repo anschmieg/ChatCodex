@@ -132,6 +132,9 @@ impl Store {
         })?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
         Self::migrate(&conn)?;
+        // Checkpoint the WAL so data is in the main DB file, ensuring
+        // persistence across container restarts even if the WAL is lost.
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(Self {
             conn: std::sync::Arc::new(Mutex::new(conn)),
         })

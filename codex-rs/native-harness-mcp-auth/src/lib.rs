@@ -18,6 +18,7 @@ pub mod config;
 pub mod discovery;
 pub mod keyring;
 pub mod middleware;
+pub mod ratelimit;
 pub mod state;
 pub mod storage;
 pub mod token;

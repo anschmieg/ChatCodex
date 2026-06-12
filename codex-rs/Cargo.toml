@@ -120,7 +120,6 @@ codex-lmstudio = { path = "lmstudio" }
 codex-login = { path = "login" }
 codex-mcp-server = { path = "mcp-server" }
 codex-network-proxy = { path = "network-proxy" }
-codex-native-harness-mcp = { path = "native-harness-mcp" }
 codex-native-harness-mcp-auth = { path = "native-harness-mcp-auth" }
 codex-ollama = { path = "ollama" }
 codex-otel = { path = "otel" }
@@ -258,7 +257,6 @@ rustls-pki-types = "1.14.0"
 schemars = "0.8.22"
 seccompiler = "0.5.0"
 semver = "1.0"
-sentry = "0.46.0"
 serde = "1"
 serde_json = "1"
 serde_path_to_error = "0.1.20"
@@ -287,7 +285,6 @@ starlark = "0.13.0"
 strum = "0.27.2"
 strum_macros = "0.28.0"
 supports-color = "3.0.2"
-syntect = "5"
 sys-locale = "0.3.2"
 tempfile = "3.23.0"
 tar = "0.4.44"
@@ -313,7 +310,6 @@ tracing-subscriber = "0.3.22"
 tracing-test = "0.2.5"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 tower-http = "0.6"
-tower-service = "0.3"
 tree-sitter = "0.25.10"
 tree-sitter-bash = "0.25"
 ts-rs = "11"

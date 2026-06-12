@@ -14,6 +14,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::response::Json;
 use axum::routing::get;
+use axum_prometheus::PrometheusMetricLayer;
 use codex_arg0::Arg0DispatchPaths;
 use codex_core::harness_mcp::HarnessToolSpec;
 use codex_core::harness_mcp::NativeHarness;
@@ -32,6 +33,9 @@ use rmcp::transport::StreamableHttpServerConfig;
 use rmcp::transport::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use serde_json::json;
+use tower_http::cors::CorsLayer;
+use tower_http::trace::TraceLayer;
+use tracing::info_span;
 
 #[derive(Clone)]
 pub struct NativeHarnessMcp {
@@ -97,6 +101,16 @@ impl NativeHarnessMcp {
 pub async fn http_router(
     arg0_paths: Arg0DispatchPaths,
 ) -> anyhow::Result<Router> {
+    let auth_state = codex_native_harness_mcp_auth::AuthState::from_env()?;
+    http_router_with_state(arg0_paths, auth_state).await
+}
+
+/// Like [] but accepts a pre-built [], useful for
+/// tests that want to inject a stub Cloudflare Access verifier.
+pub async fn http_router_with_state(
+    arg0_paths: Arg0DispatchPaths,
+    auth_state: codex_native_harness_mcp_auth::AuthState,
+) -> anyhow::Result<Router> {
     let service = NativeHarnessMcp::new_with_arg0_paths(arg0_paths).await?;
     let mcp_service = StreamableHttpService::new(
         move || Ok(service.clone()),
@@ -104,9 +118,25 @@ pub async fn http_router(
         StreamableHttpServerConfig::default(),
     );
 
-    let auth_state = codex_native_harness_mcp_auth::AuthState::from_env()?;
+    // CORS: permissive for well-known and OAuth endpoints; the MCP endpoint
+    // is protected by bearer auth so CORS is less critical there, but we
+    // allow all origins for browser-based MCP clients.
+    let cors = CorsLayer::permissive();
 
-    Ok(Router::new()
+    // Prometheus metrics: track request count, duration, and expose /metrics.
+    // Use OnceLock to ensure the global metrics recorder is only initialized once
+    // (PrometheusMetricLayer::pair() calls metrics::set_boxed_recorder() internally).
+    static PROMETHEUS_HANDLE: std::sync::OnceLock<metrics_exporter_prometheus::PrometheusHandle> = std::sync::OnceLock::new();
+    let prometheus_layer = PrometheusMetricLayer::new();
+    let _ = PROMETHEUS_HANDLE.get_or_init(|| {
+        let (_layer, handle) = PrometheusMetricLayer::pair();
+        handle
+    });
+
+    let router = Router::new()
+        .route("/metrics", get(|| async {
+            PROMETHEUS_HANDLE.get().expect("Prometheus handle initialized").clone().render()
+        }))
         .route("/healthz", get(healthz))
         .merge(
             Router::new()
@@ -136,7 +166,11 @@ pub async fn http_router(
                 )
                 .route(
                     "/oauth/token",
-                    axum::routing::post(codex_native_harness_mcp_auth::token::token),
+                    axum::routing::post(codex_native_harness_mcp_auth::token::token)
+                        .layer(axum::middleware::from_fn_with_state(
+                            codex_native_harness_mcp_auth::ratelimit::RateLimiter::new(10, 60),
+                            codex_native_harness_mcp_auth::ratelimit::rate_limit_token,
+                        )),
                 )
                 .route(
                     "/oauth/introspect",
@@ -149,14 +183,24 @@ pub async fn http_router(
                 .with_state(auth_state.clone()),
         )
         .nest(
-            "/mcp",
-            Router::new()
-                .fallback_service(mcp_service)
-                .layer(axum::middleware::from_fn_with_state(
-                    auth_state,
-                    codex_native_harness_mcp_auth::middleware::require_bearer,
-                )),
-        ))
+                    "/mcp",
+                    Router::new()
+                        .fallback_service(mcp_service)
+                        .layer(axum::middleware::from_fn_with_state(
+                            auth_state,
+                            codex_native_harness_mcp_auth::middleware::require_bearer,
+                        )),
+                )
+        // Tracing: log method, uri, status, and duration for every request.
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &axum::extract::Request| {
+            let uri = request.uri().to_string();
+            let method = request.method().to_string();
+            info_span!("http_request", method, uri)
+        }))
+        .layer(prometheus_layer.clone())
+        .layer(cors);
+
+    Ok(router)
 }
 
 async fn healthz() -> Json<serde_json::Value> {
@@ -292,4 +336,3 @@ mod tests {
     }
 
 }
-
