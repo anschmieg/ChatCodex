@@ -95,12 +95,11 @@ jobs:
       run:
         working-directory: codex-rs
     env:
-      # Speed up repeated builds across CI runs by caching compiled objects (non-Windows).
       USE_SCCACHE: ${{ startsWith(matrix.runner, 'windows') && 'false' || 'true' }}
       CARGO_INCREMENTAL: "0"
       SCCACHE_CACHE_SIZE: 10G
-      # In rust-ci, representative release-profile checks use thin LTO for faster feedback.
-      CARGO_PROFILE_RELEASE_LTO: ${{ matrix.profile == 'release' && 'thin' || 'fat' }}
+      # Thin LTO for release-profile CI checks; Cargo.toml defaults to fat LTO.
+      CARGO_PROFILE_RELEASE_LTO: ${{ matrix.profile == 'release' && 'thin' || '' }}
 
     strategy:
       fail-fast: false
@@ -279,11 +278,23 @@ jobs:
             sccache-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-
 
       - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
-        name: Disable sccache wrapper (musl)
+        name: Preload libubsan for musl host builds
         shell: bash
         run: |
           set -euo pipefail
-          echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+          # Keep sccache as RUSTC_WRAPPER for caching; preload libubsan via
+          # LD_PRELOAD instead of a wrapper so build scripts run safely.
+          ubsan=""
+          if command -v ldconfig >/dev/null 2>&1; then
+            ubsan="$(ldconfig -p | grep -m1 'libubsan\.so\.1' | sed -E 's/.*=> (.*)$/\1/')"
+          fi
+          if [[ -n "${ubsan}" ]]; then
+            echo "LD_PRELOAD=${ubsan}" >> "$GITHUB_ENV"
+            echo "Preloaded libubsan from ${ubsan}"
+          else
+            echo "libubsan not found — UBSan host builds may fail"
+          fi
+          # Clear any workspace wrapper so sccache applies to all crates.
           echo "RUSTC_WORKSPACE_WRAPPER=" >> "$GITHUB_ENV"
 
       - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
@@ -318,29 +329,6 @@ jobs:
           APT_INSTALL_ARGS: --no-install-recommends
         shell: bash
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
-
-      - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
-        name: Configure rustc UBSan wrapper (musl host)
-        shell: bash
-        run: |
-          set -euo pipefail
-          ubsan=""
-          if command -v ldconfig >/dev/null 2>&1; then
-            ubsan="$(ldconfig -p | grep -m1 'libubsan\.so\.1' | sed -E 's/.*=> (.*)$/\1/')"
-          fi
-          wrapper_root="${RUNNER_TEMP:-/tmp}"
-          wrapper="${wrapper_root}/rustc-ubsan-wrapper"
-          cat > "${wrapper}" <<EOF
-          #!/usr/bin/env bash
-          set -euo pipefail
-          if [[ -n "${ubsan}" ]]; then
-            export LD_PRELOAD="${ubsan}\${LD_PRELOAD:+:\${LD_PRELOAD}}"
-          fi
-          exec "\$1" "\${@:2}"
-          EOF
-          chmod +x "${wrapper}"
-          echo "RUSTC_WRAPPER=${wrapper}" >> "$GITHUB_ENV"
-          echo "RUSTC_WORKSPACE_WRAPPER=" >> "$GITHUB_ENV"
 
       - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
         name: Clear sanitizer flags (musl)
@@ -387,6 +375,16 @@ jobs:
           cargo chef prepare --recipe-path "$RECIPE"
           cargo chef cook --recipe-path "$RECIPE" --target ${{ matrix.target }} --release --all-features
 
+      - name: sccache stats (pre-build)
+        if: ${{ env.USE_SCCACHE == 'true' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "### sccache stats (pre-build) — ${{ matrix.target }} (${{ matrix.profile }})" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
       - name: cargo clippy
         run: cargo clippy --target ${{ matrix.target }} --all-features --tests --profile ${{ matrix.profile }} --timings -- -D warnings
 
@@ -424,17 +422,13 @@ jobs:
           path: ${{ github.workspace }}/.sccache/
           key: sccache-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-${{ steps.lockhash.outputs.hash }}-${{ github.run_id }}
 
-      - name: sccache stats
+      - name: sccache stats (post-build)
         if: always() && env.USE_SCCACHE == 'true'
         continue-on-error: true
-        run: sccache --show-stats || true
-
-      - name: sccache summary
-        if: always() && env.USE_SCCACHE == 'true'
         shell: bash
         run: |
           {
-            echo "### sccache stats — ${{ matrix.target }} (${{ matrix.profile }})";
+            echo "### sccache stats (post-build) — ${{ matrix.target }} (${{ matrix.profile }})";
             echo;
             echo '```';
             sccache --show-stats || true;
@@ -596,6 +590,16 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
 
+      - name: sccache stats (pre-build)
+        if: ${{ env.USE_SCCACHE == 'true' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "### sccache stats (pre-build) — ${{ matrix.target }} (tests)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
       - name: tests
         id: test
         run: cargo nextest run --all-features --no-fail-fast --target ${{ matrix.target }} --cargo-profile ci-test --timings
@@ -631,17 +635,13 @@ jobs:
           path: ${{ github.workspace }}/.sccache/
           key: sccache-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-${{ steps.lockhash.outputs.hash }}-${{ github.run_id }}
 
-      - name: sccache stats
+      - name: sccache stats (post-build)
         if: always() && env.USE_SCCACHE == 'true'
         continue-on-error: true
-        run: sccache --show-stats || true
-
-      - name: sccache summary
-        if: always() && env.USE_SCCACHE == 'true'
         shell: bash
         run: |
           {
-            echo "### sccache stats — ${{ matrix.target }} (tests)";
+            echo "### sccache stats (post-build) — ${{ matrix.target }} (tests)";
             echo;
             echo '```';
             sccache --show-stats || true;
