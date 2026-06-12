@@ -98,13 +98,23 @@ impl NativeHarness {
         std::fs::create_dir_all(&data_dir)?;
         let config = ConfigBuilder::default()
             .codex_home(data_dir)
+            .cli_overrides(vec![
+                (
+                    "features.use_legacy_landlock".to_string(),
+                    toml::Value::Boolean(true),
+                ),
+                (
+                    "sandbox_workspace_write.network_access".to_string(),
+                    toml::Value::Boolean(true),
+                ),
+            ])
             .harness_overrides(ConfigOverrides {
                 cwd: Some(workspace),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_mode: Some(sandbox_mode),
                 codex_linux_sandbox_exe,
                 main_execve_wrapper_exe,
-                ephemeral: Some(true),
+                ephemeral: Some(false),
                 ..ConfigOverrides::default()
             })
             .build()
@@ -230,6 +240,7 @@ mod tests {
     use super::NativeHarness;
     use super::native_tool_catalog;
     use codex_protocol::config_types::SandboxMode;
+    use crate::features::Feature;
     use serde_json::Value;
     use serde_json::json;
 
@@ -313,6 +324,24 @@ mod tests {
                 .as_ref()
                 .and_then(|value| value["output"].as_str())
                 .is_some_and(|output| output.contains("native-dispatch"))
+        );
+    }
+
+    #[tokio::test]
+    async fn native_harness_uses_legacy_landlock_for_container_compatibility() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let data = tempfile::tempdir().expect("data");
+        let harness =
+            NativeHarness::new_with_runtime_paths(workspace.path(), data.path(), None, None)
+                .await
+                .expect("native harness");
+
+        assert!(
+            harness
+                .inner
+                .turn
+                .features
+                .enabled(Feature::UseLegacyLandlock)
         );
     }
 
