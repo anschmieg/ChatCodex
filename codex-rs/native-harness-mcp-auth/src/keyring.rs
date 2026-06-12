@@ -8,6 +8,7 @@ use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use pkcs8::DecodePrivateKey;
+use rsa::BigUint;
 use rsa::RsaPrivateKey;
 use rsa::RsaPublicKey;
 use rsa::pkcs1v15::Signature;
@@ -119,14 +120,32 @@ pub fn verify_jwt(
     if !aud_ok {
         return Ok(None);
     }
+    // For verification we need a public key. If the SigningKeyEntry has a
+    // private PEM (ChatCodex-issued tokens), derive the public key from it.
+    // Otherwise, reconstruct the public key from the JWK fields (Cloudflare
+    // Access tokens, which only have a public key).
+    let public = if !key.private_pem.is_empty() {
+        let private = RsaPrivateKey::from_pkcs8_pem(&key.private_pem)
+            .context("loading PKCS#8 private key for verify")?;
+        RsaPublicKey::from(&private)
+    } else {
+        let jwk = &key.public_jwk;
+        let n_b64 = jwk.get("n").and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("JWK missing n"))?;
+        let e_b64 = jwk.get("e").and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("JWK missing e"))?;
+        let n_bytes = URL_SAFE_NO_PAD.decode(n_b64)
+            .context("decoding JWK n")?;
+        let e_bytes = URL_SAFE_NO_PAD.decode(e_b64)
+            .context("decoding JWK e")?;
+        let n = BigUint::from_bytes_be(&n_bytes);
+        let e = BigUint::from_bytes_be(&e_bytes);
+        RsaPublicKey::new(n, e)
+            .context("invalid JWK RSA key")?
+    };
     let signature = URL_SAFE_NO_PAD
         .decode(signature_b64)
         .map_err(|error| anyhow::anyhow!("invalid JWT signature base64: {error}"))?;
-    // For verification we need a public key. The stored key holds the
-    // private PEM; the public key is reconstructible from it.
-    let private = RsaPrivateKey::from_pkcs8_pem(&key.private_pem)
-        .context("loading PKCS#8 private key for verify")?;
-    let public = RsaPublicKey::from(&private);
     let verifying_key = VerifyingKey::<Sha256>::new(public);
     let signature = Signature::try_from(signature.as_slice())
         .map_err(|error| anyhow::anyhow!("invalid JWT signature: {error}"))?;
