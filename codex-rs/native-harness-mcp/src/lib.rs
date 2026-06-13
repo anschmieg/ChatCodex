@@ -29,6 +29,7 @@ use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::model::Tool;
+use rmcp::model::ToolAnnotations;
 use rmcp::transport::StreamableHttpServerConfig;
 use rmcp::transport::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -208,6 +209,7 @@ async fn healthz() -> Json<serde_json::Value> {
 }
 
 fn tool_from_native_spec(native: HarnessToolSpec) -> anyhow::Result<Tool> {
+    let tool_name = native.name.clone();
     let definition = native
         .definition
         .as_object()
@@ -222,12 +224,12 @@ fn tool_from_native_spec(native: HarnessToolSpec) -> anyhow::Result<Tool> {
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("native tool {} has no parameters", native.name))?;
     let input_schema: JsonObject = serde_json::from_value(input_schema)?;
-    let output_schema = definition
-        .get("output_schema")
-        .cloned()
+    let output_schema = native
+        .output_schema
         .map(serde_json::from_value)
         .transpose()?
-        .map(Arc::new);
+        .map(Arc::new)
+        .or_else(|| Some(Arc::new(default_output_schema())));
 
     Ok(Tool {
         name: Cow::Owned(native.name),
@@ -235,11 +237,58 @@ fn tool_from_native_spec(native: HarnessToolSpec) -> anyhow::Result<Tool> {
         description: Some(Cow::Owned(description)),
         input_schema: Arc::new(input_schema),
         output_schema,
-        annotations: None,
+        annotations: Some(tool_annotations(&tool_name)?),
         execution: None,
         icons: None,
         meta: None,
     })
+}
+
+fn default_output_schema() -> JsonObject {
+    serde_json::from_value(json!({
+        "type": "object",
+        "properties": {
+            "result": {
+                "type": "string",
+                "description": "The deterministic structured result produced by the tool."
+            }
+        },
+        "required": ["result"],
+        "additionalProperties": false
+    }))
+    .expect("static output schema must be a JSON object")
+}
+
+fn tool_annotations(tool_name: &str) -> anyhow::Result<ToolAnnotations> {
+    let annotations = match tool_name {
+        "exec_command" => ToolAnnotations::with_title("Run command")
+            .read_only(false)
+            .destructive(true)
+            .idempotent(false)
+            .open_world(true),
+        "write_stdin" => ToolAnnotations::with_title("Interact with command")
+            .read_only(false)
+            .destructive(true)
+            .idempotent(false)
+            .open_world(true),
+        "update_plan" => ToolAnnotations::with_title("Update task plan")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+        "apply_patch" => ToolAnnotations::with_title("Apply workspace patch")
+            .read_only(false)
+            .destructive(true)
+            .idempotent(false)
+            .open_world(false),
+        "view_image" => ToolAnnotations::with_title("View local image")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+        _ => anyhow::bail!("native tool {tool_name} has no MCP annotation policy"),
+    };
+    Ok(annotations)
 }
 
 impl ServerHandler for NativeHarnessMcp {
@@ -333,6 +382,56 @@ mod tests {
             apply_patch.input_schema["required"],
             serde_json::json!(["input"])
         );
-    }
+        let apply_patch_output = apply_patch.output_schema.as_ref().expect("output schema");
+        assert_eq!(apply_patch_output["properties"]["result"]["type"], "string");
+        let exec_command = server
+            .tools()
+            .iter()
+            .find(|tool| tool.name == "exec_command")
+            .expect("exec_command");
+        assert_eq!(
+            exec_command.output_schema.as_ref().expect("output schema")["properties"]["output"]
+                ["type"],
+            "string"
+        );
 
+        for tool in server.tools() {
+            assert!(
+                tool.output_schema.is_some(),
+                "{} should advertise an output schema",
+                tool.name
+            );
+            assert!(
+                tool.annotations.is_some(),
+                "{} should advertise safety annotations",
+                tool.name
+            );
+            let serialized = serde_json::to_value(tool).expect("serialize MCP tool");
+            assert!(
+                serialized.get("outputSchema").is_some(),
+                "{} should serialize outputSchema on the wire",
+                tool.name
+            );
+            assert!(
+                serialized.get("output_schema").is_none(),
+                "{} should use the MCP camel-case field name",
+                tool.name
+            );
+        }
+
+        let annotations = |name: &str| {
+            server
+                .tools()
+                .iter()
+                .find(|tool| tool.name == name)
+                .and_then(|tool| tool.annotations.as_ref())
+                .unwrap_or_else(|| panic!("{name} annotations"))
+        };
+        assert_eq!(annotations("view_image").read_only_hint, Some(true));
+        assert_eq!(annotations("view_image").destructive_hint, Some(false));
+        assert_eq!(annotations("apply_patch").read_only_hint, Some(false));
+        assert_eq!(annotations("apply_patch").destructive_hint, Some(true));
+        assert_eq!(annotations("exec_command").open_world_hint, Some(true));
+        assert_eq!(annotations("update_plan").idempotent_hint, Some(true));
+    }
 }

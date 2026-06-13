@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 
 use crate::codex::Session;
 use crate::codex::TurnContext;
+use crate::client_common::tools::ToolSpec;
 use crate::config::ConfigBuilder;
 use crate::config::ConfigOverrides;
 use crate::protocol::AskForApproval;
@@ -32,6 +33,7 @@ use serde_json::json;
 pub struct HarnessToolSpec {
     pub name: String,
     pub definition: Value,
+    pub output_schema: Option<Value>,
     pub supports_parallel_tool_calls: bool,
 }
 
@@ -179,11 +181,15 @@ impl NativeHarness {
 }
 
 fn harness_result(response: ResponseInputItem, structured_content: Value) -> HarnessToolResult {
+    let structured_content = match structured_content {
+        Value::Object(_) => structured_content,
+        result => json!({ "result": result }),
+    };
     match response {
         ResponseInputItem::FunctionCallOutput { output, .. }
         | ResponseInputItem::CustomToolCallOutput { output, .. } => HarnessToolResult {
             content: output_content(output.body),
-            structured_content: structured_content.is_object().then_some(structured_content),
+            structured_content: Some(structured_content),
             is_error: output.success.map(|success| !success),
         },
         other => HarnessToolResult {
@@ -191,7 +197,7 @@ fn harness_result(response: ResponseInputItem, structured_content: Value) -> Har
                 "type": "text",
                 "text": serde_json::to_string(&other).unwrap_or_else(|error| error.to_string())
             })],
-            structured_content: structured_content.is_object().then_some(structured_content),
+            structured_content: Some(structured_content),
             is_error: Some(false),
         },
     }
@@ -225,10 +231,15 @@ pub fn native_tool_catalog() -> Result<Vec<HarnessToolSpec>, serde_json::Error> 
         .into_iter()
         .map(|configured| {
             let name = configured.spec.name().to_string();
+            let output_schema = match &configured.spec {
+                ToolSpec::Function(tool) => tool.output_schema.clone(),
+                _ => None,
+            };
             let definition = serde_json::to_value(configured.spec)?;
             Ok(HarnessToolSpec {
                 name,
                 definition,
+                output_schema,
                 supports_parallel_tool_calls: configured.supports_parallel_tool_calls,
             })
         })
