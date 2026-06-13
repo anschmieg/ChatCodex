@@ -117,6 +117,8 @@ members = [
     "codex-experimental-api-macros",
     "plugin",
     "model-provider",
+    "native-harness-mcp",
+    "native-harness-mcp-auth",
 ]
 resolver = "2"
 
@@ -195,6 +197,8 @@ codex-mcp-server = { path = "mcp-server" }
 codex-model-provider-info = { path = "model-provider-info" }
 codex-models-manager = { path = "models-manager" }
 codex-network-proxy = { path = "network-proxy" }
+codex-native-harness-mcp = { path = "native-harness-mcp" }
+codex-native-harness-mcp-auth = { path = "native-harness-mcp-auth" }
 codex-ollama = { path = "ollama" }
 codex-otel = { path = "otel" }
 codex-plugin = { path = "plugin" }

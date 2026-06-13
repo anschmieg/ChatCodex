@@ -1,0 +1,27 @@
+services:
+  chatcodex:
+    image: ${CHATCODEX_IMAGE:-ghcr.io/anschmieg/chatcodex:latest}
+    read_only: true
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: ${CHATCODEX_PIDS_LIMIT:-512}
+    mem_limit: ${CHATCODEX_MEMORY_LIMIT:-4g}
+    cpus: ${CHATCODEX_CPU_LIMIT:-2}
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=1777
+    volumes:
+      - type: bind
+        source: ${CHATCODEX_PROJECTS_DIR:?set CHATCODEX_PROJECTS_DIR}
+        target: /workspaces
+      - type: volume
+        source: chatcodex-toolchains
+        target: /toolchains
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  chatcodex-toolchains:
