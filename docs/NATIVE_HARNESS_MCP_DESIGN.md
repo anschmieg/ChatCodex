@@ -67,12 +67,14 @@ adds a second boundary:
 - dropped Linux capabilities;
 - `no-new-privileges`;
 - read-only container filesystem;
-- explicit writable `/workspaces` and `/data` mounts;
+- an explicit writable `/workspaces` bind mount and a Docker-managed
+  `/toolchains` volume;
 - bounded CPU, memory, and process count;
 - no Docker socket.
 
-The project workspace is trusted to run its own build and test code. The
-container boundary protects the VPS host and unrelated host files.
+The project workspace is trusted to run its own build and test code. No host
+`/data` path is mounted. The container boundary protects the VPS host and
+unrelated host files.
 
 ## Git
 

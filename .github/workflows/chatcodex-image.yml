@@ -233,8 +233,16 @@ jobs:
               for storage in storages.get("file_storages", [])
               if storage.get("mount_path") == "/toolchains"
           ]
+          forbidden_data = [
+              storage
+              for storage_type in ("persistent_storages", "file_storages")
+              for storage in storages.get(storage_type, [])
+              if storage.get("mount_path") == "/data"
+          ]
 
-          if files:
+          if forbidden_data:
+              print("forbidden-data")
+          elif files:
               print("conflict")
           elif persistent:
               print("exists")
@@ -244,6 +252,10 @@ jobs:
           )
 
           case "${storage_state}" in
+            forbidden-data)
+              echo "::error::A host storage is mounted at /data; remove it before deploying" >&2
+              exit 1
+              ;;
             exists)
               echo "Persistent /toolchains storage already exists." >&2
               ;;
@@ -290,7 +302,11 @@ jobs:
           payload=$(cat <<JSON
           {
             "docker_registry_image_name": "ghcr.io/anschmieg/chatcodex",
-            "docker_registry_image_tag":  "${IMAGE_TAG}"
+            "docker_registry_image_tag":  "${IMAGE_TAG}",
+            "custom_docker_run_options": "--cap-drop=ALL --security-opt=no-new-privileges:true",
+            "limits_memory": "4g",
+            "limits_memory_swap": "4g",
+            "limits_cpus": "2"
           }
           JSON
           )

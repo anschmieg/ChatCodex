@@ -5,8 +5,9 @@ development environments.
 
 ## Responsibilities
 
-- The ChatCodex image provides the deterministic harness, basic shell tools,
-  Git, ripgrep, a baseline Python 3 interpreter, `mise`, and `uv`.
+- The ChatCodex image provides the deterministic harness, basic shell and build
+  tools, Git, GitHub CLI, SSH, ripgrep, a baseline Python 3 interpreter,
+  `mise`, and `uv`.
 - `mise` provisions and activates project runtime toolchains such as Python,
   Node.js, Go, Rust, Java, and Terraform.
 - `uv` manages Python dependencies, virtual environments, lockfiles, and
@@ -16,21 +17,25 @@ development environments.
 
 ## Storage
 
-The runtime uses three writable roots:
+The runtime uses two writable roots:
 
 | Path | Purpose |
 | --- | --- |
-| `/workspaces` | Project source trees |
-| `/data` | ChatCodex state |
-| `/toolchains` | Persistent mise and uv downloads/caches |
+| `/workspaces` | Project source trees and the writable uv cache |
+| `/toolchains` | Persistent ChatCodex state, mise state/cache, and uv-managed Python/tools |
 
-Production should mount all three paths persistently. The image configures:
+Production should bind-mount only the allowed host projects at `/workspaces`
+and mount a Docker-managed persistent volume at `/toolchains`. It must not
+mount a host `/data` directory. The image configures:
 
 ```text
+CHATCODEX_DATA_DIR=/toolchains/chatcodex
+CODEX_HOME=/toolchains/chatcodex/codex
+HOME=/toolchains/home/chatcodex
 MISE_DATA_DIR=/toolchains/mise/data
 MISE_CACHE_DIR=/toolchains/mise/cache
 MISE_STATE_DIR=/toolchains/mise/state
-UV_CACHE_DIR=/toolchains/uv/cache
+UV_CACHE_DIR=/workspaces/.uv-cache
 UV_PYTHON_INSTALL_DIR=/toolchains/uv/python
 UV_TOOL_DIR=/toolchains/uv/tools
 UV_PYTHON_DOWNLOADS=never

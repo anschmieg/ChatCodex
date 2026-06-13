@@ -7,7 +7,7 @@
 
 - Branch: `codex/native-harness-mcp`
 - Phase: OAuth 2.1 layer complete; approval bridge next
-- Last updated: 2026-06-09 20:00 CEST
+- Last updated: 2026-06-13
 - Previous approach: custom `deterministic-*` Rust crates plus a TypeScript MCP
   gateway. It remains in the branch temporarily for reference but is deprecated.
 - Current build health:
@@ -21,6 +21,10 @@
   - The Ubuntu image builds locally with the full `codex-core` dependency and
     passes health, bearer-authentication, MCP initialization, non-root, Git,
     ripgrep, and mount-point smoke checks.
+  - The runtime image includes GitHub CLI, SSH, common archive/JSON/sync
+    utilities, CMake, the `python` alias, and `fd`. The uv cache is rooted at
+    writable `/workspaces/.uv-cache`; uv-managed Python and tools remain under
+    persistent `/toolchains`.
   - The Rust builder needs more than `2 GiB`; `6 GiB` is the verified local
     configuration. The runtime image is not expected to need comparable memory.
   - The Coolify application `okgs4ck888w0ws48wow48co8` tracks branch
@@ -95,7 +99,8 @@ This is a personal, single-user application:
 - one deployed ChatCodex instance;
 - one configured workspace root, `/workspaces`;
 - multiple projects may exist below that root;
-- `/data` stores application state;
+- `/toolchains/chatcodex` stores application state in the Docker-managed
+  persistent toolchains volume;
 - bearer authentication is sufficient for the first remote release;
 - Docker is the cross-platform deployment and host-isolation boundary;
 - concurrent operations against one project do not need sophisticated tenancy
@@ -137,8 +142,9 @@ including:
 6. Support stdio for local tests and Streamable HTTP for ChatGPT.
 7. Use simple bearer authentication for remote HTTP.
 8. Package the app as a non-root Ubuntu 24.04 multi-stage image.
-9. Mount `/workspaces` read-write and `/data` read-write. Optional Git/SSH
-   credentials are read-only.
+9. Bind-mount only the allowed host projects at `/workspaces` and mount a
+   Docker-managed persistent volume at `/toolchains`. Optional Git/SSH
+   credentials are read-only. Do not mount host `/data`.
 10. Do not mount the Docker socket.
 
 ### MCP Compatibility Note
@@ -304,11 +310,14 @@ Actions:
 - [x] Build the Rust binary in a builder stage.
 - [x] Create an Ubuntu 24.04 runtime with Git and common shell utilities.
 - [x] Run as a non-root `chatcodex` user.
-- [ ] Make the image filesystem read-only except explicit mounts and tmpfs.
-- [ ] Drop all capabilities and enable `no-new-privileges`.
-- [ ] Add CPU, memory, and PID limits in Compose.
-- [ ] Mount `/workspaces` and `/data`; the image creates both mount points,
-      but Coolify persistent storage still needs verification.
+- [x] Define a read-only image filesystem with explicit mounts and tmpfs in
+      the Compose deployment contract.
+- [x] Drop all capabilities and enable `no-new-privileges` in Compose; the
+      current Coolify image deployment also applies both supported options.
+- [x] Define CPU, memory, and PID limits in Compose; the current Coolify image
+      deployment applies CPU and memory limits through its API.
+- [x] Bind-mount `/workspaces` and mount the Docker-managed `/toolchains`
+      volume. Do not mount host `/data`.
 - [ ] Document optional read-only SSH credential mounting.
 - [ ] Add Coolify deployment instructions.
 
@@ -317,8 +326,15 @@ Implemented:
 - `deploy/chatcodex/Dockerfile` matches the existing Coolify application path.
 - The runtime image contains Git, curl, ripgrep, and CA certificates and runs
   as UID `10001`.
-- The image sets `CHATCODEX_DATA_DIR=/data` and `CODEX_HOME=/data/codex`, so
-  native helper aliases and harness state live on the data mount.
+- The image sets `CHATCODEX_DATA_DIR=/toolchains/chatcodex` and
+  `CODEX_HOME=/toolchains/chatcodex/codex`, so native helper aliases and
+  harness state live in the Docker-managed toolchains volume.
+- `HOME=/toolchains/home/chatcodex` keeps Git, GitHub CLI, and other user state
+  writable when the container root filesystem is read-only.
+- `deploy/chatcodex/compose.yaml` is the complete hardening contract. The
+  current Coolify Docker Image deployment enforces capability drops,
+  `no-new-privileges`, CPU limits, and memory limits, but must migrate to the
+  Compose deployment to enforce read-only root, tmpfs, and PID limits.
 - Container builds disable the upstream workspace's fat LTO, use two Cargo
   build jobs, and set `opt-level=0` so full `codex-core` compilation fits
   moderate Docker/Coolify builders. Builds in a `2 GiB` Colima VM exhausted

@@ -82,25 +82,36 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
+        cmake \
         curl \
+        fd-find \
         git \
+        gh \
+        jq \
+        openssh-client \
         pkg-config \
+        python-is-python3 \
         python3 \
         python3-venv \
         ripgrep \
+        rsync \
         tar \
+        unzip \
+        zip \
     && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && useradd --create-home --uid 10001 --shell /bin/bash chatcodex \
     && mkdir -p \
         /workspaces \
-        /data \
+        /workspaces/.uv-cache \
+        /toolchains/chatcodex/codex \
+        /toolchains/home/chatcodex \
         /toolchains/mise/data \
         /toolchains/mise/cache \
         /toolchains/mise/state \
-        /toolchains/uv/cache \
         /toolchains/uv/python \
         /toolchains/uv/tools \
-    && chown -R chatcodex:chatcodex /workspaces /data /toolchains
+    && chown -R chatcodex:chatcodex /workspaces /toolchains
 
 RUN set -eux; \
     case "${TARGETARCH}" in \
@@ -141,7 +152,7 @@ COPY --from=builder \
     /usr/local/bin/chatcodex
 
 ENV CHATCODEX_BIND=0.0.0.0:3000 \
-    CHATCODEX_DATA_DIR=/data \
+    CHATCODEX_DATA_DIR=/toolchains/chatcodex \
     CHATCODEX_WORKSPACE_ROOT=/workspaces \
     CHATCODEX_PUBLIC_BASE_URL=https://codex.example.invalid \
     CHATCODEX_CF_ACCESS_TEAM=https://team.cloudflareaccess.com \
@@ -151,15 +162,17 @@ ENV CHATCODEX_BIND=0.0.0.0:3000 \
     MISE_DATA_DIR=/toolchains/mise/data \
     MISE_CACHE_DIR=/toolchains/mise/cache \
     MISE_STATE_DIR=/toolchains/mise/state \
-    UV_CACHE_DIR=/toolchains/uv/cache \
+    UV_CACHE_DIR=/workspaces/.uv-cache \
     UV_PYTHON_INSTALL_DIR=/toolchains/uv/python \
     UV_TOOL_DIR=/toolchains/uv/tools \
     UV_PYTHON_DOWNLOADS=never
 
-ENV CODEX_HOME=/data/codex
-ENV HOME=/home/chatcodex
+ENV CODEX_HOME=/toolchains/chatcodex/codex
+ENV HOME=/toolchains/home/chatcodex
 
 EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:3000/healthz"]
 USER chatcodex
 WORKDIR /workspaces
 
