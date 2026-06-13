@@ -11,7 +11,7 @@
 # runtime stage runs on TARGETPLATFORM (linux/arm64 for Coolify).
 
 # ---------- builder: cross-compile or native compile ----------
-FROM --platform=$BUILDPLATFORM rust:1.93.0-bookworm AS builder
+FROM --platform=$BUILDPLATFORM rust:1.95.0-bookworm AS builder
 
 ARG TARGETPLATFORM
 

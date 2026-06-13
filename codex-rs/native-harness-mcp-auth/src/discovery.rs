@@ -7,9 +7,7 @@ use axum::response::IntoResponse;
 
 use crate::state::AuthState;
 
-pub async fn oauth_authorization_server(
-    State(state): State<AuthState>,
-) -> impl IntoResponse {
+pub async fn oauth_authorization_server(State(state): State<AuthState>) -> impl IntoResponse {
     let cfg = state.config();
     let body = serde_json::json!({
         "issuer": cfg.issuer(),
@@ -29,9 +27,7 @@ pub async fn oauth_authorization_server(
     (StatusCode::OK, Json(body))
 }
 
-pub async fn oauth_protected_resource(
-    State(state): State<AuthState>,
-) -> impl IntoResponse {
+pub async fn oauth_protected_resource(State(state): State<AuthState>) -> impl IntoResponse {
     let cfg = state.config();
     let body = serde_json::json!({
         "resource": cfg.resource_indicator(),

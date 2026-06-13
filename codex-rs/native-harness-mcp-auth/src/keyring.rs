@@ -130,18 +130,19 @@ pub fn verify_jwt(
         RsaPublicKey::from(&private)
     } else {
         let jwk = &key.public_jwk;
-        let n_b64 = jwk.get("n").and_then(serde_json::Value::as_str)
+        let n_b64 = jwk
+            .get("n")
+            .and_then(serde_json::Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("JWK missing n"))?;
-        let e_b64 = jwk.get("e").and_then(serde_json::Value::as_str)
+        let e_b64 = jwk
+            .get("e")
+            .and_then(serde_json::Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("JWK missing e"))?;
-        let n_bytes = URL_SAFE_NO_PAD.decode(n_b64)
-            .context("decoding JWK n")?;
-        let e_bytes = URL_SAFE_NO_PAD.decode(e_b64)
-            .context("decoding JWK e")?;
+        let n_bytes = URL_SAFE_NO_PAD.decode(n_b64).context("decoding JWK n")?;
+        let e_bytes = URL_SAFE_NO_PAD.decode(e_b64).context("decoding JWK e")?;
         let n = BigUint::from_bytes_be(&n_bytes);
         let e = BigUint::from_bytes_be(&e_bytes);
-        RsaPublicKey::new(n, e)
-            .context("invalid JWK RSA key")?
+        RsaPublicKey::new(n, e).context("invalid JWK RSA key")?
     };
     let signature = URL_SAFE_NO_PAD
         .decode(signature_b64)
@@ -221,7 +222,13 @@ impl Keyring {
             .expect("keyring mutex poisoned")
             .clone()
             .expect("keyring entry should be initialized");
-        verify_jwt(token, &self.inner.issuer, &self.inner.audience, &active, now_ts)
+        verify_jwt(
+            token,
+            &self.inner.issuer,
+            &self.inner.audience,
+            &active,
+            now_ts,
+        )
     }
 }
 

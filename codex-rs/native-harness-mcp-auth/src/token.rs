@@ -75,7 +75,13 @@ pub async fn token(
 async fn handle_authorization_code(state: &AuthState, form: TokenForm) -> axum::response::Response {
     let code = match form.code.as_ref() {
         Some(value) => value,
-        None => return token_error(StatusCode::BAD_REQUEST, "invalid_request", "code is required"),
+        None => {
+            return token_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "code is required",
+            );
+        }
     };
     let client_id = match form.client_id.as_ref() {
         Some(value) => value,
@@ -84,7 +90,7 @@ async fn handle_authorization_code(state: &AuthState, form: TokenForm) -> axum::
                 StatusCode::BAD_REQUEST,
                 "invalid_client",
                 "client_id is required",
-            )
+            );
         }
     };
     let redirect_uri = match form.redirect_uri.as_ref() {
@@ -94,7 +100,7 @@ async fn handle_authorization_code(state: &AuthState, form: TokenForm) -> axum::
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
                 "redirect_uri is required",
-            )
+            );
         }
     };
     let verifier = match form.code_verifier.as_ref() {
@@ -104,7 +110,7 @@ async fn handle_authorization_code(state: &AuthState, form: TokenForm) -> axum::
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
                 "code_verifier is required",
-            )
+            );
         }
     };
     let client = match state.store().get_client(client_id) {
@@ -119,7 +125,7 @@ async fn handle_authorization_code(state: &AuthState, form: TokenForm) -> axum::
                 StatusCode::BAD_REQUEST,
                 "invalid_grant",
                 "authorization code is invalid or expired",
-            )
+            );
         }
     };
     if record.client_id != client.client_id || record.redirect_uri != *redirect_uri {
@@ -136,7 +142,7 @@ async fn handle_authorization_code(state: &AuthState, form: TokenForm) -> axum::
                 StatusCode::BAD_REQUEST,
                 "invalid_grant",
                 "code has no associated PKCE challenge",
-            )
+            );
         }
     };
     if record.code_challenge_method.as_deref() != Some("S256") {
@@ -154,16 +160,17 @@ async fn handle_authorization_code(state: &AuthState, form: TokenForm) -> axum::
             "code_verifier does not match the challenge",
         );
     }
-    let (access_token, refresh) = match issue_tokens(state, &client.client_id, &record.subject, &record.scope).await {
-        Ok(value) => value,
-        Err(error) => {
-            return token_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server_error",
-                error.to_string(),
-            )
-        }
-    };
+    let (access_token, refresh) =
+        match issue_tokens(state, &client.client_id, &record.subject, &record.scope).await {
+            Ok(value) => value,
+            Err(error) => {
+                return token_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    error.to_string(),
+                );
+            }
+        };
     let response = TokenResponse {
         access_token,
         token_type: "Bearer",
@@ -182,7 +189,7 @@ async fn handle_refresh_token(state: &AuthState, form: TokenForm) -> axum::respo
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
                 "refresh_token is required",
-            )
+            );
         }
     };
     let client_id = match form.client_id.as_ref() {
@@ -192,7 +199,7 @@ async fn handle_refresh_token(state: &AuthState, form: TokenForm) -> axum::respo
                 StatusCode::BAD_REQUEST,
                 "invalid_client",
                 "client_id is required",
-            )
+            );
         }
     };
     let client = match state.store().get_client(client_id) {
@@ -207,7 +214,7 @@ async fn handle_refresh_token(state: &AuthState, form: TokenForm) -> axum::respo
                 StatusCode::BAD_REQUEST,
                 "invalid_grant",
                 "refresh_token is invalid",
-            )
+            );
         }
     };
     if record.client_id != client.client_id {
@@ -243,16 +250,17 @@ async fn handle_refresh_token(state: &AuthState, form: TokenForm) -> axum::respo
             )
         })
         .ok();
-    let (access_token, new_refresh) = match issue_tokens(state, &client.client_id, &record.subject, &record.scope).await {
-        Ok(value) => value,
-        Err(error) => {
-            return token_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server_error",
-                error.to_string(),
-            )
-        }
-    };
+    let (access_token, new_refresh) =
+        match issue_tokens(state, &client.client_id, &record.subject, &record.scope).await {
+            Ok(value) => value,
+            Err(error) => {
+                return token_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    error.to_string(),
+                );
+            }
+        };
     let _ = token_hash;
     let response = TokenResponse {
         access_token,
@@ -328,27 +336,16 @@ pub async fn introspect(
     let claims = match state.keyring().verify(&form.token, now()) {
         Ok(Some(claims)) => claims,
         _ => {
-            return (
-                StatusCode::OK,
-                Json(serde_json::json!({ "active": false })),
-            )
-                .into_response();
+            return (StatusCode::OK, Json(serde_json::json!({ "active": false }))).into_response();
         }
     };
     let jti = match claims.get("jti").and_then(Value::as_str) {
         Some(value) => value.to_string(),
         None => {
-            return (
-                StatusCode::OK,
-                Json(serde_json::json!({ "active": false })),
-            )
-                .into_response();
+            return (StatusCode::OK, Json(serde_json::json!({ "active": false }))).into_response();
         }
     };
-    let active = state
-        .store()
-        .jti_is_active(&jti, now())
-        .unwrap_or(false);
+    let active = state.store().jti_is_active(&jti, now()).unwrap_or(false);
     let body = if active {
         serde_json::json!({
             "active": true,

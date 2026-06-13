@@ -1,30 +1,53 @@
 use super::*;
 use crate::agent::status::is_final;
+use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
+use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v1;
+use crate::turn_timing::now_unix_timestamp_ms;
+use codex_protocol::error::CodexErr;
+use codex_tools::ToolSpec;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch::Receiver;
 use tokio::time::Instant;
 
 use tokio::time::timeout_at;
 
-pub(crate) struct Handler;
+#[derive(Default)]
+pub(crate) struct Handler {
+    options: WaitAgentTimeoutOptions,
+}
 
-#[async_trait]
-impl ToolHandler for Handler {
-    type Output = WaitAgentResult;
+impl Handler {
+    pub(crate) fn new(options: WaitAgentTimeoutOptions) -> Self {
+        Self { options }
+    }
+}
 
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
+#[async_trait::async_trait]
+impl ToolExecutor<ToolInvocation> for Handler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "wait_agent")
     }
 
-    fn matches_kind(&self, payload: &ToolPayload) -> bool {
-        matches!(payload, ToolPayload::Function { .. })
+    fn spec(&self) -> ToolSpec {
+        create_wait_agent_tool_v1(self.options)
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+    fn search_info(&self) -> Option<ToolSearchInfo> {
+        multi_agent_tool_search_info(
+            "wait_agent wait agent subagent status final result complete timeout targets",
+            self.spec(),
+        )
+    }
+
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -34,28 +57,27 @@ impl ToolHandler for Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
-        if args.ids.is_empty() {
-            return Err(FunctionCallError::RespondToModel(
-                "ids must be non-empty".to_owned(),
-            ));
-        }
-        let receiver_thread_ids = args
-            .ids
-            .iter()
-            .map(|id| agent_id(id))
-            .collect::<Result<Vec<_>, _>>()?;
+        let receiver_thread_ids = parse_agent_id_targets(args.targets)?;
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
+        let mut target_by_thread_id = HashMap::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
-            let (agent_nickname, agent_role) = session
+            let agent_metadata = session
                 .services
                 .agent_control
-                .get_agent_nickname_and_role(*receiver_thread_id)
-                .await
-                .unwrap_or((None, None));
+                .get_agent_metadata(*receiver_thread_id)
+                .unwrap_or_default();
+            target_by_thread_id.insert(
+                *receiver_thread_id,
+                agent_metadata
+                    .agent_path
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| receiver_thread_id.to_string()),
+            );
             receiver_agents.push(CollabAgentRef {
                 thread_id: *receiver_thread_id,
-                agent_nickname,
-                agent_role,
+                agent_nickname: agent_metadata.agent_nickname,
+                agent_role: agent_metadata.agent_role,
             });
         }
 
@@ -73,7 +95,8 @@ impl ToolHandler for Handler {
             .send_event(
                 &turn,
                 CollabWaitingBeginEvent {
-                    sender_thread_id: session.conversation_id,
+                    started_at_ms: now_unix_timestamp_ms(),
+                    sender_thread_id: session.thread_id,
                     receiver_thread_ids: receiver_thread_ids.clone(),
                     receiver_agents: receiver_agents.clone(),
                     call_id: call_id.clone(),
@@ -103,8 +126,9 @@ impl ToolHandler for Handler {
                         .send_event(
                             &turn,
                             CollabWaitingEndEvent {
-                                sender_thread_id: session.conversation_id,
+                                sender_thread_id: session.thread_id,
                                 call_id: call_id.clone(),
+                                completed_at_ms: now_unix_timestamp_ms(),
                                 agent_statuses: build_wait_agent_statuses(
                                     &statuses,
                                     &receiver_agents,
@@ -151,39 +175,56 @@ impl ToolHandler for Handler {
             results
         };
 
-        let statuses_map = statuses.clone().into_iter().collect::<HashMap<_, _>>();
-        let agent_statuses = build_wait_agent_statuses(&statuses_map, &receiver_agents);
+        let timed_out = statuses.is_empty();
+        let statuses_by_id = statuses.clone().into_iter().collect::<HashMap<_, _>>();
+        let agent_statuses = build_wait_agent_statuses(&statuses_by_id, &receiver_agents);
         let result = WaitAgentResult {
-            status: statuses_map.clone(),
-            timed_out: statuses.is_empty(),
+            status: statuses
+                .into_iter()
+                .filter_map(|(thread_id, status)| {
+                    target_by_thread_id
+                        .get(&thread_id)
+                        .cloned()
+                        .map(|target| (target, status))
+                })
+                .collect(),
+            timed_out,
         };
 
         session
             .send_event(
                 &turn,
                 CollabWaitingEndEvent {
-                    sender_thread_id: session.conversation_id,
+                    sender_thread_id: session.thread_id,
                     call_id,
+                    completed_at_ms: now_unix_timestamp_ms(),
                     agent_statuses,
-                    statuses: statuses_map,
+                    statuses: statuses_by_id,
                 }
                 .into(),
             )
             .await;
 
-        Ok(result)
+        Ok(boxed_tool_output(result))
+    }
+}
+
+impl CoreToolRuntime for Handler {
+    fn matches_kind(&self, payload: &ToolPayload) -> bool {
+        matches!(payload, ToolPayload::Function { .. })
     }
 }
 
 #[derive(Debug, Deserialize)]
 struct WaitArgs {
-    ids: Vec<String>,
+    #[serde(default)]
+    targets: Vec<String>,
     timeout_ms: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct WaitAgentResult {
-    pub(crate) status: HashMap<ThreadId, AgentStatus>,
+    pub(crate) status: HashMap<String, AgentStatus>,
     pub(crate) timed_out: bool,
 }
 
@@ -197,7 +238,7 @@ impl ToolOutput for WaitAgentResult {
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
-        tool_output_response_item(call_id, payload, self, None, "wait_agent")
+        tool_output_response_item(call_id, payload, self, /*success*/ None, "wait_agent")
     }
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {

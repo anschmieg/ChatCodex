@@ -226,16 +226,12 @@ impl CfAccessVerifier {
 }
 
 fn jwk_to_entry(jwk: &CfJwk) -> Result<SigningKeyEntry> {
-    let n_bytes = URL_SAFE_NO_PAD
-        .decode(&jwk.n)
-        .context("decoding JWK n")?;
-    let e_bytes = URL_SAFE_NO_PAD
-        .decode(&jwk.e)
-        .context("decoding JWK e")?;
+    let n_bytes = URL_SAFE_NO_PAD.decode(&jwk.n).context("decoding JWK n")?;
+    let e_bytes = URL_SAFE_NO_PAD.decode(&jwk.e).context("decoding JWK e")?;
     let n = BigUint::from_bytes_be(&n_bytes);
     let e = BigUint::from_bytes_be(&e_bytes);
-    let public = RsaPublicKey::new(n, e)
-        .map_err(|error| anyhow::anyhow!("invalid JWK RSA key: {error}"))?;
+    let public =
+        RsaPublicKey::new(n, e).map_err(|error| anyhow::anyhow!("invalid JWK RSA key: {error}"))?;
     let _ = public.n();
     Ok(SigningKeyEntry {
         kid: jwk.kid.clone(),

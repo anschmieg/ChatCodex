@@ -60,21 +60,23 @@ pub async fn authorize(
     }
     let client = match state.store().get_client(&query.client_id) {
         Ok(Some(client)) => client,
-        Ok(None) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                "unknown client_id",
-            )
-                .into_response()
-        }
+        Ok(None) => return (StatusCode::BAD_REQUEST, "unknown client_id").into_response(),
         Err(error) => return error_response(error),
     };
-    if !client.redirect_uris.iter().any(|uri| uri == &query.redirect_uri) {
+    if !client
+        .redirect_uris
+        .iter()
+        .any(|uri| uri == &query.redirect_uri)
+    {
         return (StatusCode::BAD_REQUEST, "redirect_uri not registered").into_response();
     }
     let method = query.code_challenge_method.as_deref().unwrap_or("");
     let code_challenge_method = method;
-    if query.code_challenge.as_deref().is_none_or(|_| method != "S256") {
+    if query
+        .code_challenge
+        .as_deref()
+        .is_none_or(|_| method != "S256")
+    {
         return (
             StatusCode::BAD_REQUEST,
             "code_challenge and code_challenge_method=S256 are required",
@@ -127,7 +129,11 @@ pub async fn authorize(
         error: None,
     };
     match template.render() {
-        Ok(body) => (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], body)
+        Ok(body) => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            body,
+        )
             .into_response(),
         Err(error) => error_response(anyhow::anyhow!(error)),
     }
@@ -163,13 +169,13 @@ pub async fn decide(
     };
 
     if form.decision != "allow" {
-        let mut redirect = url::Url::parse(&form.redirect_uri)
-            .unwrap_or_else(|_error| parse_https_localhost());
-        redirect.query_pairs_mut().append_pair("error", "access_denied");
+        let mut redirect =
+            url::Url::parse(&form.redirect_uri).unwrap_or_else(|_error| parse_https_localhost());
+        redirect
+            .query_pairs_mut()
+            .append_pair("error", "access_denied");
         if let Some(state_value) = &form.state {
-            redirect
-                .query_pairs_mut()
-                .append_pair("state", state_value);
+            redirect.query_pairs_mut().append_pair("state", state_value);
         }
         return Redirect::to(redirect.as_str()).into_response();
     }
@@ -178,7 +184,11 @@ pub async fn decide(
         Ok(Some(client)) => client,
         _ => return (StatusCode::BAD_REQUEST, "unknown client_id").into_response(),
     };
-    if !client.redirect_uris.iter().any(|uri| uri == &form.redirect_uri) {
+    if !client
+        .redirect_uris
+        .iter()
+        .any(|uri| uri == &form.redirect_uri)
+    {
         return (StatusCode::BAD_REQUEST, "redirect_uri not registered").into_response();
     }
     let code = new_opaque_token();
@@ -198,13 +208,11 @@ pub async fn decide(
         return error_response(error);
     }
 
-    let mut redirect = url::Url::parse(&form.redirect_uri)
-        .unwrap_or_else(|_error| parse_https_localhost());
+    let mut redirect =
+        url::Url::parse(&form.redirect_uri).unwrap_or_else(|_error| parse_https_localhost());
     redirect.query_pairs_mut().append_pair("code", &code);
     if let Some(state_value) = &form.state {
-        redirect
-            .query_pairs_mut()
-            .append_pair("state", state_value);
+        redirect.query_pairs_mut().append_pair("state", state_value);
     }
     Redirect::to(redirect.as_str()).into_response()
 }

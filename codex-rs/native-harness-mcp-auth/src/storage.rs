@@ -262,10 +262,18 @@ impl Store {
             client_secret_hash: row.get(1)?,
             client_name: row.get(2)?,
             redirect_uris: serde_json::from_str(&redirect_uris).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(error))
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
             })?,
             grant_types: serde_json::from_str(&grant_types).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(error))
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
             })?,
             token_endpoint_auth_method: row.get(5)?,
             created_at: row.get(6)?,
@@ -299,7 +307,11 @@ impl Store {
 
     /// Atomically consume an authorization code if it exists, is unused, and
     /// has not expired. Returns the record that was consumed.
-    pub fn consume_auth_code(&self, code_hash: &str, now_ts: i64) -> Result<Option<AuthCodeRecord>> {
+    pub fn consume_auth_code(
+        &self,
+        code_hash: &str,
+        now_ts: i64,
+    ) -> Result<Option<AuthCodeRecord>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT code_hash, client_id, subject, redirect_uri, scope, code_challenge,
@@ -544,10 +556,7 @@ impl Store {
         let e_b64 = URL_SAFE_NO_PAD.encode(public.e().to_bytes_be());
         let mut seed = [0u8; 8];
         rng.fill_bytes(&mut seed);
-        let kid = format!(
-            "chatcodex-{}",
-            URL_SAFE_NO_PAD.encode(seed)
-        );
+        let kid = format!("chatcodex-{}", URL_SAFE_NO_PAD.encode(seed));
         let public_jwk = serde_json::json!({
             "kty": "RSA",
             "use": "sig",

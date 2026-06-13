@@ -26,12 +26,9 @@ fn make_state() -> (tempfile::TempDir, AuthState) {
         refresh_ttl: std::time::Duration::from_secs(3600),
         allow_client_credentials: false,
     };
-    let keyring = Keyring::load_or_create(
-        store.clone(),
-        config.issuer(),
-        config.resource_indicator(),
-    )
-    .expect("keyring");
+    let keyring =
+        Keyring::load_or_create(store.clone(), config.issuer(), config.resource_indicator())
+            .expect("keyring");
     let cf = codex_native_harness_mcp_auth::cf_access::CfAccessVerifier::new_stub(
         config.cf_access_aud.clone(),
         "user-42".to_string(),
@@ -78,7 +75,10 @@ async fn register_authorize_token_refresh_flow() {
         let _ = axum::serve(listener, app).await;
     });
 
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
     let client_id: String;
 
     // 1. Register a public PKCE client.

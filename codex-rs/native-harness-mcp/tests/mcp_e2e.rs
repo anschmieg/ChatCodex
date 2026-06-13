@@ -8,12 +8,12 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use codex_arg0::Arg0DispatchPaths;
 use codex_native_harness_mcp::http_router_with_state;
 use codex_native_harness_mcp_auth::AuthConfig;
 use codex_native_harness_mcp_auth::AuthState;
 use codex_native_harness_mcp_auth::keyring::Keyring;
 use codex_native_harness_mcp_auth::storage::Store;
-use codex_arg0::Arg0DispatchPaths;
 use serde_json::json;
 use sha2::Digest;
 use sha2::Sha256;
@@ -31,12 +31,9 @@ fn make_auth_state(temp: &tempfile::TempDir) -> AuthState {
         refresh_ttl: std::time::Duration::from_secs(3600),
         allow_client_credentials: false,
     };
-    let keyring = Keyring::load_or_create(
-        store.clone(),
-        config.issuer(),
-        config.resource_indicator(),
-    )
-    .expect("keyring");
+    let keyring =
+        Keyring::load_or_create(store.clone(), config.issuer(), config.resource_indicator())
+            .expect("keyring");
     let cf = codex_native_harness_mcp_auth::cf_access::CfAccessVerifier::new_stub(
         config.cf_access_aud.clone(),
         "user-42".to_string(),

@@ -132,7 +132,10 @@ mod tests {
             cfg.authorization_endpoint(),
             "https://codex.example/oauth/authorize"
         );
-        assert_eq!(cfg.jwks_uri(), "https://codex.example/.well-known/jwks.json");
+        assert_eq!(
+            cfg.jwks_uri(),
+            "https://codex.example/.well-known/jwks.json"
+        );
         assert_eq!(
             cfg.cf_access_certs_uri(),
             "https://team.cloudflareaccess.com/cdn-cgi/access/certs"

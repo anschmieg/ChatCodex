@@ -18,12 +18,9 @@ fn test_state() -> AuthState {
         refresh_ttl: std::time::Duration::from_secs(600),
         allow_client_credentials: false,
     };
-    let keyring = Keyring::load_or_create(
-        store.clone(),
-        config.issuer(),
-        config.resource_indicator(),
-    )
-    .expect("keyring");
+    let keyring =
+        Keyring::load_or_create(store.clone(), config.issuer(), config.resource_indicator())
+            .expect("keyring");
     let cf = codex_native_harness_mcp_auth::cf_access::CfAccessVerifier::new(
         config.cf_access_certs_uri(),
         config.cf_access_aud.clone(),
@@ -33,8 +30,8 @@ fn test_state() -> AuthState {
 
 #[tokio::test]
 async fn discovery_authorization_server_includes_required_fields() {
-    use axum::routing::get;
     use axum::Router;
+    use axum::routing::get;
     let state = test_state();
     let app = Router::new()
         .route(
@@ -85,8 +82,8 @@ async fn discovery_authorization_server_includes_required_fields() {
 
 #[tokio::test]
 async fn discovery_protected_resource_identifies_the_resource() {
-    use axum::routing::get;
     use axum::Router;
+    use axum::routing::get;
     let state = test_state();
     let app = Router::new()
         .route(
@@ -107,14 +104,16 @@ async fn discovery_protected_resource_identifies_the_resource() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["resource"], "https://codex.example.test/mcp");
     let auth_servers = body["authorization_servers"].as_array().unwrap();
-    assert!(auth_servers.contains(&serde_json::Value::String("https://codex.example.test".to_string())));
+    assert!(auth_servers.contains(&serde_json::Value::String(
+        "https://codex.example.test".to_string()
+    )));
     server.abort();
 }
 
 #[tokio::test]
 async fn jwks_endpoint_exposes_signing_key() {
-    use axum::routing::get;
     use axum::Router;
+    use axum::routing::get;
     let state = test_state();
     let app = Router::new()
         .route(

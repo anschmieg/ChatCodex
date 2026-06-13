@@ -57,7 +57,10 @@ impl RateLimiter {
         let window_dur = std::time::Duration::from_secs(guard.window_secs);
 
         let max = guard.max_per_window;
-        let entry = guard.windows.entry(client_id.to_string()).or_insert_with(|| (now, 0));
+        let entry = guard
+            .windows
+            .entry(client_id.to_string())
+            .or_insert_with(|| (now, 0));
         if now.duration_since(entry.0) > window_dur {
             // Window expired, reset.
             *entry = (now, 1);
@@ -78,9 +81,9 @@ impl RateLimiter {
         };
         let now = Instant::now();
         let window_dur = std::time::Duration::from_secs(guard.window_secs);
-        guard.windows.retain(|_, (window_start, _)| {
-            now.duration_since(*window_start) <= window_dur
-        });
+        guard
+            .windows
+            .retain(|_, (window_start, _)| now.duration_since(*window_start) <= window_dur);
     }
 }
 
@@ -100,15 +103,13 @@ pub async fn rate_limit_token(
 
     // Parse the form data to extract client_id.
     let form_str = String::from_utf8_lossy(&bytes);
-    let client_id = form_str
-        .split('&')
-        .find_map(|pair| {
-            let mut iter = pair.splitn(2, '=');
-            match (iter.next(), iter.next()) {
-                (Some("client_id"), Some(value)) => Some(urlencoding::decode(value).ok()?.into_owned()),
-                _ => None,
-            }
-        });
+    let client_id = form_str.split('&').find_map(|pair| {
+        let mut iter = pair.splitn(2, '=');
+        match (iter.next(), iter.next()) {
+            (Some("client_id"), Some(value)) => Some(urlencoding::decode(value).ok()?.into_owned()),
+            _ => None,
+        }
+    });
 
     if let Some(client_id) = client_id {
         if !limiter.check(&client_id) {

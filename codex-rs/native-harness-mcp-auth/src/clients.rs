@@ -106,10 +106,9 @@ async fn register_inner(
                     "confidential clients are not enabled; set CHATCODEX_OAUTH_ALLOW_CONFIDENTIAL=1"
                 );
             }
-            let secret = req
-                .client_secret
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("client_secret is required for confidential clients"))?;
+            let secret = req.client_secret.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("client_secret is required for confidential clients")
+            })?;
             if secret.len() < 16 {
                 anyhow::bail!("client_secret must be at least 16 characters");
             }
@@ -118,9 +117,12 @@ async fn register_inner(
         }
         other => anyhow::bail!("unsupported token_endpoint_auth_method: {other}"),
     };
-    let grant_types = req
-        .grant_types
-        .unwrap_or_else(|| vec!["authorization_code".to_string(), "refresh_token".to_string()]);
+    let grant_types = req.grant_types.unwrap_or_else(|| {
+        vec![
+            "authorization_code".to_string(),
+            "refresh_token".to_string(),
+        ]
+    });
     for grant in &grant_types {
         if !matches!(grant.as_str(), "authorization_code" | "refresh_token") {
             anyhow::bail!("unsupported grant_type: {grant}");
@@ -172,12 +174,9 @@ mod tests {
             refresh_ttl: Duration::from_secs(600),
             allow_client_credentials: false,
         };
-        let keyring = Keyring::load_or_create(
-            store.clone(),
-            config.issuer(),
-            config.resource_indicator(),
-        )
-        .unwrap();
+        let keyring =
+            Keyring::load_or_create(store.clone(), config.issuer(), config.resource_indicator())
+                .unwrap();
         let cf = crate::cf_access::CfAccessVerifier::new(
             config.cf_access_certs_uri(),
             config.cf_access_aud.clone(),
@@ -204,7 +203,10 @@ mod tests {
         assert_eq!(response.client_id, "client-1");
         assert_eq!(response.token_endpoint_auth_method, "none");
         let stored = state.store().get_client("client-1").unwrap().unwrap();
-        assert_eq!(stored.redirect_uris, vec!["https://chatgpt.com/cb".to_string()]);
+        assert_eq!(
+            stored.redirect_uris,
+            vec!["https://chatgpt.com/cb".to_string()]
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

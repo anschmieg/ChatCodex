@@ -7,8 +7,8 @@ use axum::body::Body;
 use axum::http::Request;
 use axum::http::StatusCode;
 use axum::routing::get;
-use codex_native_harness_mcp_auth::AuthState;
 use codex_native_harness_mcp_auth::AuthConfig;
+use codex_native_harness_mcp_auth::AuthState;
 use codex_native_harness_mcp_auth::keyring::Keyring;
 use codex_native_harness_mcp_auth::middleware::require_bearer;
 use codex_native_harness_mcp_auth::storage::Store;
@@ -25,12 +25,9 @@ fn test_state() -> AuthState {
         refresh_ttl: std::time::Duration::from_secs(600),
         allow_client_credentials: false,
     };
-    let keyring = Keyring::load_or_create(
-        store.clone(),
-        config.issuer(),
-        config.resource_indicator(),
-    )
-    .expect("keyring");
+    let keyring =
+        Keyring::load_or_create(store.clone(), config.issuer(), config.resource_indicator())
+            .expect("keyring");
     let cf = codex_native_harness_mcp_auth::cf_access::CfAccessVerifier::new(
         config.cf_access_certs_uri(),
         config.cf_access_aud.clone(),
@@ -47,10 +44,7 @@ async fn missing_authorization_header_is_rejected() {
     let state = test_state();
     let app = Router::new()
         .route("/protected", get(echo))
-        .layer(axum::middleware::from_fn_with_state(
-            state,
-            require_bearer,
-        ));
+        .layer(axum::middleware::from_fn_with_state(state, require_bearer));
     let response = app
         .oneshot(
             Request::builder()
@@ -68,10 +62,7 @@ async fn malformed_bearer_is_rejected() {
     let state = test_state();
     let app = Router::new()
         .route("/protected", get(echo))
-        .layer(axum::middleware::from_fn_with_state(
-            state,
-            require_bearer,
-        ));
+        .layer(axum::middleware::from_fn_with_state(state, require_bearer));
     let response = app
         .oneshot(
             Request::builder()
@@ -91,10 +82,7 @@ async fn healthz_is_allowed_without_bearer() {
     let app = Router::new()
         .route("/healthz", get(echo))
         .route("/protected", get(echo))
-        .layer(axum::middleware::from_fn_with_state(
-            state,
-            require_bearer,
-        ));
+        .layer(axum::middleware::from_fn_with_state(state, require_bearer));
     let response = app
         .oneshot(
             Request::builder()
