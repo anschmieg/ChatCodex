@@ -38,6 +38,26 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info_span;
 
+const SERVER_INSTRUCTIONS: &str = "\
+ChatCodex provides a deterministic coding harness, not a mutable system administration shell. \
+Inspect project environment manifests before running build or test commands. Use mise to activate \
+project runtimes and tools, and use uv for Python dependency management and execution. Prefer \
+`mise exec -- <command>` and, for Python projects, `mise exec -- uv run <command>`. If a project \
+has `uv.lock`, use locked or frozen uv operations. Do not use apt, sudo, brew, npm -g, pip install \
+into the system interpreter, or other system-level installation commands. Do not run `mise use`, \
+`mise install`, `mise trust`, or unlocked dependency synchronization through exec_command. If a \
+required runtime or dependency environment is not already prepared, report that environment \
+preparation is required; a deterministic approval-backed preparation tool will handle installation.";
+
+const EXEC_COMMAND_ENVIRONMENT_GUIDANCE: &str = "\
+\n\nEnvironment policy for ChatCodex: inspect mise.toml, mise.lock, pyproject.toml, uv.lock, \
+.python-version, and related project manifests before executing builds or tests. Activate project \
+tools with `mise exec -- <command>`. For Python, use uv rather than pip or bare virtualenv commands, \
+normally `mise exec -- uv run <command>`. Do not use apt, sudo, system package installation, \
+`mise use`, `mise install`, `mise trust`, or unlocked dependency synchronization through this tool. \
+If the declared environment is not installed, stop and report that deterministic environment \
+preparation is required.";
+
 #[derive(Clone)]
 pub struct NativeHarnessMcp {
     tools: Arc<Vec<Tool>>,
@@ -219,6 +239,11 @@ fn tool_from_native_spec(native: HarnessToolSpec) -> anyhow::Result<Tool> {
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .to_string();
+    let description = if tool_name == "exec_command" {
+        format!("{description}{EXEC_COMMAND_ENVIRONMENT_GUIDANCE}")
+    } else {
+        description
+    };
     let input_schema = definition
         .get("parameters")
         .cloned()
@@ -295,6 +320,7 @@ impl ServerHandler for NativeHarnessMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             capabilities: ServerCapabilities::builder().enable_tools().build(),
+            instructions: Some(SERVER_INSTRUCTIONS.to_string()),
             ..ServerInfo::default()
         }
     }
@@ -389,6 +415,13 @@ mod tests {
             .iter()
             .find(|tool| tool.name == "exec_command")
             .expect("exec_command");
+        assert!(
+            exec_command
+                .description
+                .as_deref()
+                .expect("description")
+                .contains("mise exec")
+        );
         assert_eq!(
             exec_command.output_schema.as_ref().expect("output schema")["properties"]["output"]
                 ["type"],
@@ -433,5 +466,13 @@ mod tests {
         assert_eq!(annotations("apply_patch").destructive_hint, Some(true));
         assert_eq!(annotations("exec_command").open_world_hint, Some(true));
         assert_eq!(annotations("update_plan").idempotent_hint, Some(true));
+    }
+
+    #[test]
+    fn server_instructions_explain_project_environment_policy() {
+        let instructions = super::SERVER_INSTRUCTIONS;
+        assert!(instructions.contains("mise exec"));
+        assert!(instructions.contains("uv run"));
+        assert!(instructions.contains("Do not use apt"));
     }
 }
