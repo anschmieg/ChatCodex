@@ -196,6 +196,84 @@ jobs:
           fi
           echo "Deploy inputs validated" >&2
 
+      - name: Ensure persistent toolchain storage
+        shell: bash
+        env:
+          API_BASE: ${{ secrets.COOLIFY_API_BASE_URL }}
+          API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
+        run: |
+          set -euo pipefail
+          storages_url="${API_BASE}/applications/${APP_UUID}/storages"
+          http_code=$(curl -sS -o /tmp/coolify-storages.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${API_TOKEN}" \
+            -H "Accept: application/json" \
+            "${storages_url}")
+          echo "GET /applications/${APP_UUID}/storages -> ${http_code}" >&2
+          if [[ "${http_code}" -lt 200 || "${http_code}" -ge 300 ]]; then
+            cat /tmp/coolify-storages.json >&2
+            echo >&2
+            echo "::error::Could not inspect Coolify application storage" >&2
+            exit 1
+          fi
+
+          storage_state=$(python3 - <<'PY'
+          import json
+
+          with open("/tmp/coolify-storages.json", encoding="utf-8") as handle:
+              storages = json.load(handle)
+
+          persistent = [
+              storage
+              for storage in storages.get("persistent_storages", [])
+              if storage.get("mount_path") == "/toolchains"
+          ]
+          files = [
+              storage
+              for storage in storages.get("file_storages", [])
+              if storage.get("mount_path") == "/toolchains"
+          ]
+
+          if files:
+              print("conflict")
+          elif persistent:
+              print("exists")
+          else:
+              print("missing")
+          PY
+          )
+
+          case "${storage_state}" in
+            exists)
+              echo "Persistent /toolchains storage already exists." >&2
+              ;;
+            conflict)
+              echo "::error::A file storage already occupies /toolchains; refusing to replace it" >&2
+              exit 1
+              ;;
+            missing)
+              payload='{"type":"persistent","name":"chatcodex-toolchains","mount_path":"/toolchains"}'
+              http_code=$(curl -sS -o /tmp/coolify-storage-create.json -w "%{http_code}" \
+                -X POST \
+                -H "Authorization: Bearer ${API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json" \
+                --data-binary "${payload}" \
+                "${storages_url}")
+              echo "POST /applications/${APP_UUID}/storages -> ${http_code}" >&2
+              cat /tmp/coolify-storage-create.json >&2
+              echo >&2
+              if [[ "${http_code}" -lt 200 || "${http_code}" -ge 300 ]]; then
+                echo "::error::Coolify rejected the /toolchains storage creation" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Unexpected storage inspection result: ${storage_state}" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Re-point Coolify at the freshly built image tag
         shell: bash
         env:
