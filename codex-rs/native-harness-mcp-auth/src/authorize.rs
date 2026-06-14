@@ -174,6 +174,7 @@ pub async fn decide(
         redirect
             .query_pairs_mut()
             .append_pair("error", "access_denied");
+        redirect.query_pairs_mut().append_pair("iss", &state.config().issuer());
         if let Some(state_value) = &form.state {
             redirect.query_pairs_mut().append_pair("state", state_value);
         }
@@ -211,6 +212,7 @@ pub async fn decide(
     let mut redirect =
         url::Url::parse(&form.redirect_uri).unwrap_or_else(|_error| parse_https_localhost());
     redirect.query_pairs_mut().append_pair("code", &code);
+    redirect.query_pairs_mut().append_pair("iss", &state.config().issuer());
     if let Some(state_value) = &form.state {
         redirect.query_pairs_mut().append_pair("state", state_value);
     }
