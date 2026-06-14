@@ -11,6 +11,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use anyhow::Context;
 use axum::Router;
 use axum::response::Json;
 use axum::routing::get;
@@ -36,9 +37,15 @@ use rmcp::handler::server::ServerHandler;
 use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
 use rmcp::model::Content;
+use rmcp::model::GetPromptRequestParams;
+use rmcp::model::GetPromptResult;
 use rmcp::model::JsonObject;
+use rmcp::model::ListPromptsResult;
 use rmcp::model::ListToolsResult;
 use rmcp::model::PaginatedRequestParams;
+use rmcp::model::Prompt;
+use rmcp::model::PromptMessage;
+use rmcp::model::PromptMessageRole;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::model::Tool;
@@ -46,7 +53,7 @@ use rmcp::model::ToolAnnotations;
 use rmcp::transport::StreamableHttpServerConfig;
 use rmcp::transport::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -56,10 +63,35 @@ use tracing::info_span;
 use uuid::Uuid;
 
 const SERVER_INSTRUCTIONS: &str = "\
-ChatCodex is a deterministic coding harness. It does not run an agent or call a model. \
-Commands execute in a read-only filesystem sandbox; use apply_patch for every workspace write. \
-Inspect project manifests before running checks. Prefer mise exec -- <command> and use uv for \
-Python environments. System package installation and privilege escalation are forbidden.";
+# ChatCodex — Deterministic Coding Harness
+
+You are connected to a deterministic coding harness. Your goal is to complete the \
+user's task end-to-end. Plan your work, execute each step, verify results, and do not \
+stop until every item on your TODO checklist is checked off or explicitly dismissed.
+
+## Golden rules
+1. Commands execute in a read-only filesystem sandbox — use `apply_patch` for ALL writes.
+2. Inspect manifests and understand the project before modifying anything.
+3. Prefer `mise exec -- <command>` for toolchains and `uv` for Python.
+4. System package installation and privilege escalation are FORBIDDEN.
+5. After each step, check your TODO list. If items remain, continue working.
+6. Stop only when ALL items are checked off or dismissed — or when you need user input.
+
+## Tool usage
+- `exec_command` / `write_stdin` — run commands, start interactive sessions
+- `apply_patch` — the ONLY workspace write path
+- `read_file` / `search_code` / `list_directory` — inspect the workspace
+- `git_status` / `git_diff` — inspect git state
+- `update_plan` / `todo` — track progress
+- `view_image` — view images in the workspace
+- `update_plan` — track the current plan step
+- `todo` — manage a persistent checklist
+
+## Completion protocol
+1. **Plan**: Break the task into concrete TODO items using the `todo` tool.
+2. **Execute**: Work through items one at a time. After each, check it off with `todo(items: [{id: \"...\", status: \"checked\"}], action: \"update\")`.
+3. **Verify**: After all items are done, verify the result works.
+4. **Finish**: Only stop once your TODO list is empty (all checked or dismissed).";
 
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const DEFAULT_YIELD_MS: u64 = 10_000;
@@ -68,6 +100,7 @@ const MAX_YIELD_MS: u64 = 30_000;
 #[derive(Clone)]
 pub struct NativeHarnessMcp {
     tools: Arc<Vec<Tool>>,
+    prompts: Arc<Vec<Prompt>>,
     harness: Arc<NativeHarness>,
 }
 
@@ -76,7 +109,24 @@ struct NativeHarness {
     environment: Environment,
     processes: Mutex<HashMap<ProcessId, ProcessSession>>,
     plan: Mutex<Value>,
+    todo: Mutex<Vec<TodoItem>>,
     linux_sandbox_exe: Option<PathBuf>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TodoItem {
+    id: String,
+    description: String,
+    status: TodoStatus,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum TodoStatus {
+    Pending,
+    Checked,
+    Dismissed,
 }
 
 struct ProcessSession {
@@ -121,6 +171,73 @@ struct ViewImageArgs {
     path: PathBuf,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadFileArgs {
+    path: PathBuf,
+    #[serde(default)]
+    start_line: Option<usize>,
+    #[serde(default)]
+    end_line: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchCodeArgs {
+    query: String,
+    #[serde(default)]
+    path_glob: Option<String>,
+    #[serde(default)]
+    max_results: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitStatusArgs {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitDiffArgs {
+    #[serde(default)]
+    paths: Option<Vec<String>>,
+    #[serde(default)]
+    staged: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListDirectoryArgs {
+    #[serde(default)]
+    path: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TodoArgs {
+    items: Vec<TodoItemInput>,
+    #[serde(default)]
+    action: TodoAction,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TodoItemInput {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum TodoAction {
+    #[default]
+    Replace,
+    Update,
+}
+
 impl NativeHarnessMcp {
     pub async fn new() -> anyhow::Result<Self> {
         Self::new_with_arg0_paths(Arg0DispatchPaths::default()).await
@@ -150,11 +267,13 @@ impl NativeHarnessMcp {
         };
         Ok(Self {
             tools: Arc::new(tool_catalog()?),
+            prompts: Arc::new(prompt_catalog()),
             harness: Arc::new(NativeHarness {
                 workspace,
                 environment,
                 processes: Mutex::new(HashMap::new()),
                 plan: Mutex::new(json!({"plan": []})),
+                todo: Mutex::new(Vec::new()),
                 linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe,
             }),
         })
@@ -173,6 +292,12 @@ impl NativeHarness {
             "update_plan" => self.update_plan(arguments).await,
             "apply_patch" => self.apply_patch(serde_json::from_value(arguments)?).await,
             "view_image" => self.view_image(serde_json::from_value(arguments)?).await,
+            "read_file" => self.read_file(serde_json::from_value(arguments)?).await,
+            "search_code" => self.search_code(serde_json::from_value(arguments)?).await,
+            "git_status" => self.git_status(serde_json::from_value(arguments)?).await,
+            "git_diff" => self.git_diff(serde_json::from_value(arguments)?).await,
+            "list_directory" => self.list_directory(serde_json::from_value(arguments)?).await,
+            "todo" => self.todo(serde_json::from_value(arguments)?).await,
             _ => anyhow::bail!("unknown deterministic tool: {name}"),
         }
     }
@@ -371,6 +496,243 @@ impl NativeHarness {
         result.structured_content = Some(json!({"path": path.as_path()}));
         Ok(result)
     }
+
+    async fn read_file(&self, args: ReadFileArgs) -> anyhow::Result<CallToolResult> {
+        let policy = SandboxPolicy::ReadOnly {
+            network_access: false,
+        };
+        let sandbox =
+            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, self.workspace.clone());
+        let sandbox =
+            if self.environment.is_remote() || self.environment.local_runtime_paths().is_some() {
+                Some(&sandbox)
+            } else {
+                None
+            };
+        let fs = self.environment.get_filesystem();
+        let path =
+            resolve_workspace_path(fs.as_ref(), &self.workspace, &args.path, sandbox).await?;
+        let data = fs.read_file_text(&path, sandbox).await?;
+        let lines: Vec<&str> = data.lines().collect();
+        let total_lines = lines.len();
+        let start = args.start_line.unwrap_or(1).saturating_sub(1);
+        let end = args.end_line.unwrap_or(total_lines).min(total_lines);
+        if start >= total_lines {
+            anyhow::bail!(
+                "start_line {} exceeds file length {}",
+                args.start_line.unwrap_or(1),
+                total_lines
+            );
+        }
+        let selected = if start > 0 || end < total_lines {
+            lines[start..end].join("\n")
+        } else {
+            data.clone()
+        };
+        Ok(text_result(json!({
+            "path": path.as_path(),
+            "total_lines": total_lines,
+            "start_line": start + 1,
+            "end_line": end,
+            "content": selected,
+        })))
+    }
+
+    async fn search_code(&self, args: SearchCodeArgs) -> anyhow::Result<CallToolResult> {
+        if args.query.is_empty() {
+            return Ok(text_result(json!({"matches": []})));
+        }
+        let max = args.max_results.unwrap_or(50);
+        let mut cmd = std::process::Command::new("grep");
+        cmd.arg("-rn");
+        if let Some(glob) = &args.path_glob {
+            cmd.arg("--include");
+            cmd.arg(glob);
+        }
+        cmd.arg("--");
+        cmd.arg(&args.query);
+        cmd.arg(".");
+        cmd.current_dir(self.workspace.as_path());
+        let output = cmd.output().context("failed to run grep")?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut matches = Vec::new();
+        for line in stdout.lines() {
+            if matches.len() >= max {
+                break;
+            }
+            let rest = line.strip_prefix("./").unwrap_or(line);
+            let mut parts = rest.splitn(3, ':');
+            if let (Some(file), Some(line_str), Some(snippet)) =
+                (parts.next(), parts.next(), parts.next())
+            {
+                if snippet == "Binary file matches" {
+                    continue;
+                }
+                let line_no: u64 = line_str.parse().unwrap_or(0);
+                matches.push(json!({
+                    "path": file,
+                    "line": line_no,
+                    "snippet": snippet,
+                }));
+            }
+        }
+        Ok(text_result(json!({"matches": matches})))
+    }
+
+    async fn git_status(&self, _args: GitStatusArgs) -> anyhow::Result<CallToolResult> {
+        let output = std::process::Command::new("git")
+            .arg("status")
+            .arg("--porcelain")
+            .current_dir(self.workspace.as_path())
+            .output()
+            .context("failed to run git status")?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let entries: Vec<Value> = stdout
+            .lines()
+            .filter_map(|line| {
+                if line.len() < 3 {
+                    return None;
+                }
+                let (status, path) = line.split_at(2);
+                let path = path.trim();
+                if path.is_empty() {
+                    return None;
+                }
+                Some(json!({
+                    "status": status.trim(),
+                    "path": path,
+                }))
+            })
+            .collect();
+        Ok(text_result(json!({
+            "entries": entries,
+            "stderr": stderr,
+        })))
+    }
+
+    async fn git_diff(&self, args: GitDiffArgs) -> anyhow::Result<CallToolResult> {
+        let mut cmd = std::process::Command::new("git");
+        cmd.arg("diff");
+        if args.staged {
+            cmd.arg("--staged");
+        }
+        if let Some(paths) = &args.paths {
+            cmd.arg("--");
+            for p in paths {
+                cmd.arg(p);
+            }
+        }
+        cmd.current_dir(self.workspace.as_path());
+        let output = cmd.output().context("failed to run git diff")?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        Ok(text_result(json!({
+            "diff": stdout,
+            "stderr": stderr,
+        })))
+    }
+
+    async fn list_directory(&self, args: ListDirectoryArgs) -> anyhow::Result<CallToolResult> {
+        let policy = SandboxPolicy::ReadOnly {
+            network_access: false,
+        };
+        let sandbox =
+            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, self.workspace.clone());
+        let sandbox =
+            if self.environment.is_remote() || self.environment.local_runtime_paths().is_some() {
+                Some(&sandbox)
+            } else {
+                None
+            };
+        let fs = self.environment.get_filesystem();
+        let path = match &args.path {
+            Some(p) => {
+                resolve_workspace_path(fs.as_ref(), &self.workspace, p, sandbox).await?
+            }
+            None => self.workspace.clone(),
+        };
+        let entries = fs.read_directory(&path, sandbox).await?;
+        let listing: Vec<Value> = entries
+            .into_iter()
+            .map(|entry| {
+                json!({
+                    "name": entry.file_name,
+                    "is_directory": entry.is_directory,
+                    "is_file": entry.is_file,
+                })
+            })
+            .collect();
+        Ok(text_result(json!({
+            "path": path.as_path(),
+            "entries": listing,
+        })))
+    }
+
+    async fn todo(&self, args: TodoArgs) -> anyhow::Result<CallToolResult> {
+        let mut todo = self.todo.lock().await;
+        match args.action {
+            TodoAction::Replace => {
+                let mut items = Vec::new();
+                for (i, input) in args.items.into_iter().enumerate() {
+                    items.push(TodoItem {
+                        id: input.id.unwrap_or_else(|| format!("t{}", i + 1)),
+                        description: input.description.unwrap_or_default(),
+                        status: match input.status.as_deref() {
+                            Some("checked") => TodoStatus::Checked,
+                            Some("dismissed") => TodoStatus::Dismissed,
+                            _ => TodoStatus::Pending,
+                        },
+                    });
+                }
+                *todo = items;
+            }
+            TodoAction::Update => {
+                for input in args.items {
+                    let id = input.id.unwrap_or_default();
+                    if let Some(existing) = todo.iter_mut().find(|item| item.id == id) {
+                        if let Some(desc) = input.description {
+                            existing.description = desc;
+                        }
+                        existing.status = match input.status.as_deref() {
+                            Some("checked") => TodoStatus::Checked,
+                            Some("dismissed") => TodoStatus::Dismissed,
+                            Some("pending") => TodoStatus::Pending,
+                            _ => continue,
+                        };
+                    }
+                }
+            }
+        }
+        let response: Vec<Value> = todo
+            .iter()
+            .map(|item| {
+                let status_str = match item.status {
+                    TodoStatus::Pending => "pending",
+                    TodoStatus::Checked => "checked",
+                    TodoStatus::Dismissed => "dismissed",
+                };
+                json!({
+                    "id": item.id,
+                    "description": item.description,
+                    "status": status_str,
+                })
+            })
+            .collect();
+        let pending_count = todo.iter().filter(|i| i.status == TodoStatus::Pending).count();
+        let checked_count = todo.iter().filter(|i| i.status == TodoStatus::Checked).count();
+        let dismissed_count = todo.iter().filter(|i| i.status == TodoStatus::Dismissed).count();
+        Ok(text_result(json!({
+            "items": response,
+            "summary": {
+                "total": todo.len(),
+                "pending": pending_count,
+                "checked": checked_count,
+                "dismissed": dismissed_count,
+            },
+            "all_done": pending_count == 0,
+        })))
+    }
 }
 
 async fn read_process(
@@ -464,6 +826,36 @@ fn tool_catalog() -> anyhow::Result<Vec<Tool>> {
             "Read an image located inside the workspace.",
             json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}),
         ),
+        (
+            "read_file",
+            "Read a file from the workspace, optionally selecting a line range.",
+            json!({"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},"required":["path"],"additionalProperties":false}),
+        ),
+        (
+            "search_code",
+            "Search workspace source files for a text pattern using grep.",
+            json!({"type":"object","properties":{"query":{"type":"string"},"path_glob":{"type":"string"},"max_results":{"type":"integer","minimum":1,"maximum":500}},"required":["query"],"additionalProperties":false}),
+        ),
+        (
+            "git_status",
+            "Show the working tree status (git status --porcelain).",
+            json!({"type":"object","properties":{},"additionalProperties":false}),
+        ),
+        (
+            "git_diff",
+            "Show workspace diff (git diff).",
+            json!({"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}},"staged":{"type":"boolean"}},"additionalProperties":false}),
+        ),
+        (
+            "list_directory",
+            "List entries in a workspace directory.",
+            json!({"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":false}),
+        ),
+        (
+            "todo",
+            "Manage a TODO checklist. Use `action: \"replace\"` to set the full list, `action: \"update\"` to check off or dismiss items by id. Returns the current state with summary and `all_done` flag. After each step, check if all_done is true; if not, continue working on remaining pending items.",
+            json!({"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"description":{"type":"string"},"status":{"type":"string","enum":["pending","checked","dismissed"]}},"required":[],"additionalProperties":false}},"action":{"type":"string","enum":["replace","update"],"default":"replace"}},"required":["items"],"additionalProperties":false}),
+        ),
     ]
     .into_iter()
     .map(|(name, description, schema)| {
@@ -504,14 +896,352 @@ fn tool_annotations(name: &str) -> anyhow::Result<ToolAnnotations> {
             .destructive(false)
             .idempotent(true)
             .open_world(false),
+        "read_file" => ToolAnnotations::with_title("Read file")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+        "search_code" => ToolAnnotations::with_title("Search code")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+        "git_status" => ToolAnnotations::with_title("Git status")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+        "git_diff" => ToolAnnotations::with_title("Git diff")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+        "list_directory" => ToolAnnotations::with_title("List directory")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+        "todo" => ToolAnnotations::with_title("TODO checklist")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
         _ => anyhow::bail!("missing annotation policy for {name}"),
     })
 }
 
+fn prompt_catalog() -> Vec<Prompt> {
+    vec![
+        Prompt::new(
+            "read-file-guide",
+            Some("How to read files in the workspace"),
+            None,
+        )
+        .with_title("Reading Files Guide"),
+        Prompt::new(
+            "search-code-guide",
+            Some("How to search workspace source code"),
+            None,
+        )
+        .with_title("Code Search Guide"),
+        Prompt::new(
+            "apply-patch-guide",
+            Some("How to apply patches to workspace files"),
+            None,
+        )
+        .with_title("Applying Patches Guide"),
+        Prompt::new(
+            "run-command-guide",
+            Some("How to run commands in the workspace sandbox"),
+            None,
+        )
+        .with_title("Running Commands Guide"),
+        Prompt::new(
+            "workspace-overview-guide",
+            Some("How to explore and understand the workspace structure"),
+            None,
+        )
+        .with_title("Workspace Overview Guide"),
+        Prompt::new(
+            "git-operations-guide",
+            Some("How to inspect git status and diffs"),
+            None,
+        )
+        .with_title("Git Operations Guide"),
+        Prompt::new(
+            "task-completion-guide",
+            Some("How to complete tasks thoroughly using the TODO checklist"),
+            None,
+        )
+        .with_title("Task Completion Guide"),
+    ]
+}
+
+fn get_prompt_content(name: &str) -> Option<GetPromptResult> {
+    match name {
+        "read-file-guide" => Some(GetPromptResult::new(vec![
+            PromptMessage::new_text(PromptMessageRole::User, "How do I read files in the workspace?"),
+            PromptMessage::new_text(PromptMessageRole::Assistant, r#"# Reading Files in ChatCodex
+
+Use the `read_file` tool to read files from the workspace. This tool is preferred over `exec_command cat <file>` because it is deterministic, respects the filesystem sandbox, and supports line-range selection.
+
+## Basic usage
+
+```
+read_file(path: "src/main.rs")
+```
+
+## Reading a specific line range
+
+```
+read_file(path: "src/main.rs", start_line: 10, end_line: 50)
+```
+
+## Notes
+
+- Paths are relative to the workspace root.
+- Absolute paths are allowed only if they resolve inside the workspace.
+- The tool returns the file content along with total_lines, start_line, and end_line metadata.
+- For binary or image files, use `view_image` instead.
+- For very large files, always specify a line range to avoid excessive output."#),
+        ])),
+
+        "search-code-guide" => Some(GetPromptResult::new(vec![
+            PromptMessage::new_text(PromptMessageRole::User, "How do I search for code in the workspace?"),
+            PromptMessage::new_text(PromptMessageRole::Assistant, r#"# Searching Code in ChatCodex
+
+Use the `search_code` tool to find text patterns across workspace files. It uses `grep -rn` under the hood and is preferred over `exec_command grep ...` because it is deterministic and structured.
+
+## Basic usage
+
+```
+search_code(query: "fn main")
+```
+
+## With file type filter
+
+```
+search_code(query: "TODO", path_glob: "*.rs")
+```
+
+## Limiting results
+
+```
+search_code(query: "impl", max_results: 20)
+```
+
+## Notes
+
+- The query is a plain-text grep pattern (not a regex by default, though grep patterns apply).
+- `path_glob` filters by filename pattern (e.g., `*.rs`, `*.py`, `*.{ts,js}`).
+- `max_results` defaults to 50 and caps at 500.
+- Binary file matches are automatically skipped.
+- Results include path, line number, and the matching snippet."#),
+        ])),
+
+        "apply-patch-guide" => Some(GetPromptResult::new(vec![
+            PromptMessage::new_text(PromptMessageRole::User, "How do I apply patches to workspace files?"),
+            PromptMessage::new_text(PromptMessageRole::Assistant, r#"# Applying Patches in ChatCodex
+
+Use the `apply_patch` tool for all workspace file modifications. This is the only write path for workspace files — do not use `exec_command` with sed, echo, or other file-writing commands.
+
+## Patch format
+
+The patch format uses structured markers:
+
+```
+*** Begin Patch
+*** Add File: path/to/new_file.txt
++file content here
+*** End Patch
+```
+
+```
+*** Edit File: path/to/existing.txt
+-old line
++new line
+```
+
+```
+*** Remove File: path/to/obsolete.txt
+```
+
+## Notes
+
+- Always inspect the file first with `read_file` before patching.
+- Multiple operations can be combined in a single patch.
+- The tool returns the patch result and any error messages.
+- Patches are applied atomically where possible."#),
+        ])),
+
+        "run-command-guide" => Some(GetPromptResult::new(vec![
+            PromptMessage::new_text(PromptMessageRole::User, "How do I run commands in the workspace?"),
+            PromptMessage::new_text(PromptMessageRole::Assistant, r#"# Running Commands in ChatCodex
+
+Use the `exec_command` tool to run shell commands. Commands execute in a read-only filesystem sandbox with network access enabled.
+
+## Basic usage
+
+```
+exec_command(cmd: "ls -la")
+```
+
+## Running with a yield timeout
+
+```
+exec_command(cmd: "cargo build", yield_time_ms: 30000)
+```
+
+## Interactive sessions
+
+For long-running or interactive commands, use `exec_command` first, then `write_stdin` to interact with the session:
+
+```
+exec_command(cmd: "python3")
+write_stdin(session_id: "abc-123", chars: "print('hello')\n")
+```
+
+## Notes
+
+- Dangerous commands (rm -rf, sudo, etc.) are rejected by policy.
+- The sandbox is read-only — use `apply_patch` for file writes.
+- Prefer `mise exec -- <command>` for toolchains.
+- Use `uv` for Python environments.
+- System package installation and privilege escalation are forbidden."#),
+        ])),
+
+        "workspace-overview-guide" => Some(GetPromptResult::new(vec![
+            PromptMessage::new_text(PromptMessageRole::User, "How do I explore the workspace structure?"),
+            PromptMessage::new_text(PromptMessageRole::Assistant, r#"# Workspace Overview in ChatCodex
+
+Use `list_directory` to explore the workspace directory structure, and `read_file` to inspect individual files.
+
+## List the workspace root
+
+```
+list_directory()
+```
+
+## List a subdirectory
+
+```
+list_directory(path: "src")
+```
+
+## Explore recursively
+
+Use `exec_command` with `find` or `tree` for recursive listings:
+
+```
+exec_command(cmd: "find . -type f | head -50")
+```
+
+## Notes
+
+- `list_directory` returns entries with name, is_directory, and is_file.
+- All paths are relative to the workspace root.
+- Use `search_code` to find files by content.
+- Use `git_status` to see which files have been modified."#),
+        ])),
+
+        "git-operations-guide" => Some(GetPromptResult::new(vec![
+            PromptMessage::new_text(PromptMessageRole::User, "How do I inspect git state in the workspace?"),
+            PromptMessage::new_text(PromptMessageRole::Assistant, r#"# Git Operations in ChatCodex
+
+Use `git_status` and `git_diff` to inspect the repository state without running arbitrary git commands.
+
+## Check working tree status
+
+```
+git_status()
+```
+
+Returns a structured list of changed files with their status codes.
+
+## View unstaged diff
+
+```
+git_diff()
+```
+
+## View staged diff
+
+```
+git_diff(staged: true)
+```
+
+## Diff specific paths
+
+```
+git_diff(paths: ["src/main.rs"])
+```
+
+## Notes
+
+- These tools are preferred over `exec_command git ...` because they return structured results.
+- For committing, branching, and other write operations, use `exec_command` with git commands.
+- Always check `git_status` before applying patches to understand the current state."#),
+        ])),
+
+        "task-completion-guide" => Some(GetPromptResult::new(vec![
+            PromptMessage::new_text(PromptMessageRole::User, "How do I make sure I complete the entire task?"),
+            PromptMessage::new_text(PromptMessageRole::Assistant, r#"# Task Completion in ChatCodex
+
+Follow this protocol to ensure you complete tasks thoroughly:
+
+## 1. Plan with TODO
+
+Break the user's request into concrete, actionable items:
+
+```
+todo(items: [
+  {id: "t1", description: "Inspect project structure and understand layout"},
+  {id: "t2", description: "Implement feature X in module Y"},
+  {id: "t3", description: "Add tests for feature X"},
+  {id: "t4", description: "Run tests and verify everything passes"},
+], action: "replace")
+```
+
+## 2. Execute and check off
+
+Work through items one at a time. After completing each:
+
+```
+todo(items: [{id: "t1", status: "checked"}], action: "update")
+```
+
+The tool returns `all_done: false` while items remain. Keep going.
+
+## 3. Handle blockers
+
+If an item turns out to be unnecessary or blocked, dismiss it:
+
+```
+todo(items: [{id: "t3", status: "dismissed"}], action: "update")
+```
+
+## 4. Verify before finishing
+
+Once all_done is true, do a final verification step (run tests, check output).
+
+## Golden rule
+
+Do NOT stop working until `all_done` is `true`. If the user's request has multiple parts, every part must be addressed. Only stop when all items are checked or dismissed."#),
+        ])),
+
+        _ => None,
+    }
+}
+
 impl ServerHandler for NativeHarnessMcp {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(SERVER_INSTRUCTIONS)
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
+        )
+        .with_instructions(SERVER_INSTRUCTIONS)
     }
 
     fn list_tools(
@@ -541,6 +1271,32 @@ impl ServerHandler for NativeHarnessMcp {
             )
             .await
             .map_err(|error| McpError::invalid_params(error.to_string(), None))
+    }
+
+    fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListPromptsResult, McpError>> + Send + '_ {
+        let prompts = Arc::clone(&self.prompts);
+        async move {
+            Ok(ListPromptsResult {
+                prompts: (*prompts).clone(),
+                next_cursor: None,
+                meta: None,
+            })
+        }
+    }
+
+    fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<GetPromptResult, McpError>> + Send + '_ {
+        let result = get_prompt_content(&request.name);
+        async move {
+            result.ok_or_else(|| McpError::invalid_params("unknown prompt", None))
+        }
     }
 }
 
@@ -671,7 +1427,13 @@ mod tests {
                 "write_stdin",
                 "update_plan",
                 "apply_patch",
-                "view_image"
+                "view_image",
+                "read_file",
+                "search_code",
+                "git_status",
+                "git_diff",
+                "list_directory",
+                "todo",
             ]
         );
         assert!(server.tools().iter().all(|tool| tool.annotations.is_some()));
@@ -747,5 +1509,124 @@ mod tests {
             std::fs::read_to_string(workspace.path().join("proof.txt")).expect("patched file"),
             "patched\n"
         );
+    }
+
+    #[tokio::test]
+    async fn todo_manages_checklist() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let server = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("server");
+        // Replace with items
+        let result = server
+            .harness
+            .call(
+                "todo",
+                serde_json::json!({
+                    "items": [
+                        {"id": "t1", "description": "First task"},
+                        {"id": "t2", "description": "Second task"},
+                    ],
+                    "action": "replace",
+                }),
+            )
+            .await
+            .expect("todo replace");
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert_eq!(parsed["summary"]["pending"], 2);
+        assert_eq!(parsed["summary"]["total"], 2);
+        assert_eq!(parsed["all_done"], false);
+
+        // Check off one item
+        let result = server
+            .harness
+            .call(
+                "todo",
+                serde_json::json!({
+                    "items": [{"id": "t1", "status": "checked"}],
+                    "action": "update",
+                }),
+            )
+            .await
+            .expect("todo check");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert_eq!(parsed["summary"]["pending"], 1);
+        assert_eq!(parsed["summary"]["checked"], 1);
+        assert_eq!(parsed["all_done"], false);
+
+        // Dismiss the other
+        let result = server
+            .harness
+            .call(
+                "todo",
+                serde_json::json!({
+                    "items": [{"id": "t2", "status": "dismissed"}],
+                    "action": "update",
+                }),
+            )
+            .await
+            .expect("todo dismiss");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert_eq!(parsed["summary"]["pending"], 0);
+        assert_eq!(parsed["summary"]["dismissed"], 1);
+        assert_eq!(parsed["all_done"], true);
+    }
+
+    #[tokio::test]
+    async fn prompt_catalog_has_expected_prompts() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let server = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("server");
+        let names: Vec<&str> = server
+            .prompts
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "read-file-guide",
+                "search-code-guide",
+                "apply-patch-guide",
+                "run-command-guide",
+                "workspace-overview-guide",
+                "git-operations-guide",
+                "task-completion-guide",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn get_prompt_returns_content_for_known_prompts() {
+        for name in &[
+            "read-file-guide",
+            "search-code-guide",
+            "apply-patch-guide",
+            "run-command-guide",
+            "workspace-overview-guide",
+            "git-operations-guide",
+            "task-completion-guide",
+        ] {
+            let result = super::get_prompt_content(name);
+            assert!(result.is_some(), "prompt {name} should have content");
+            let result = result.unwrap();
+            assert!(!result.messages.is_empty(), "prompt {name} should have messages");
+        }
+    }
+
+    #[tokio::test]
+    async fn get_prompt_returns_none_for_unknown() {
+        assert!(super::get_prompt_content("nonexistent-prompt").is_none());
     }
 }

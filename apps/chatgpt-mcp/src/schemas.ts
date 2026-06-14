@@ -745,3 +745,63 @@ export const QueueViewSortSchema = {
 
 /** Input schema for `create_queue_view`. */
 
+
+// ---------------------------------------------------------------
+// SetRunDependenciesInput  (Milestone 21)
+// ---------------------------------------------------------------
+
+/** Input schema for `set_run_dependencies`. */
+export const SetRunDependenciesInput = {
+  runId: z.string().describe("Run ID whose dependencies should be updated"),
+  blockedByRunIds: z
+    .array(z.string())
+    .describe(
+      "Run IDs that block this run. Pass an empty array to clear all dependencies.",
+    ),
+};
+
+// ---------------------------------------------------------------
+// SetRunEffortInput  (Milestone 25)
+// ---------------------------------------------------------------
+
+/** Input schema for `set_run_effort`. */
+export const SetRunEffortInput = {
+  runId: z.string().describe("Run ID whose effort estimate should be updated"),
+  effort: z
+    .enum(["small", "medium", "large"])
+    .nullable()
+    .optional()
+    .describe(
+      "Effort estimate for this run: small, medium, or large. Pass null to clear.",
+    ),
+};
+
+// ---------------------------------------------------------------
+// CommandRunInput  (Phase 2: run_command)
+// ---------------------------------------------------------------
+
+/** Input schema for `run_command`. */
+export const CommandRunInput = {
+  runId: z.string().describe("Run ID that owns this command execution"),
+  command: z
+    .string()
+    .min(1)
+    .describe(
+      "Command to execute (must be on the daemon whitelist, e.g. cargo, npm, make, python3)",
+    ),
+  args: z
+    .array(z.string())
+    .optional()
+    .describe("Arguments to the command"),
+  workdir: z
+    .string()
+    .optional()
+    .describe("Working directory relative to workspace root"),
+  timeoutSecs: z
+    .number()
+    .int()
+    .positive()
+    .max(300)
+    .optional()
+    .describe("Timeout in seconds (default: 60, max: 300)"),
+};

@@ -66,6 +66,8 @@ pub fn dispatch(
         Method::RunsQueueOverview => handle_runs_queue_overview(params, store),
         // Milestone 25: deterministic run effort estimates
         Method::RunSetEffort => handle_run_set_effort(params, store),
+        // Phase 2: deterministic run_command
+        Method::CommandRun => handle_command_run(params, store),
         // Milestone 29: deterministic saved queue views
         Method::QueueViewCreate => handle_queue_view_create(params, store),
         Method::QueueViewUpdate => handle_queue_view_update(params, store),
@@ -1399,6 +1401,131 @@ fn handle_run_set_effort(
 
     Ok((serde_json::to_value(result)?, Some(state)))
 }
+
+// ---- Phase 2: deterministic run_command ----
+
+fn handle_command_run(
+    params: serde_json::Value,
+    store: &Store,
+) -> Result<(serde_json::Value, Option<RunState>)> {
+    let p: CommandRunParams = serde_json::from_value(params)?;
+
+    // Validate against the whitelist.
+    match deterministic_core::command_runner::validate_command(&p) {
+        deterministic_core::command_runner::ValidationOutcome::Denied { reason } => {
+            let result = CommandRunResult {
+                run_id: p.run_id.clone(),
+                command: format!("{}", p.command),
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: -1,
+                duration_ms: 0,
+                allowed: false,
+                denial_reason: Some(reason.clone()),
+            };
+            let _ = store.append_audit_entry(
+                &p.run_id,
+                "run_command_denied",
+                &reason,
+                Some(&serde_json::json!({"command": p.command, "args": p.args}).to_string()),
+            );
+            return Ok((serde_json::to_value(result)?, None));
+        }
+        deterministic_core::command_runner::ValidationOutcome::Allowed { .. } => {}
+    }
+
+    let timeout_secs = deterministic_core::command_runner::effective_timeout(&p);
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+
+    let workspace_root = store.get_run(&p.run_id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown run: {}", p.run_id))?
+        .workspace_id.clone();
+
+    let workdir = if let Some(ref sub) = p.workdir {
+        std::path::Path::new(&workspace_root).join(sub)
+    } else {
+        std::path::PathBuf::from(&workspace_root)
+    };
+
+    let start = std::time::Instant::now();
+
+    let mut cmd = std::process::Command::new(&p.command);
+    cmd.args(&p.args);
+    cmd.current_dir(&workdir);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let child = cmd.spawn().map_err(|e| {
+        anyhow::anyhow!("failed to spawn command: {e}")
+    })?;
+
+    let result = match wait_with_timeout(child, timeout) {
+        Ok(output) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let exit_code = output.status.code().unwrap_or(-1);
+            CommandRunResult {
+                run_id: p.run_id.clone(),
+                command: format!("{}", p.command),
+                stdout,
+                stderr,
+                exit_code,
+                duration_ms,
+                allowed: true,
+                denial_reason: None,
+            }
+        }
+        Err(timeout_msg) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
+            CommandRunResult {
+                run_id: p.run_id.clone(),
+                command: format!("{}", p.command),
+                stdout: String::new(),
+                stderr: format!("Command failed: {timeout_msg}"),
+                exit_code: -1,
+                duration_ms,
+                allowed: true,
+                denial_reason: Some(timeout_msg),
+            }
+        }
+    };
+
+    let _ = store.append_audit_entry(
+        &p.run_id,
+        if result.allowed { "run_command_executed" } else { "run_command_denied" },
+        &result.command,
+        Some(&serde_json::to_string(&result).unwrap()),
+    );
+
+    Ok((serde_json::to_value(result)?, None))
+}
+
+/// Wait for a child process with a timeout using mpsc channel.
+fn wait_with_timeout(
+    child: std::process::Child,
+    timeout: std::time::Duration,
+) -> std::result::Result<std::process::Output, String> {
+    let child_id = child.id();
+    let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<std::process::Output>>();
+
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(e)) => Err(format!("wait failed: {e}")),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            let _ = std::process::Command::new("kill")
+                .arg(child_id.to_string())
+                .spawn();
+            Err("timed out".to_string())
+        }
+        Err(_) => Err("channel error".to_string()),
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // runs.overview (Milestone 24)

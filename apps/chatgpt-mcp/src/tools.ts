@@ -45,6 +45,9 @@ import {
   CreateQueueViewInput,
   UpdateQueueViewInput,
   DeleteQueueViewInput,
+  SetRunDependenciesInput,
+  SetRunEffortInput,
+  CommandRunInput,
   GetQueueViewInput,
   ListQueueViewsInput,
 } from "./schemas.js";
@@ -111,6 +114,12 @@ export const REGISTERED_TOOL_NAMES = [
   "assign_run_owner",
   // Milestone 20: deterministic run due dates
   "set_run_due_date",
+  // Milestone 21: deterministic run dependencies
+  "set_run_dependencies",
+  // Milestone 25: deterministic run effort estimates
+  "set_run_effort",
+  // Phase 2: deterministic run_command
+  "run_command",
 ] as const;
 
 export function registerTools(server: McpServer, client: DaemonClient): void {
@@ -631,6 +640,66 @@ export function registerTools(server: McpServer, client: DaemonClient): void {
       const result = await client.call("run.set_due_date", {
         runId: params.runId,
         dueDate: params.dueDate,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+  // ---- set_run_dependencies (Milestone 21) ----
+  server.tool(
+    "set_run_dependencies",
+    "Explicitly set which run IDs block this run. " +
+      "Pass an empty array to clear all dependencies. " +
+      "Dependency assignment is deterministic and audited. " +
+      "It changes only dependency metadata and does not execute work, change lifecycle status, replan, reopen, finalize, archive, unarchive, snooze, prioritize, or supersede the run.",
+    SetRunDependenciesInput,
+    async (params) => {
+      const result = await client.call("run.set_dependencies", {
+        runId: params.runId,
+        blockedByRunIds: params.blockedByRunIds,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- set_run_effort (Milestone 25) ----
+  server.tool(
+    "set_run_effort",
+    "Explicitly set or clear the effort estimate of a run. " +
+      "Valid values are: small, medium, large. Pass null to clear. " +
+      "Effort estimation is deterministic and audited. " +
+      "It changes only effort metadata and does not execute work, change lifecycle status, replan, reopen, finalize, archive, unarchive, snooze, prioritize, or supersede the run.",
+    SetRunEffortInput,
+    async (params) => {
+      const result = await client.call("run.set_effort", {
+        runId: params.runId,
+        effort: params.effort,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  // ---- run_command (Phase 2) ----
+  server.tool(
+    "run_command",
+    "Run a whitelisted deterministic command in the workspace. " +
+      "Allowed commands include cargo, npm, node, python3, make, and other build/lint/format utilities. " +
+      "File writes must always go through apply_patch; test execution through run_tests. " +
+      "This is for build/lint/format/codegen operations only. " +
+      "The command is validated against a whitelist on the daemon side.",
+    CommandRunInput,
+    async (params) => {
+      const result = await client.call("run.command", {
+        runId: params.runId,
+        command: params.command,
+        args: params.args ?? [],
+        workdir: params.workdir,
+        timeoutSecs: params.timeoutSecs,
       });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

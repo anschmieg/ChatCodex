@@ -34,3 +34,4 @@ pub mod run_staleness;
 pub mod run_triage;
 pub mod tests_run;
 pub mod workspace_summary;
+pub mod command_runner;

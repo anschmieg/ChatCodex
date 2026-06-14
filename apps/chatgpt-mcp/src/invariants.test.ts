@@ -86,6 +86,12 @@ describe("MCP tool registry invariants", () => {
       "assign_run_owner",
       // Milestone 20: deterministic run due dates
       "set_run_due_date",
+      // Milestone 21: deterministic run dependencies
+      "set_run_dependencies",
+      // Milestone 25: deterministic run effort estimates
+      "set_run_effort",
+      // Phase 2: deterministic run_command
+      "run_command",
     ]);
     const actual = new Set(REGISTERED_TOOL_NAMES);
     assert.deepStrictEqual(actual, expected);

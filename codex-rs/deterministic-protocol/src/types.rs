@@ -2234,3 +2234,54 @@ impl fmt::Display for RunTriageBucket {
         f.write_str(s)
     }
 }
+
+// ---------------------------------------------------------------------------
+// run.command  — restricted command execution (Phase 2)
+// ---------------------------------------------------------------------------
+
+/// Parameters for `run.command`.
+///
+/// Executes a whitelisted deterministic utility command in the workspace.
+/// File writes always go through `apply_patch`; test execution through
+/// `run_tests`; this is for build/lint/format/codegen only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandRunParams {
+    /// ID of the run that owns this command execution.
+    pub run_id: String,
+    /// Command to execute (must be on the whitelist).
+    pub command: String,
+    /// Arguments to the command.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Optional working directory relative to the workspace root.
+    /// Defaults to workspace root.
+    #[serde(default)]
+    pub workdir: Option<String>,
+    /// Timeout in seconds. Defaults to 60.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+}
+
+/// Result of `run.command`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandRunResult {
+    /// The run ID.
+    pub run_id: String,
+    /// Command that was executed (for audit trail).
+    pub command: String,
+    /// Standard output captured from the command.
+    pub stdout: String,
+    /// Standard error captured from the command.
+    pub stderr: String,
+    /// Exit code of the command.
+    pub exit_code: i32,
+    /// Duration in milliseconds.
+    pub duration_ms: u64,
+    /// Whether execution was allowed by policy.
+    pub allowed: bool,
+    /// If not allowed, the reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denial_reason: Option<String>,
+}
