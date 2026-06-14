@@ -11,10 +11,9 @@
 # runtime stage runs on TARGETPLATFORM (linux/arm64 for Coolify).
 
 # ---------- builder: cross-compile or native compile ----------
-FROM --platform=$BUILDPLATFORM rust:1.95.0-bookworm AS builder
+FROM --platform=$BUILDPLATFORM rust:1.95.0-bookworm AS builder-base
 
 ARG TARGETPLATFORM
-ARG SCCACHE_VERSION=0.15.0
 
 # Install build dependencies.
 # On amd64 hosts we need the aarch64 cross-compilation toolchain + arm64
@@ -25,8 +24,6 @@ RUN arch="$(dpkg --print-architecture)" && \
         dpkg --add-architecture arm64 && \
         apt-get update && \
         apt-get install -y --no-install-recommends \
-            ca-certificates \
-            curl \
             gcc-aarch64-linux-gnu \
             libc6-dev-arm64-cross \
             libcap-dev:arm64 \
@@ -37,39 +34,11 @@ RUN arch="$(dpkg --print-architecture)" && \
     else \
         apt-get update && \
         apt-get install -y --no-install-recommends \
-            ca-certificates \
-            curl \
             gcc \
             libcap-dev \
             pkg-config \
         && rm -rf /var/lib/apt/lists/*; \
-    fi && \
-    case "$arch" in \
-        amd64) \
-            sccache_target="x86_64-unknown-linux-musl"; \
-            sccache_sha256="782d2b5dd7ae0a55ebe368ab258114d0928d019ac2d949ab85d5d02f3926709e"; \
-            ;; \
-        arm64) \
-            sccache_target="aarch64-unknown-linux-musl"; \
-            sccache_sha256="3a6a3712b49da3d263bf2d30d702de4302793016019e800bfb81c0c69401d8f8"; \
-            ;; \
-        *) \
-            echo "unsupported builder architecture for sccache: $arch" >&2; \
-            exit 1; \
-            ;; \
-    esac && \
-    sccache_archive="sccache-v${SCCACHE_VERSION}-${sccache_target}.tar.gz" && \
-    curl --proto '=https' --tlsv1.2 -fsSLo "/tmp/${sccache_archive}" \
-        "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${sccache_archive}" && \
-    echo "${sccache_sha256}  /tmp/${sccache_archive}" | sha256sum -c - && \
-    tar -xzf "/tmp/${sccache_archive}" -C /tmp && \
-    install -m 0755 \
-        "/tmp/sccache-v${SCCACHE_VERSION}-${sccache_target}/sccache" \
-        /usr/local/bin/sccache && \
-    rm -rf \
-        "/tmp/${sccache_archive}" \
-        "/tmp/sccache-v${SCCACHE_VERSION}-${sccache_target}" && \
-    sccache --version
+    fi
 
 # Cross-compilation environment (harmless on native aarch64 builds where
 # aarch64-linux-gnu-gcc is just the native compiler).
@@ -81,42 +50,57 @@ ENV CARGO_BUILD_JOBS=2 \
     CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
     CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
     PKG_CONFIG_ALLOW_CROSS=1 \
-    PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
-    RUSTC_WRAPPER=sccache \
-    SCCACHE_GHA_VERSION=chatcodex-rust-v1 \
-    SCCACHE_BASEDIRS=/src/codex-rs
+    PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
 
 WORKDIR /src
 COPY codex-rs ./codex-rs
 
-# Build the binary. On amd64 we cross-compile to aarch64; on arm64 we
-# compile natively (the target triple happens to be the same).
+# Compile the upstream workspace and third-party dependencies in a layer that
+# is independent of ChatCodex source changes. The main build context includes
+# the two ChatCodex manifests but excludes their source directories.
+RUN mkdir -p \
+        codex-rs/native-harness-mcp/src \
+        codex-rs/native-harness-mcp-auth/src && \
+    printf 'pub fn dependency_cache_stub() {}\n' \
+        > codex-rs/native-harness-mcp-auth/src/lib.rs && \
+    printf 'pub fn dependency_cache_stub() {}\n' \
+        > codex-rs/native-harness-mcp/src/lib.rs && \
+    printf 'fn main() {}\n' \
+        > codex-rs/native-harness-mcp/src/main.rs
+
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/codex-rs/target \
-    --mount=type=cache,target=/src/.cache/sccache \
-    --mount=type=secret,id=gha_cache_url \
-    --mount=type=secret,id=gha_cache_token \
-    export ACTIONS_RESULTS_URL="$(cat /run/secrets/gha_cache_url 2>/dev/null || true)" && \
-    export ACTIONS_RUNTIME_TOKEN="$(cat /run/secrets/gha_cache_token 2>/dev/null || true)" && \
-    if [ -n "$ACTIONS_RESULTS_URL" ] && [ -n "$ACTIONS_RUNTIME_TOKEN" ]; then \
-        export SCCACHE_GHA_ENABLED=on; \
-        echo "Using the GitHub Actions sccache backend"; \
-    else \
-        export SCCACHE_DIR=/src/.cache/sccache; \
-        echo "Using the local BuildKit sccache backend"; \
-    fi && \
     arch="$(dpkg --print-architecture)" && \
     if [ "$arch" = "amd64" ]; then \
         TARGET="aarch64-unknown-linux-gnu"; \
     else \
         TARGET="$(rustc -vV | grep 'host:' | awk '{print $2}')"; \
     fi && \
-    echo "Building for target: $TARGET on arch: $arch" && \
+    echo "Caching dependencies for target: $TARGET on arch: $arch" && \
+    cd codex-rs && \
+    cargo build --release --target "$TARGET" -p codex-native-harness-mcp
+
+# Overlay only ChatCodex-owned source. These named contexts are hashed
+# independently from the upstream codex-rs workspace.
+FROM builder-base AS builder
+COPY --from=chatcodex-auth . /src/codex-rs/native-harness-mcp-auth
+COPY --from=chatcodex-mcp . /src/codex-rs/native-harness-mcp
+
+# Build the real binary. Cargo reuses the dependency artifacts from the
+# previous stage and recompiles the two ChatCodex crates.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    arch="$(dpkg --print-architecture)" && \
+    if [ "$arch" = "amd64" ]; then \
+        TARGET="aarch64-unknown-linux-gnu"; \
+    else \
+        TARGET="$(rustc -vV | grep 'host:' | awk '{print $2}')"; \
+    fi && \
+    echo "Building ChatCodex for target: $TARGET on arch: $arch" && \
     cd codex-rs && \
     cargo build --release --target "$TARGET" -p codex-native-harness-mcp && \
     cp "target/$TARGET/release/codex-native-harness-mcp" /tmp/chatcodex && \
-    sccache --show-stats
+    rm -rf target/*/release/incremental
 
 # ---------- runtime: minimal Ubuntu image ----------
 FROM --platform=$TARGETPLATFORM ubuntu:24.04

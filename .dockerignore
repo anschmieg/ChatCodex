@@ -4,6 +4,10 @@
 .agents
 apps
 codex-cli
+codex-rs/native-harness-mcp/**
+!codex-rs/native-harness-mcp/Cargo.toml
+codex-rs/native-harness-mcp-auth/**
+!codex-rs/native-harness-mcp-auth/Cargo.toml
 codex-rs/target
 docs
 node_modules
