@@ -10,8 +10,8 @@ thread, turn, review, or other agent loop.
 
 ChatCodex code lives in two independent crates:
 
-- `codex-rs/native-harness-mcp`
-- `codex-rs/native-harness-mcp-auth`
+- `chatcodex/crates/mcp-server`
+- `chatcodex/crates/mcp-server-auth`
 
 They depend only on public upstream crate APIs. No source file in `codex-core`
 or another upstream crate is patched. The only upstream workspace change is

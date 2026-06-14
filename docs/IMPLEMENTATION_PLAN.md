@@ -3,23 +3,23 @@
 ## Completed Architecture
 
 - Track the stable upstream Codex Rust release.
-- Keep ChatCodex harness and OAuth code in independent crates.
-- Use public upstream execution, sandbox, protocol, filesystem, and patch APIs.
-- Expose a strict five-tool deterministic MCP allowlist.
+- Keep ChatCodex harness and OAuth code in a separate workspace (`chatcodex/`).
+- Use public upstream execution, sandbox, protocol, filesystem, and patch APIs via path dependencies.
+- Expose a strict deterministic MCP allowlist.
 - Keep commands read-only and route all workspace writes through `apply_patch`.
 - Avoid all upstream session, turn, review, model, and agent-loop APIs.
-- Avoid source patches to `codex-core` and other upstream implementation crates.
+- Avoid source patches to upstream implementation crates.
+- Ensure upstream `codex-rs/` remains untouched by ChatCodex changes.
 
 ## Verification Gates
 
-1. `cargo check -p codex-native-harness-mcp`
-2. `cargo test -p codex-native-harness-mcp --lib`
-3. `cargo test -p codex-native-harness-mcp-auth`
-4. `cargo fmt --all -- --check`
-5. Confirm the diff from the selected upstream tag contains only:
-   - the two ChatCodex crates;
-   - workspace registration and lockfile changes;
-   - ChatCodex deployment, workflow, and documentation files.
+1. `cargo check -p chatcodex-mcp-server -p chatcodex-oauth`
+2. `cargo test -p chatcodex-mcp-server -p chatcodex-oauth --lib`
+3. `cargo fmt --all -- --check`
+4. Confirm the diff contains only:
+   - `chatcodex/` workspace files;
+   - deployment, workflow, and documentation files;
+   - no modifications to upstream `codex-rs/` source files.
 
 ## Deployment
 

@@ -1,0 +1,57 @@
+[package]
+name = "chatcodex-mcp-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "chatcodex-mcp-server"
+path = "src/main.rs"
+
+[lib]
+name = "chatcodex_mcp_server"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true, features = ["http1", "json", "tokio"] }
+axum-prometheus = { workspace = true }
+base64 = { workspace = true }
+codex-arg0 = { path = "../../../codex-rs/arg0" }
+codex-apply-patch = { path = "../../../codex-rs/apply-patch" }
+codex-exec-server = { path = "../../../codex-rs/exec-server" }
+codex-protocol = { path = "../../../codex-rs/protocol" }
+codex-sandboxing = { path = "../../../codex-rs/sandboxing" }
+codex-shell-command = { path = "../../../codex-rs/shell-command" }
+codex-utils-absolute-path = { path = "../../../codex-rs/utils/absolute-path" }
+chatcodex-oauth = { path = "../oauth" }
+metrics-exporter-prometheus = { workspace = true, default-features = false }
+mime_guess = { workspace = true }
+rmcp = { workspace = true, features = [
+    "server",
+    "transport-streamable-http-server",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = [
+    "io-std",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "signal",
+] }
+tower-http = { workspace = true, features = ["cors", "trace"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+uuid = { workspace = true, features = ["v4"] }
+http = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+url = { workspace = true }

@@ -91,13 +91,13 @@ cargo build --release
 
 The daemon binary will be at:
 ```
-codex-rs/target/release/deterministic-daemon
+codex-rs/target/release/mcp-server
 ```
 
 ### 3. Build the MCP Gateway
 
 ```bash
-cd ../apps/chatgpt-mcp
+cd ../chatcodex/crates/mcp-server
 npm ci
 npm run build
 ```
@@ -110,7 +110,7 @@ The daemon is an HTTP JSON-RPC server:
 
 ```bash
 cd codex-rs
-./target/release/deterministic-daemon --port 3100 --data-dir ./runs
+./target/release/mcp-server --port 3100 --data-dir ./runs
 ```
 
 Options:
@@ -122,7 +122,7 @@ Options:
 The MCP gateway connects to the daemon:
 
 ```bash
-cd apps/chatgpt-mcp
+cd chatcodex/crates/mcp-server
 node dist/index.js
 ```
 
@@ -142,7 +142,7 @@ ChatGPT connects to the MCP server. Configure your MCP client (ChatGPT with MCP 
   "mcpServers": {
     "chatcodex": {
       "command": "node",
-      "args": ["/path/to/ChatCodex/apps/chatgpt-mcp/dist/index.js"],
+      "args": ["/path/to/ChatCodex/chatcodex/crates/mcp-server/dist/index.js"],
       "env": {
         "DAEMON_URL": "http://localhost:3100"
       }
@@ -226,7 +226,7 @@ chmod 755 ./runs
 The daemon auto-migrates the database. If you see migration errors:
 ```bash
 rm -rf ./runs/runs.db
-./target/release/deterministic-daemon --port 3100 --data-dir ./runs
+./target/release/mcp-server --port 3100 --data-dir ./runs
 ```
 
 ## Quick Start Checklist
@@ -236,7 +236,7 @@ rm -rf ./runs/runs.db
 - [ ] Repository cloned
 - [ ] Daemon builds (`cargo build --release`)
 - [ ] Gateway builds (`npm ci && npm run build`)
-- [ ] Daemon starts (`./target/release/deterministic-daemon`)
+- [ ] Daemon starts (`./target/release/mcp-server`)
 - [ ] Gateway starts (`node dist/index.js`)
 - [ ] ChatGPT sees MCP tools
 

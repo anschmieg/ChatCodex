@@ -81,7 +81,7 @@ cd codex-rs
 cargo build --release
 
 # Build MCP gateway
-cd ../apps/chatgpt-mcp
+cd ../chatcodex/crates/mcp-server
 npm ci
 npm run build
 ```
@@ -91,10 +91,10 @@ npm run build
 ```bash
 # Terminal 1: Start daemon
 cd codex-rs
-./target/release/deterministic-daemon --port 3100 --data-dir ./runs
+./target/release/mcp-server --port 3100 --data-dir ./runs
 
 # Terminal 2: Start gateway
-cd apps/chatgpt-mcp
+cd chatcodex/crates/mcp-server
 DAEMON_URL=http://localhost:3100 node dist/index.js
 ```
 
@@ -107,7 +107,7 @@ Add to your ChatGPT MCP configuration:
   "mcpServers": {
     "chatcodex": {
       "command": "node",
-      "args": ["/path/to/ChatCodex/apps/chatgpt-mcp/dist/index.js"],
+      "args": ["/path/to/ChatCodex/chatcodex/crates/mcp-server/dist/index.js"],
       "env": {
         "DAEMON_URL": "http://localhost:3100"
       }

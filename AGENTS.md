@@ -7,8 +7,7 @@ This repository implements a **deterministic coding harness control plane for Ch
 The required architecture is:
 
 ChatGPT-hosted model
-→ MCP server we own
-→ deterministic Rust harness daemon
+→ MCP server we own (native Rust)
 → filesystem / git / patch / test / approvals / sandbox
 
 ## Absolute rules
@@ -35,7 +34,7 @@ ChatGPT-hosted model
 3. **Required architecture**
    - ChatGPT reasons.
    - MCP tools are deterministic.
-   - The Rust daemon is deterministic.
+   - The Rust server is deterministic.
    - All policy enforcement is server-side.
    - All file writes happen through `apply_patch`.
    - All test execution happens through `run_tests`.
@@ -54,61 +53,38 @@ ChatGPT-hosted model
    - `show_diff`
    - `git_status`
 
-5. **Internal daemon JSON-RPC surface**
-   - `run.prepare`
-   - `run.refresh`
-   - `run.replan`
-   - `workspace.summary`
-   - `approval.resolve`
-   - `code.search`
-   - `file.read`
-   - `patch.apply`
-   - `tests.run`
-   - `git.diff`
-   - `git.status`
+## Architecture
 
-## Scope for the first coding-agent task
+ChatCodex lives in its own workspace at `chatcodex/` and depends on upstream Codex crates in `codex-rs/` via path dependencies.
 
-Implement only the first substantial slice:
+```text
+chatcodex/
+  Cargo.toml
+  Cargo.lock
+  crates/
+    mcp-server/       # Native Rust MCP server
+    oauth/            # OAuth 2.1 authorization layer
 
-- Milestone 0: design docs and repo bootstrap
-- Milestone 1: deterministic Rust daemon skeleton
-- Milestone 2: TypeScript MCP gateway skeleton
-- Milestone 3: minimal end-to-end loop
+codex-rs/             # upstream Codex checkout (unchanged)
+```
 
-That means:
+## Scope for coding-agent tasks
+
+Implement features in the native Rust MCP server:
 
 ### Rust
-Create:
-- `codex-rs/deterministic-protocol`
-- `codex-rs/deterministic-core`
-- `codex-rs/deterministic-daemon`
+Create or extend:
+- `chatcodex/crates/mcp-server`
+- `chatcodex/crates/oauth`
 
 Implement:
-- protocol types
-- run state model
-- SQLite persistence
-- `/healthz`
-- `/rpc`
-- handlers for:
-  - `run.prepare`
-  - `workspace.summary`
-  - `file.read`
-  - `git.status`
-  - `code.search`
-  - `patch.apply`
-  - `tests.run`
-  - `git.diff`
-
-### TypeScript
-Create:
-- `apps/chatgpt-mcp`
-
-Implement:
-- MCP server bootstrap
-- tool registration
-- internal daemon client
-- MCP tools for:
+- MCP tool catalog and dispatch
+- Streamable HTTP transport
+- OAuth 2.1 authorization server
+- Cloudflare Access JWT verification
+- Bearer-token middleware
+- Prometheus metrics, structured logging, graceful shutdown
+- Tool handlers for:
   - `codex_prepare_run`
   - `get_workspace_summary`
   - `read_file`
@@ -123,7 +99,6 @@ Implement:
 - Prefer compiling code over placeholder docs.
 - Prefer thin, real implementations over mocks.
 - Do not silently skip the no-hidden-agent invariants.
-- Keep TypeScript thin: validation + mapping + daemon calls only.
 - Keep deterministic logic in Rust.
 - Add tests for invariants where practical.
 - If something from upstream Codex would introduce agent-owned inference, do not wire it in.

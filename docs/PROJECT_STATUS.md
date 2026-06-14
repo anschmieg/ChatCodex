@@ -32,13 +32,13 @@ ChatGPT-hosted model
 - Defined tool contracts and public/internal surfaces
 
 ### Milestone 1: Deterministic Rust Daemon Skeleton
-- Created `deterministic-protocol`, `deterministic-core`, `deterministic-daemon` crates
+- Created `mcp-server`, `mcp-server`, `mcp-server` crates
 - Implemented request/response types and run-state schema
 - Added SQLite persistence with `/healthz` and `/rpc` endpoints
 - Handlers: `run.prepare`, `workspace.summary`, `file.read`, `git.status`
 
 ### Milestone 2: MCP Gateway Skeleton
-- Created `apps/chatgpt-mcp` TypeScript project
+- Created `chatcodex/crates/mcp-server` TypeScript project
 - Implemented MCP server bootstrap and tool registration
 - Added daemon client and initial tool mappings
 
@@ -100,7 +100,7 @@ ChatGPT-hosted model
 - Architecture invariants maintained: no model calls, no autonomous tools, deterministic only
 
 ### Milestone 8: Deterministic Policy Configuration and Per-Run Execution Constraints
-- Added `RunPolicy` struct to `deterministic-protocol`: `patchEditThreshold`, `deleteRequiresApproval`, `sensitivePathRequiresApproval`, `outsideFocusRequiresApproval`, `extraSafeMakeTargets`, `focusPaths`
+- Added `RunPolicy` struct to `mcp-server`: `patchEditThreshold`, `deleteRequiresApproval`, `sensitivePathRequiresApproval`, `outsideFocusRequiresApproval`, `extraSafeMakeTargets`, `focusPaths`
 - Added `RunPolicyInput` struct for optional partial policy input at prepare time; missing fields fall back to defaults
 - `RunPrepareParams` accepts an optional `policy: RunPolicyInput` field
 - `RunPrepareResult`, `RunRefreshResult`, and `RunGetResult` now include `effectivePolicy: RunPolicy`
@@ -116,9 +116,9 @@ ChatGPT-hosted model
 - No backend model calls; no autonomous continuation
 
 ### Milestone 9: Deterministic Operation Preflight and Approval Preview
-- Added `PreflightDecision` enum (`proceed` | `requires_approval`) to `deterministic-protocol`
+- Added `PreflightDecision` enum (`proceed` | `requires_approval`) to `mcp-server`
 - Added `PreflightResult` struct (shared result for both preflight methods): `decision`, `actionSummary?`, `riskReason?`, `policyRationale?`, `effectivePolicy`
-- Added `PatchPreflightParams` and `TestsPreflightParams` to `deterministic-protocol`
+- Added `PatchPreflightParams` and `TestsPreflightParams` to `mcp-server`
 - Added `patch.preflight` and `tests.preflight` daemon methods (read-only, no state mutation)
 - Handlers reuse existing `evaluate_patch` / `evaluate_test_run` policy logic (no duplication)
 - Added `preview_patch_policy` and `preview_test_policy` MCP tools in TypeScript
@@ -128,8 +128,8 @@ ChatGPT-hosted model
 - No backend model calls; no autonomous continuation; no state mutation from preview calls
 
 ### Milestone 11: Deterministic Run Reopening and Post-Finalization Continuation Controls
-- Added `ReopenMetadata` struct to `deterministic-protocol`: `reason`, `reopenedAt`, `reopenedFromOutcomeKind`, `reopenCount`
-- Added `RunReopenParams` and `RunReopenResult` to `deterministic-protocol`
+- Added `ReopenMetadata` struct to `mcp-server`: `reason`, `reopenedAt`, `reopenedFromOutcomeKind`, `reopenCount`
+- Added `RunReopenParams` and `RunReopenResult` to `mcp-server`
 - Added `reopen_metadata: Option<ReopenMetadata>` to `RunState`, `RunRefreshResult`, and `RunGetResult`
 - Added `reopen_count: Option<u32>` to `RunSummary` for concise run listings
 - Added `run.reopen` internal daemon method with deterministic lifecycle rules:
@@ -146,8 +146,8 @@ ChatGPT-hosted model
 - 5 new Rust persistence tests (null for fresh run, roundtrip, increment, migration safety, list_runs)
 - 9 new TypeScript tests (6 schema validation + 3 no-hidden-agent regression)
 - No backend model calls; no autonomous continuation; no coarse tools introduced
-- Added `RunOutcome` struct to `deterministic-protocol`: `outcomeKind`, `summary`, `reason?`, `finalizedAt`
-- Added `RunFinalizeParams` and `RunFinalizeResult` to `deterministic-protocol`
+- Added `RunOutcome` struct to `mcp-server`: `outcomeKind`, `summary`, `reason?`, `finalizedAt`
+- Added `RunFinalizeParams` and `RunFinalizeResult` to `mcp-server`
 - Added `VALID_OUTCOME_KINDS` constant: `["completed", "failed", "abandoned"]`
 - Added `finalized_outcome: Option<RunOutcome>` to `RunState`, `RunRefreshResult`, and `RunGetResult`
 - Added `outcome_kind: Option<String>` to `RunSummary` for concise run listings
@@ -170,7 +170,7 @@ ChatGPT-hosted model
 - Added `supersedes_run_id`, `superseded_by_run_id`, `supersession_reason`, `superseded_at` fields to `RunState` (all `Option<String>`, Milestone 12)
 - Added the same lineage fields to `RunGetResult` for direct inspection
 - Added `supersedes_run_id` and `superseded_by_run_id` to `RunSummary` for concise run listings
-- Added `RunSupersedeParams` and `RunSupersedeResult` to `deterministic-protocol`
+- Added `RunSupersedeParams` and `RunSupersedeResult` to `mcp-server`
 - Added `run.supersede` internal daemon method with deterministic lifecycle rules:
   - Only finalized runs (`finalized:completed`, `finalized:failed`, `finalized:abandoned`) may be superseded
   - Active, prepared, or awaiting-approval runs are rejected deterministically
@@ -193,9 +193,9 @@ ChatGPT-hosted model
 - No backend model calls; no autonomous continuation; no coarse tools introduced
 
 ### Milestone 13: Deterministic Run Archiving and Retention Controls
-- Added `ArchiveMetadata` struct to `deterministic-protocol` (`reason`, `archived_at`)
+- Added `ArchiveMetadata` struct to `mcp-server` (`reason`, `archived_at`)
 - Added `archive_metadata: Option<ArchiveMetadata>` field to `RunState`
-- Added `RunArchiveParams` and `RunArchiveResult` to `deterministic-protocol`
+- Added `RunArchiveParams` and `RunArchiveResult` to `mcp-server`
 - Added `include_archived` and `archived_only` fields to `RunsListParams`
 - Added `is_archived`, `archive_reason`, `archived_at` fields to `RunSummary`
 - Added `archive_metadata` field to `RunGetResult`
@@ -225,9 +225,9 @@ ChatGPT-hosted model
 - No backend model calls; no autonomous continuation; no coarse tools introduced
 
 ### Milestone 14: Deterministic Run Unarchiving and Archive Restoration Controls
-- Added `UnarchiveMetadata` struct to `deterministic-protocol` (`reason`, `unarchived_at`)
+- Added `UnarchiveMetadata` struct to `mcp-server` (`reason`, `unarchived_at`)
 - Added `unarchive_metadata: Option<UnarchiveMetadata>` field to `RunState`
-- Added `RunUnarchiveParams` and `RunUnarchiveResult` to `deterministic-protocol`
+- Added `RunUnarchiveParams` and `RunUnarchiveResult` to `mcp-server`
 - Added `unarchive_reason`, `unarchived_at` fields to `RunSummary`
 - Added `unarchive_metadata` field to `RunGetResult`
 - Added `Method::RunUnarchive` (`run.unarchive`) to the daemon method enum
@@ -255,7 +255,7 @@ ChatGPT-hosted model
 - No backend model calls; no autonomous continuation; no coarse tools introduced
 
 ### Milestone 15: Deterministic Run Labeling and Operator-Visible Organization Metadata
-- Added `RunAnnotation` struct to `deterministic-protocol` (`labels: Vec<String>`, `operator_note: Option<String>`)
+- Added `RunAnnotation` struct to `mcp-server` (`labels: Vec<String>`, `operator_note: Option<String>`)
 - Added `annotation: Option<RunAnnotation>` field to `RunState`
 - Added `labels: Vec<String>` and `operator_note: Option<String>` fields to `RunSummary`
 - Added `annotation` field to `RunGetResult`
@@ -401,7 +401,7 @@ Added explicit, audited snooze / unsnooze lifecycle controls so ChatGPT can temp
 
 ### What was added
 
-**Protocol (`deterministic-protocol`)**:
+**Protocol (`mcp-server`)**:
 - `SnoozeMetadata` struct with `reason` and `snoozed_at`
 - `RunSnoozeParams` / `RunSnoozeResult`
 - `RunUnsnoozeParams` / `RunUnsnoozeResult`
@@ -411,16 +411,16 @@ Added explicit, audited snooze / unsnooze lifecycle controls so ChatGPT can temp
 - `include_snoozed`, `snoozed_only` on `RunsListParams`
 - `Method::RunSnooze` (`run.snooze`) / `Method::RunUnsnooze` (`run.unsnooze`)
 
-**Core logic (`deterministic-core`)**:
+**Core logic (`mcp-server`)**:
 - `run_snooze.rs` — any run may be snoozed; re-snooze replaces metadata
 - `run_unsnooze.rs` — only snoozed runs accepted; clears snooze metadata only
 
-**Persistence (`deterministic-daemon`)**:
+**Persistence (`mcp-server`)**:
 - Migration adds `is_snoozed INTEGER DEFAULT 0` and `snooze_metadata TEXT`
 - `save_run` / `get_run` roundtrip snooze state
 - `list_runs` with `include_snoozed` / `snoozed_only` filtering; default excludes snoozed
 
-**Handlers (`deterministic-daemon`)**:
+**Handlers (`mcp-server`)**:
 - `handle_run_snooze` / `handle_run_unsnooze` with `run_snoozed` / `run_unsnoozed` audit entries
 
 **TypeScript MCP gateway**:
@@ -459,11 +459,11 @@ If extending the project, likely next milestones would be:
 
 ```
 codex-rs/
-  deterministic-protocol/  # Shared types and method names
-  deterministic-core/    # Deterministic logic and policy
-  deterministic-daemon/  # HTTP JSON-RPC transport, SQLite persistence
+  mcp-server/  # Shared types and method names
+  mcp-server/    # Deterministic logic and policy
+  mcp-server/  # HTTP JSON-RPC transport, SQLite persistence
 
-apps/chatgpt-mcp/        # TypeScript MCP gateway
+chatcodex/crates/mcp-server/        # TypeScript MCP gateway
 
 docs/                    # Architecture and contract documentation
 .github/workflows/       # CI for deterministic subsystem

@@ -1,51 +1,51 @@
 ---
-applyTo: "codex-rs/**"
+applyTo: "chatcodex/**"
 ---
 
 # Rust-specific instructions
 
 ## Goal
 
-Implement the deterministic backend in Rust.
+Implement the ChatCodex MCP server in Rust.
 
 ## Required crates
 
-Create these crates in `codex-rs/`:
-- `deterministic-protocol`
-- `deterministic-core`
-- `deterministic-daemon`
+Create these crates in `chatcodex/crates/`:
+- `mcp-server`
+- `oauth`
 
 ## Required boundaries
 
-- `deterministic-protocol`: shared request/response and model types only
-- `deterministic-core`: all deterministic business logic
-- `deterministic-daemon`: transport, persistence, and handler wiring
+- `mcp-server`: MCP tool catalog, request dispatch, and HTTP transport
+- `oauth`: OAuth 2.1 authorization layer, Cloudflare Access, JWT verification
 
 ## Forbidden dependencies and behavior
 
 - No model provider SDKs
 - No hidden agent loop
 - No runtime use of `turn/start`, `turn/steer`, `review/start`
-- No autonomous “continue work” functionality
+- No autonomous "continue work" functionality
 
-## Required features in the first slice
+## Required features
 
-- run state model
-- SQLite persistence
-- JSON-RPC over HTTP
-- handlers for:
-  - `run.prepare`
-  - `workspace.summary`
-  - `file.read`
-  - `git.status`
-  - `code.search`
-  - `patch.apply`
-  - `tests.run`
-  - `git.diff`
+- Native MCP tool catalog over streamable HTTP
+- OAuth 2.1 authorization server with PKCE
+- Cloudflare Access JWT verification
+- Bearer-token middleware
+- Prometheus metrics, structured logging, graceful shutdown
+- Tool handlers for:
+  - `codex_prepare_run`
+  - `get_workspace_summary`
+  - `read_file`
+  - `git_status`
+  - `search_code`
+  - `apply_patch`
+  - `run_tests`
+  - `show_diff`
 
 ## Design notes
 
 - Favor small explicit structs over loose maps.
-- Add compile-time separation between deterministic and agent runtime concerns.
-- If reusing upstream code, isolate it behind deterministic wrappers.
+- Keep deterministic logic in Rust; TypeScript layer is validation + mapping only.
+- If reusing upstream code, isolate it behind thin wrappers.
 - Add a hard failure path for accidental model-call code.

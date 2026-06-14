@@ -16,12 +16,12 @@
 - `codex-rs/core/src/lib.rs`: export the facade.
 - `codex-rs/core/src/tools/spec.rs`: only visibility or filtering hooks required by the facade.
 - `codex-rs/core/src/tools/registry.rs`: only visibility required for direct dispatch.
-- `codex-rs/native-harness-mcp/src/catalog.rs`: Codex `ToolSpec` to MCP mapping.
-- `codex-rs/native-harness-mcp/src/server.rs`: MCP handler and call routing.
-- `codex-rs/native-harness-mcp/src/approval.rs`: MCP elicitation bridge.
-- `codex-rs/native-harness-mcp/src/config.rs`: workspace root, transport, and bearer configuration.
-- `codex-rs/native-harness-mcp/src/http.rs`: Streamable HTTP and health endpoint.
-- `codex-rs/native-harness-mcp/src/main.rs`: process bootstrap.
+- `chatcodex/crates/mcp-server/src/catalog.rs`: Codex `ToolSpec` to MCP mapping.
+- `chatcodex/crates/mcp-server/src/server.rs`: MCP handler and call routing.
+- `chatcodex/crates/mcp-server/src/approval.rs`: MCP elicitation bridge.
+- `chatcodex/crates/mcp-server/src/config.rs`: workspace root, transport, and bearer configuration.
+- `chatcodex/crates/mcp-server/src/http.rs`: Streamable HTTP and health endpoint.
+- `chatcodex/crates/mcp-server/src/main.rs`: process bootstrap.
 - `Dockerfile`, `docker-compose.yml`, `.dockerignore`: deployment boundary.
 - `docs/IMPLEMENTATION_PLAN.md`: live status and takeover record.
 

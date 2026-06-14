@@ -163,7 +163,7 @@ Legend:
 
 ### Rust Daemon Tests
 
-Location: `codex-rs/deterministic-daemon/src/handlers.rs` (`#[cfg(test)] mod tests`)
+Location: `chatcodex/crates/mcp-server/src/handlers.rs` (`#[cfg(test)] mod tests`)
 
 Priority tests:
 1. **Lifecycle integration**: prepare → refresh → finalize
@@ -174,7 +174,7 @@ Priority tests:
 
 ### TypeScript Gateway Tests
 
-Location: `apps/chatgpt-mcp/src/*.test.ts`
+Location: `chatcodex/crates/mcp-server/src/*.test.ts`
 
 Priority tests:
 1. **Tool-to-daemon mapping**: Verify tools call correct daemon methods

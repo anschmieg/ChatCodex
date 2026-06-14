@@ -18,9 +18,7 @@ This is forbidden even if the transport is MCP, ACP, JSON-RPC, or HTTP.
 
 User in ChatGPT
 -> ChatGPT-hosted model
--> MCP server we own
--> internal JSON-RPC
--> deterministic Rust harness daemon
+-> MCP server we own (native Rust)
 -> filesystem / git / patch / tests / approvals / sandbox
 
 ## Why fork upstream Codex
@@ -40,50 +38,47 @@ We are **not** preserving:
 
 ## Repository structure
 
-- `codex-rs/`
-  - upstream crates remain present
-  - add:
-    - `deterministic-protocol`
-    - `deterministic-core`
-    - `deterministic-daemon`
+```text
+chatcodex/
+  Cargo.toml
+  Cargo.lock
+  crates/
+    mcp-server/       # Native Rust MCP server
+    oauth/            # OAuth 2.1 authorization layer
 
-- `apps/chatgpt-mcp/`
-  - TypeScript MCP gateway
+codex-rs/             # upstream Codex checkout (do not modify)
+deploy/chatcodex/     # deployment artifacts
+docs/                 # documentation
+```
 
 ## Rust crates
 
-### deterministic-protocol
-Shared method names and DTOs.
+### chatcodex/crates/mcp-server
 
-### deterministic-core
-Deterministic logic:
-- instruction compilation
-- run-state transitions
-- workspace summaries
-- suspect file ranking
-- policy enforcement
-- patch validation
-- test command resolution
+Native Rust MCP server:
+- MCP tool catalog and dispatch
+- Streamable HTTP transport
+- Prometheus metrics
+- Structured logging
+- Graceful shutdown
+- CORS and rate limiting
+- Health endpoint
 
-### deterministic-daemon
-- HTTP JSON-RPC transport
-- SQLite persistence with automatic schema migration
-- handler wiring
-- health endpoint
+Depends on upstream Codex crates for:
+- patch application (`codex-apply-patch`)
+- execution (`codex-exec-server`)
+- sandboxing (`codex-sandboxing`)
+- protocol types (`codex-protocol`)
 
-#### SQLite persistence
+### chatcodex/crates/oauth
 
-The daemon stores run state in a local SQLite database (`runs.db`). The persistence layer automatically migrates older databases to the current schema using `ALTER TABLE ADD COLUMN` for backward compatibility. This allows the daemon to start and operate correctly even when an older database (e.g., from Milestone 3) is present. Missing columns are added with safe deterministic defaults (empty JSON arrays `[]` for list fields, `NULL` for optional fields).
-
-## TypeScript MCP gateway
-
-Thin gateway:
-- tool registration
-- Zod schemas
-- daemon client
-- response formatting
-
-No repo logic belongs here.
+OAuth 2.1 authorization layer:
+- Authorization server with PKCE
+- Cloudflare Access JWT verification
+- Bearer-token middleware
+- Client registration
+- Token introspection and revocation
+- SQLite-backed storage
 
 ## Public MCP tools (11 total)
 
@@ -106,33 +101,12 @@ Git tools:
 - `show_diff` — Diff summary or patch text
 - `git_status` — Working tree status
 
-## Internal daemon methods (11 total)
-
-Run lifecycle:
-- `run.prepare` — Initialize run state
-- `run.refresh` — Return updated run-state snapshot
-- `run.replan` — Deterministic replanning
-- `approval.resolve` — Resolve pending approvals
-
-Workspace and file:
-- `workspace.summary` — Workspace overview
-- `file.read` — Read file contents
-- `code.search` — Text/symbol search
-
-Execution (policy-gated):
-- `patch.apply` — Apply patches
-- `tests.run` — Run tests
-
-Git:
-- `git.status` — Working tree status
-- `git.diff` — Diff summary/patch
-
 ## First implementation slice
 
 Implement only:
 - docs and scaffolding
-- deterministic daemon
-- MCP gateway
+- native Rust MCP server
+- OAuth authorization layer
 - minimal end-to-end loop:
   - prepare
   - read
@@ -144,7 +118,6 @@ Implement only:
 ## Explicit non-goals for first slice
 
 - widgets
-- OAuth
 - external sandbox providers
 - worktree orchestration
 - review workflows

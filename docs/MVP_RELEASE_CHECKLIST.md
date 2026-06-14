@@ -12,13 +12,14 @@ This checklist verifies ChatCodex is ready for MVP evaluation.
 cd codex-rs
 
 # Build all packages
-cargo build -p deterministic-protocol -p deterministic-core -p deterministic-daemon
+cargo build -p chatcodex-mcp-server -p chatcodex-oauth
 
 # Run tests
-cargo test -p deterministic-protocol -p deterministic-core -p deterministic-daemon
+cargo test -p chatcodex-mcp-server -p chatcodex-oauth
 
 # Run clippy
-cargo clippy -p deterministic-protocol -p deterministic-core -p deterministic-daemon --all-targets -- -D warnings
+cargo clippy -p chatcodex-mcp-server -p chatcodex-oauth --all-targets -- -D warnings
+
 ```
 
 - [ ] `cargo build` succeeds without errors
@@ -28,7 +29,7 @@ cargo clippy -p deterministic-protocol -p deterministic-core -p deterministic-da
 ### TypeScript Gateway
 
 ```bash
-cd apps/chatgpt-mcp
+cd chatcodex
 
 # Install dependencies
 npm ci
@@ -108,10 +109,10 @@ Verification:
 
 ```bash
 # Search for any backend LLM calls
-grep -rn "openai\." --include="*.rs" codex-rs/deterministic-daemon/src codex-rs/deterministic-core/src
-grep -rn "anthropic\." --include="*.rs" codex-rs/deterministic-daemon/src codex-rs/deterministic-core/src
-grep -rn "continue_run\|resume_thread\|resume_codex_thread\|agent_step" --include="*.ts" apps/chatgpt-mcp/src
-grep -rn "continue_run\|resume_thread\|resume_codex_thread\|agent_step" --include="*.rs" codex-rs/deterministic-daemon/src
+grep -rn "openai\." --include="*.rs" chatcodex/crates/mcp-server/src chatcodex/crates
+grep -rn "anthropic\." --include="*.rs" chatcodex/crates/mcp-server/src chatcodex/crates
+grep -rn "continue_run\|resume_thread\|resume_codex_thread\|agent_step" --include="*.ts" chatcodex/crates
+grep -rn "continue_run\|resume_thread\|resume_codex_thread\|agent_step" --include="*.rs" chatcodex/crates/mcp-server/src
 ```
 
 - [ ] No backend model calls in daemon
@@ -123,8 +124,8 @@ grep -rn "continue_run\|resume_thread\|resume_codex_thread\|agent_step" --includ
 ```bash
 # Verify no autonomy keywords exist in the codebase
 git grep -nE 'continue_run|resume_thread|resume_codex_thread|agent_step|fix_end_to_end|turn/start|turn/steer|review/start' -- \
-  apps/chatgpt-mcp/src \
-  codex-rs/deterministic-daemon/src \
+  chatcodex/crates \
+  chatcodex/crates/mcp-server/src \
   .github/workflows
 ```
 
@@ -153,18 +154,17 @@ Run these before releasing:
 cd codex-rs && cargo build --release
 
 # 2. Full test
-cargo test -p deterministic-protocol -p deterministic-core -p deterministic-daemon
+cargo test -p chatcodex-mcp-server -p chatcodex-oauth
 
 # 3. Clippy
-cargo clippy -p deterministic-protocol -p deterministic-core -p deterministic-daemon --all-targets -- -D warnings
+cargo clippy -p chatcodex-mcp-server -p chatcodex-oauth --all-targets -- -D warnings
 
-# 4. TypeScript build
-cd ../apps/chatgpt-mcp && npm ci && npm run build
+# 4. ChatCodex build
+cd ../chatcodex && cargo build -p chatcodex-mcp-server -p chatcodex-oauth
 
 # 5. Invariant grep
 cd ../.. && git grep -nE 'continue_run|resume_thread|resume_codex_thread|agent_step|fix_end_to_end|turn/start|turn/steer|review/start' -- \
-  apps/chatgpt-mcp/src \
-  codex-rs/deterministic-daemon/src \
+  chatcodex/crates \
   .github/workflows
 ```
 

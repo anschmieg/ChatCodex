@@ -22,27 +22,26 @@ git pull --ff-only || ABORT=1
 
 echo "[4/8] Verify Rust build/test/lint"
 (
-  cd /Users/adrian/Projects/ChatCodex/codex-rs &&
-  cargo build -p deterministic-protocol -p deterministic-core -p deterministic-daemon &&
-  cargo test -p deterministic-protocol -p deterministic-core -p deterministic-daemon -- --nocapture &&
-  cargo clippy -p deterministic-protocol -p deterministic-core -p deterministic-daemon --all-targets -- -D warnings
+  cd chatcodex && \
+  cargo build -p chatcodex-mcp-server -p chatcodex-oauth && \
+  cargo test -p chatcodex-mcp-server -p chatcodex-oauth -- --nocapture && \
+  cargo clippy -p chatcodex-mcp-server -p chatcodex-oauth --all-targets -- -D warnings
 ) || ABORT=1
 
-echo "[5/8] Verify TypeScript build/test"
+echo "[5/8] Verify ChatCodex does not modify upstream source"
 (
-  cd /Users/adrian/Projects/ChatCodex/apps/chatgpt-mcp &&
-  npm ci &&
-  npm run build &&
-  npm test
+  git diff --name-only HEAD | grep -qE '^codex-rs/' && {
+    echo "ABORT=1 -- ChatCodex changes should not modify codex-rs/ files"
+    exit 1
+  } || true
 ) || ABORT=1
 
 echo "[6/8] Re-run invariant greps"
 (
-  cd /Users/adrian/Projects/ChatCodex &&
   grep -RInE 'turn/start|turn/steer|review/start|codex\(|codex-reply\(|continue_run|resume_thread|resume_codex_thread|agent_step|fix_end_to_end' \
-    codex-rs/deterministic-* apps/chatgpt-mcp/src .github/workflows || true
+    chatcodex/crates .github/workflows || true
   grep -RInE 'openai|anthropic|gemini|ollama|xai|responses api|chat completions|model provider' \
-    codex-rs/deterministic-* apps/chatgpt-mcp || true
+    chatcodex/crates || true
 ) || ABORT=1
 
 echo "[7/8] Merge/delete branch if everything passed"

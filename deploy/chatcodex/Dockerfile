@@ -53,21 +53,26 @@ ENV CARGO_BUILD_JOBS=2 \
     PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
 
 WORKDIR /src
+
+# Copy upstream workspace first. ChatCodex depends on it via path deps.
 COPY codex-rs ./codex-rs
 
-# Compile the upstream workspace and third-party dependencies in a layer that
-# is independent of ChatCodex source changes. The main build context includes
-# the two ChatCodex manifests but excludes their source directories.
+# Copy ChatCodex workspace manifest and create stub sources for dependency
+# caching. The real sources are overlaid in a later stage.
+COPY chatcodex/Cargo.toml ./chatcodex/Cargo.toml
 RUN mkdir -p \
-        codex-rs/native-harness-mcp/src \
-        codex-rs/native-harness-mcp-auth/src && \
+        chatcodex/crates/mcp-server/src \
+        chatcodex/crates/oauth/src && \
     printf 'pub fn dependency_cache_stub() {}\n' \
-        > codex-rs/native-harness-mcp-auth/src/lib.rs && \
+        > chatcodex/crates/oauth/src/lib.rs && \
     printf 'pub fn dependency_cache_stub() {}\n' \
-        > codex-rs/native-harness-mcp/src/lib.rs && \
+        > chatcodex/crates/mcp-server/src/lib.rs && \
     printf 'fn main() {}\n' \
-        > codex-rs/native-harness-mcp/src/main.rs
+        > chatcodex/crates/mcp-server/src/main.rs
 
+# Build upstream dependencies and the ChatCodex dependency closure in one
+# layer. This layer is invalidated only when upstream or workspace
+# manifests change, not when ChatCodex source files change.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     arch="$(dpkg --print-architecture)" && \
@@ -77,22 +82,22 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         TARGET="$(rustc -vV | grep 'host:' | awk '{print $2}')"; \
     fi && \
     echo "Caching dependencies for target: $TARGET on arch: $arch" && \
-    cd codex-rs && \
-    cargo build --release --target "$TARGET" -p codex-native-harness-mcp
+    cd chatcodex && \
+    cargo build --release --target "$TARGET" -p chatcodex-mcp-server
 
 # Overlay only ChatCodex-owned source. These named contexts are hashed
 # independently from the upstream codex-rs workspace.
 FROM builder-base AS builder
-COPY --from=chatcodex-auth . /src/codex-rs/native-harness-mcp-auth
-COPY --from=chatcodex-mcp . /src/codex-rs/native-harness-mcp
+COPY --from=chatcodex-mcp . /src/chatcodex/crates/mcp-server
+COPY --from=chatcodex-oauth . /src/chatcodex/crates/oauth
 
 # Build the real binary. Cargo reuses the dependency artifacts from the
-# previous stage and recompiles the two ChatCodex crates.
+# previous stage and recompiles only the ChatCodex crates.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     find \
-        codex-rs/native-harness-mcp \
-        codex-rs/native-harness-mcp-auth \
+        chatcodex/crates/mcp-server \
+        chatcodex/crates/oauth \
         -type f -exec touch {} + && \
     arch="$(dpkg --print-architecture)" && \
     if [ "$arch" = "amd64" ]; then \
@@ -101,9 +106,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         TARGET="$(rustc -vV | grep 'host:' | awk '{print $2}')"; \
     fi && \
     echo "Building ChatCodex for target: $TARGET on arch: $arch" && \
-    cd codex-rs && \
-    cargo build --release --target "$TARGET" -p codex-native-harness-mcp && \
-    cp "target/$TARGET/release/codex-native-harness-mcp" /tmp/chatcodex && \
+    cd chatcodex && \
+    cargo build --release --target "$TARGET" -p chatcodex-mcp-server && \
+    cp "target/$TARGET/release/chatcodex-mcp-server" /tmp/chatcodex && \
     rm -rf target/*/release/incremental
 
 # ---------- runtime: minimal Ubuntu image ----------
@@ -163,7 +168,7 @@ RUN set -eux; \
             uv_sha256="588f3e360f69ce02b6982aa99f2240e803933a6b7e176ac01617830adf955add"; \
             ;; \
         *) \
-            echo "unsupported runtime architecture: ${TARGETARCH}" >&2; \
+            echo "unsupported runtime architecture: ${TARGETARCH}" &&2; \
             exit 1; \
             ;; \
     esac; \

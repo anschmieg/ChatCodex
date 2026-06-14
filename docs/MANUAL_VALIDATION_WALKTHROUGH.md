@@ -39,7 +39,7 @@ git commit -m "initial"
 
 ```bash
 cd codex-rs
-./target/release/deterministic-daemon --port 3100 --data-dir ./runs &
+./target/release/mcp-server --port 3100 --data-dir ./runs &
 curl http://localhost:3100/healthz
 ```
 

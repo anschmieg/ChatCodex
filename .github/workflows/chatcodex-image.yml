@@ -3,7 +3,7 @@ name: chatcodex-image
 # Build the ChatCodex deployment image in CI and trigger a Coolify redeploy.
 #
 # This workflow exists because the Coolify production node OOMs while
-# compiling the `codex-native-harness-mcp-auth` closure graph. Building the
+# compiling the `chatcodex-oauth` closure graph. Building the
 # image on GitHub's ARM64 runners and shipping a prebuilt
 # `ghcr.io/anschmieg/chatcodex:<sha>` to the Coolify "Docker Image" build
 # pack avoids the builder memory cliff entirely.
@@ -34,7 +34,7 @@ name: chatcodex-image
 on:
   push:
     branches:
-      - codex/native-harness-mcp
+      - codex/workspace-migration
   workflow_dispatch:
     inputs:
       sha:
@@ -125,8 +125,8 @@ jobs:
           context: .
           file: deploy/chatcodex/Dockerfile
           build-contexts: |
-            chatcodex-mcp=./codex-rs/native-harness-mcp
-            chatcodex-auth=./codex-rs/native-harness-mcp-auth
+            chatcodex-mcp=./chatcodex/crates/mcp-server
+            chatcodex-oauth=./chatcodex/crates/oauth
           platforms: linux/arm64
           push: true
           tags: |
