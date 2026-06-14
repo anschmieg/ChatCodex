@@ -90,6 +90,10 @@ COPY --from=chatcodex-mcp . /src/codex-rs/native-harness-mcp
 # previous stage and recompiles the two ChatCodex crates.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
+    find \
+        codex-rs/native-harness-mcp \
+        codex-rs/native-harness-mcp-auth \
+        -type f -exec touch {} + && \
     arch="$(dpkg --print-architecture)" && \
     if [ "$arch" = "amd64" ]; then \
         TARGET="aarch64-unknown-linux-gnu"; \
