@@ -113,6 +113,7 @@ fn trim_trailing_slash(value: &str) -> String {
     value.trim_end_matches('/').to_string()
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
     use super::*;

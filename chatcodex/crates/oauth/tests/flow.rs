@@ -1,8 +1,7 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! End-to-end authorization-code + refresh-token flow with the stub
 //! Cloudflare Access verifier (no network). Drives register, authorize,
 //! decide, token, and refresh-token rotation.
-
-#![allow(clippy::expect_used)]
 
 use axum::Router;
 use axum::routing::get;
@@ -51,10 +50,7 @@ async fn register_authorize_token_refresh_flow() {
             "/.well-known/jwks.json",
             get(chatcodex_oauth::well_known::jwks),
         )
-        .route(
-            "/oauth/register",
-            post(chatcodex_oauth::clients::register),
-        )
+        .route("/oauth/register", post(chatcodex_oauth::clients::register))
         .route(
             "/oauth/authorize",
             get(chatcodex_oauth::authorize::authorize),
@@ -63,10 +59,7 @@ async fn register_authorize_token_refresh_flow() {
             "/oauth/authorize/decide",
             post(chatcodex_oauth::authorize::decide),
         )
-        .route(
-            "/oauth/token",
-            post(chatcodex_oauth::token::token),
-        )
+        .route("/oauth/token", post(chatcodex_oauth::token::token))
         .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

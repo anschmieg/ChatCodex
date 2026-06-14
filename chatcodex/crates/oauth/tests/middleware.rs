@@ -1,6 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Tests for the bearer-JWT middleware that protects `/mcp`.
-
-#![allow(clippy::expect_used)]
 
 use axum::Router;
 use axum::body::Body;

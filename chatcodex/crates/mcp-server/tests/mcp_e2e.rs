@@ -1,19 +1,18 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! End-to-end test: OAuth flow → MCP initialize → list_tools.
 //!
 //! Sets up the full auth stack with a stub Cloudflare Access verifier,
 //! registers a client, completes the authorization-code flow, then uses
 //! the issued access token to call the MCP streamable HTTP endpoint.
 
-#![allow(clippy::expect_used)]
-
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use codex_arg0::Arg0DispatchPaths;
 use chatcodex_mcp_server::http_router_with_state;
 use chatcodex_oauth::AuthConfig;
 use chatcodex_oauth::AuthState;
 use chatcodex_oauth::keyring::Keyring;
 use chatcodex_oauth::storage::Store;
+use codex_arg0::Arg0DispatchPaths;
 use serde_json::json;
 use sha2::Digest;
 use sha2::Sha256;

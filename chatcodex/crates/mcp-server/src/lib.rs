@@ -296,7 +296,10 @@ impl NativeHarness {
             "search_code" => self.search_code(serde_json::from_value(arguments)?).await,
             "git_status" => self.git_status(serde_json::from_value(arguments)?).await,
             "git_diff" => self.git_diff(serde_json::from_value(arguments)?).await,
-            "list_directory" => self.list_directory(serde_json::from_value(arguments)?).await,
+            "list_directory" => {
+                self.list_directory(serde_json::from_value(arguments)?)
+                    .await
+            }
             "todo" => self.todo(serde_json::from_value(arguments)?).await,
             _ => anyhow::bail!("unknown deterministic tool: {name}"),
         }
@@ -647,9 +650,7 @@ impl NativeHarness {
             };
         let fs = self.environment.get_filesystem();
         let path = match &args.path {
-            Some(p) => {
-                resolve_workspace_path(fs.as_ref(), &self.workspace, p, sandbox).await?
-            }
+            Some(p) => resolve_workspace_path(fs.as_ref(), &self.workspace, p, sandbox).await?,
             None => self.workspace.clone(),
         };
         let entries = fs.read_directory(&path, sandbox).await?;
@@ -719,9 +720,18 @@ impl NativeHarness {
                 })
             })
             .collect();
-        let pending_count = todo.iter().filter(|i| i.status == TodoStatus::Pending).count();
-        let checked_count = todo.iter().filter(|i| i.status == TodoStatus::Checked).count();
-        let dismissed_count = todo.iter().filter(|i| i.status == TodoStatus::Dismissed).count();
+        let pending_count = todo
+            .iter()
+            .filter(|i| i.status == TodoStatus::Pending)
+            .count();
+        let checked_count = todo
+            .iter()
+            .filter(|i| i.status == TodoStatus::Checked)
+            .count();
+        let dismissed_count = todo
+            .iter()
+            .filter(|i| i.status == TodoStatus::Dismissed)
+            .count();
         Ok(text_result(json!({
             "items": response,
             "summary": {
@@ -992,8 +1002,13 @@ fn prompt_catalog() -> Vec<Prompt> {
 fn get_prompt_content(name: &str) -> Option<GetPromptResult> {
     match name {
         "read-file-guide" => Some(GetPromptResult::new(vec![
-            PromptMessage::new_text(PromptMessageRole::User, "How do I read files in the workspace?"),
-            PromptMessage::new_text(PromptMessageRole::Assistant, r#"# Reading Files in ChatCodex
+            PromptMessage::new_text(
+                PromptMessageRole::User,
+                "How do I read files in the workspace?",
+            ),
+            PromptMessage::new_text(
+                PromptMessageRole::Assistant,
+                r#"# Reading Files in ChatCodex
 
 Use the `read_file` tool to read files from the workspace. This tool is preferred over `exec_command cat <file>` because it is deterministic, respects the filesystem sandbox, and supports line-range selection.
 
@@ -1015,12 +1030,18 @@ read_file(path: "src/main.rs", start_line: 10, end_line: 50)
 - Absolute paths are allowed only if they resolve inside the workspace.
 - The tool returns the file content along with total_lines, start_line, and end_line metadata.
 - For binary or image files, use `view_image` instead.
-- For very large files, always specify a line range to avoid excessive output."#),
+- For very large files, always specify a line range to avoid excessive output."#,
+            ),
         ])),
 
         "search-code-guide" => Some(GetPromptResult::new(vec![
-            PromptMessage::new_text(PromptMessageRole::User, "How do I search for code in the workspace?"),
-            PromptMessage::new_text(PromptMessageRole::Assistant, r#"# Searching Code in ChatCodex
+            PromptMessage::new_text(
+                PromptMessageRole::User,
+                "How do I search for code in the workspace?",
+            ),
+            PromptMessage::new_text(
+                PromptMessageRole::Assistant,
+                r#"# Searching Code in ChatCodex
 
 Use the `search_code` tool to find text patterns across workspace files. It uses `grep -rn` under the hood and is preferred over `exec_command grep ...` because it is deterministic and structured.
 
@@ -1048,12 +1069,18 @@ search_code(query: "impl", max_results: 20)
 - `path_glob` filters by filename pattern (e.g., `*.rs`, `*.py`, `*.{ts,js}`).
 - `max_results` defaults to 50 and caps at 500.
 - Binary file matches are automatically skipped.
-- Results include path, line number, and the matching snippet."#),
+- Results include path, line number, and the matching snippet."#,
+            ),
         ])),
 
         "apply-patch-guide" => Some(GetPromptResult::new(vec![
-            PromptMessage::new_text(PromptMessageRole::User, "How do I apply patches to workspace files?"),
-            PromptMessage::new_text(PromptMessageRole::Assistant, r#"# Applying Patches in ChatCodex
+            PromptMessage::new_text(
+                PromptMessageRole::User,
+                "How do I apply patches to workspace files?",
+            ),
+            PromptMessage::new_text(
+                PromptMessageRole::Assistant,
+                r#"# Applying Patches in ChatCodex
 
 Use the `apply_patch` tool for all workspace file modifications. This is the only write path for workspace files — do not use `exec_command` with sed, echo, or other file-writing commands.
 
@@ -1083,12 +1110,18 @@ The patch format uses structured markers:
 - Always inspect the file first with `read_file` before patching.
 - Multiple operations can be combined in a single patch.
 - The tool returns the patch result and any error messages.
-- Patches are applied atomically where possible."#),
+- Patches are applied atomically where possible."#,
+            ),
         ])),
 
         "run-command-guide" => Some(GetPromptResult::new(vec![
-            PromptMessage::new_text(PromptMessageRole::User, "How do I run commands in the workspace?"),
-            PromptMessage::new_text(PromptMessageRole::Assistant, r#"# Running Commands in ChatCodex
+            PromptMessage::new_text(
+                PromptMessageRole::User,
+                "How do I run commands in the workspace?",
+            ),
+            PromptMessage::new_text(
+                PromptMessageRole::Assistant,
+                r#"# Running Commands in ChatCodex
 
 Use the `exec_command` tool to run shell commands. Commands execute in a read-only filesystem sandbox with network access enabled.
 
@@ -1119,12 +1152,18 @@ write_stdin(session_id: "abc-123", chars: "print('hello')\n")
 - The sandbox is read-only — use `apply_patch` for file writes.
 - Prefer `mise exec -- <command>` for toolchains.
 - Use `uv` for Python environments.
-- System package installation and privilege escalation are forbidden."#),
+- System package installation and privilege escalation are forbidden."#,
+            ),
         ])),
 
         "workspace-overview-guide" => Some(GetPromptResult::new(vec![
-            PromptMessage::new_text(PromptMessageRole::User, "How do I explore the workspace structure?"),
-            PromptMessage::new_text(PromptMessageRole::Assistant, r#"# Workspace Overview in ChatCodex
+            PromptMessage::new_text(
+                PromptMessageRole::User,
+                "How do I explore the workspace structure?",
+            ),
+            PromptMessage::new_text(
+                PromptMessageRole::Assistant,
+                r#"# Workspace Overview in ChatCodex
 
 Use `list_directory` to explore the workspace directory structure, and `read_file` to inspect individual files.
 
@@ -1153,12 +1192,18 @@ exec_command(cmd: "find . -type f | head -50")
 - `list_directory` returns entries with name, is_directory, and is_file.
 - All paths are relative to the workspace root.
 - Use `search_code` to find files by content.
-- Use `git_status` to see which files have been modified."#),
+- Use `git_status` to see which files have been modified."#,
+            ),
         ])),
 
         "git-operations-guide" => Some(GetPromptResult::new(vec![
-            PromptMessage::new_text(PromptMessageRole::User, "How do I inspect git state in the workspace?"),
-            PromptMessage::new_text(PromptMessageRole::Assistant, r#"# Git Operations in ChatCodex
+            PromptMessage::new_text(
+                PromptMessageRole::User,
+                "How do I inspect git state in the workspace?",
+            ),
+            PromptMessage::new_text(
+                PromptMessageRole::Assistant,
+                r#"# Git Operations in ChatCodex
 
 Use `git_status` and `git_diff` to inspect the repository state without running arbitrary git commands.
 
@@ -1192,12 +1237,18 @@ git_diff(paths: ["src/main.rs"])
 
 - These tools are preferred over `exec_command git ...` because they return structured results.
 - For committing, branching, and other write operations, use `exec_command` with git commands.
-- Always check `git_status` before applying patches to understand the current state."#),
+- Always check `git_status` before applying patches to understand the current state."#,
+            ),
         ])),
 
         "task-completion-guide" => Some(GetPromptResult::new(vec![
-            PromptMessage::new_text(PromptMessageRole::User, "How do I make sure I complete the entire task?"),
-            PromptMessage::new_text(PromptMessageRole::Assistant, r#"# Task Completion in ChatCodex
+            PromptMessage::new_text(
+                PromptMessageRole::User,
+                "How do I make sure I complete the entire task?",
+            ),
+            PromptMessage::new_text(
+                PromptMessageRole::Assistant,
+                r#"# Task Completion in ChatCodex
 
 Follow this protocol to ensure you complete tasks thoroughly:
 
@@ -1238,7 +1289,8 @@ Once all_done is true, do a final verification step (run tests, check output).
 
 ## Golden rule
 
-Do NOT stop working until `all_done` is `true`. If the user's request has multiple parts, every part must be addressed. Only stop when all items are checked or dismissed."#),
+Do NOT stop working until `all_done` is `true`. If the user's request has multiple parts, every part must be addressed. Only stop when all items are checked or dismissed."#,
+            ),
         ])),
 
         _ => None,
@@ -1306,9 +1358,7 @@ impl ServerHandler for NativeHarnessMcp {
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<GetPromptResult, McpError>> + Send + '_ {
         let result = get_prompt_content(&request.name);
-        async move {
-            result.ok_or_else(|| McpError::invalid_params("unknown prompt", None))
-        }
+        async move { result.ok_or_else(|| McpError::invalid_params("unknown prompt", None)) }
     }
 }
 
@@ -1422,6 +1472,7 @@ pub async fn http_router_with_state(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::NativeHarnessMcp;
 
@@ -1658,11 +1709,7 @@ mod tests {
         )
         .await
         .expect("server");
-        let names: Vec<&str> = server
-            .prompts
-            .iter()
-            .map(|p| p.name.as_str())
-            .collect();
+        let names: Vec<&str> = server.prompts.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
             [
@@ -1691,7 +1738,10 @@ mod tests {
             let result = super::get_prompt_content(name);
             assert!(result.is_some(), "prompt {name} should have content");
             let result = result.unwrap();
-            assert!(!result.messages.is_empty(), "prompt {name} should have messages");
+            assert!(
+                !result.messages.is_empty(),
+                "prompt {name} should have messages"
+            );
         }
     }
 

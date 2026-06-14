@@ -1,6 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! End-to-end discovery tests for the auth layer's well-known endpoints.
-
-#![allow(clippy::expect_used)]
 
 use chatcodex_oauth::AuthConfig;
 use chatcodex_oauth::AuthState;

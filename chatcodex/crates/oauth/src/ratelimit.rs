@@ -123,6 +123,7 @@ pub async fn rate_limit_token(
     Ok(next.run(request).await)
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(test)]
 mod tests {
     use super::*;

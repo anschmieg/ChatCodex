@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use std::process::Command;
 
 use codex_apply_patch::CODEX_CORE_APPLY_PATCH_ARG1;
