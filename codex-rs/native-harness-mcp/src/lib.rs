@@ -1310,10 +1310,18 @@ pub async fn http_router_with_state(
     auth_state: codex_native_harness_mcp_auth::AuthState,
 ) -> anyhow::Result<Router> {
     let service = NativeHarnessMcp::new_with_arg0_paths(arg0_paths).await?;
+    let public_url = http::Uri::try_from(auth_state.config().public_base_url.as_str())
+        .context("invalid CHATCODEX_PUBLIC_BASE_URL")?;
+    let public_host = public_url
+        .host()
+        .ok_or_else(|| anyhow::anyhow!("CHATCODEX_PUBLIC_BASE_URL must have a host"))?
+        .to_string();
+    let mut mcp_config = StreamableHttpServerConfig::default();
+    mcp_config.allowed_hosts.push(public_host);
     let mcp_service = StreamableHttpService::new(
         move || Ok(service.clone()),
         Arc::new(LocalSessionManager::default()),
-        StreamableHttpServerConfig::default(),
+        mcp_config,
     );
     static PROMETHEUS_HANDLE: std::sync::OnceLock<metrics_exporter_prometheus::PrometheusHandle> =
         std::sync::OnceLock::new();

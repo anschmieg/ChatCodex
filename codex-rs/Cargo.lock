@@ -3511,6 +3511,7 @@ dependencies = [
  "codex-sandboxing",
  "codex-shell-command",
  "codex-utils-absolute-path",
+ "http 1.4.0",
  "metrics-exporter-prometheus",
  "mime_guess",
  "reqwest 0.12.28",
