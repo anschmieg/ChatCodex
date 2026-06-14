@@ -111,6 +111,19 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Export GitHub Actions cache credentials
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable(
+              "ACTIONS_RESULTS_URL",
+              process.env.ACTIONS_RESULTS_URL || "",
+            );
+            core.exportVariable(
+              "ACTIONS_RUNTIME_TOKEN",
+              process.env.ACTIONS_RUNTIME_TOKEN || "",
+            );
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -135,20 +148,18 @@ jobs:
             org.opencontainers.image.source=https://github.com/anschmieg/ChatCodex
             org.opencontainers.image.revision=${{ needs.resolve-ref.outputs.resolved_sha }}
             org.opencontainers.image.ref.name=${{ github.ref_name }}
-          # Multi-level cache strategy:
-            # 1. Registry cache (primary) - persisted between runs
-            # 2. GitHub Actions cache (fallback) - fast, auto-managed
+          secret-envs: |
+            gha_cache_url=ACTIONS_RESULTS_URL
+            gha_cache_token=ACTIONS_RUNTIME_TOKEN
+          # Docker layers use stable branch/architecture caches. Rust compiler
+          # artifacts are cached independently by sccache inside the build.
           cache-from: |
-            type=registry,ref=ghcr.io/anschmieg/chatcodex:build-cache-${{ needs.resolve-ref.outputs.resolved_sha }}
             type=registry,ref=ghcr.io/anschmieg/chatcodex:build-cache-branch-${{ needs.resolve-ref.outputs.branch_tag }}
             type=registry,ref=ghcr.io/anschmieg/chatcodex:latest
-            type=gha,scope=build-${{ github.ref_name }}
-            type=gha,scope=build-${{ needs.resolve-ref.outputs.resolved_sha }}
+            type=gha,scope=chatcodex-image-linux-arm64
           cache-to: |
-            type=registry,ref=ghcr.io/anschmieg/chatcodex:build-cache-${{ needs.resolve-ref.outputs.resolved_sha }},mode=max
             type=registry,ref=ghcr.io/anschmieg/chatcodex:build-cache-branch-${{ needs.resolve-ref.outputs.branch_tag }},mode=max
-            type=gha,scope=build-${{ github.ref_name }},mode=max
-            type=gha,scope=build-${{ needs.resolve-ref.outputs.resolved_sha }},mode=max
+            type=gha,scope=chatcodex-image-linux-arm64,mode=max
           provenance: false
           sbom: false
 
