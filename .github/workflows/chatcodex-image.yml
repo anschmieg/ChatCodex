@@ -303,7 +303,7 @@ jobs:
           {
             "docker_registry_image_name": "ghcr.io/anschmieg/chatcodex",
             "docker_registry_image_tag":  "${IMAGE_TAG}",
-            "custom_docker_run_options": "--cap-drop=ALL --security-opt=no-new-privileges",
+            "custom_docker_run_options": "--cap-drop=ALL",
             "limits_memory": "4g",
             "limits_memory_swap": "4g",
             "limits_cpus": "2"
