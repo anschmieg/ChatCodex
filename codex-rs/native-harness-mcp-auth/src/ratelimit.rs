@@ -111,11 +111,11 @@ pub async fn rate_limit_token(
         }
     });
 
-    if let Some(client_id) = client_id {
-        if !limiter.check(&client_id) {
-            tracing::warn!(client_id = %client_id, "rate limit exceeded on token endpoint");
-            return Err(StatusCode::TOO_MANY_REQUESTS);
-        }
+    if let Some(client_id) = client_id
+        && !limiter.check(&client_id)
+    {
+        tracing::warn!(client_id = %client_id, "rate limit exceeded on token endpoint");
+        return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
     // Reconstruct the request with the original body.

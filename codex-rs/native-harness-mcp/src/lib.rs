@@ -805,65 +805,77 @@ fn tool_catalog() -> anyhow::Result<Vec<Tool>> {
             "exec_command",
             "Run a command in the workspace under a read-only filesystem sandbox.",
             json!({"type":"object","properties":{"cmd":{"type":"string"},"yield_time_ms":{"type":"integer","minimum":0,"maximum":30000}},"required":["cmd"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"output":{"type":"string"},"exit_code":{"oneOf":[{"type":"integer"},{"type":"null"}]},"session_id":{"oneOf":[{"type":"string"},{"type":"null"}]}},"required":["output","exit_code","session_id"],"additionalProperties":false}),
         ),
         (
             "write_stdin",
             "Write to or poll a running command session.",
             json!({"type":"object","properties":{"session_id":{"type":"string"},"chars":{"type":"string"},"yield_time_ms":{"type":"integer","minimum":0,"maximum":30000}},"required":["session_id"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"output":{"type":"string"},"exited":{"type":"boolean"},"exit_code":{"oneOf":[{"type":"integer"},{"type":"null"}]}},"required":["output","exited","exit_code"],"additionalProperties":false}),
         ),
         (
             "update_plan",
             "Replace the deterministic task plan.",
+            json!({"type":"object","properties":{"explanation":{"type":"string"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string"},"status":{"enum":["pending","in_progress","completed"]}},"required":["step","status"],"additionalProperties":false}}},"required":["plan"],"additionalProperties":false}),
             json!({"type":"object","properties":{"explanation":{"type":"string"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string"},"status":{"enum":["pending","in_progress","completed"]}},"required":["step","status"],"additionalProperties":false}}},"required":["plan"],"additionalProperties":false}),
         ),
         (
             "apply_patch",
             "Apply a structured patch inside the workspace.",
             json!({"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"result":{"type":"string"}},"required":["result"],"additionalProperties":false}),
         ),
         (
             "view_image",
             "Read an image located inside the workspace.",
+            json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}),
             json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}),
         ),
         (
             "read_file",
             "Read a file from the workspace, optionally selecting a line range.",
             json!({"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},"required":["path"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"path":{"type":"string"},"total_lines":{"type":"integer"},"start_line":{"type":"integer"},"end_line":{"type":"integer"},"content":{"type":"string"}},"required":["path","total_lines","start_line","end_line","content"],"additionalProperties":false}),
         ),
         (
             "search_code",
             "Search workspace source files for a text pattern using grep.",
             json!({"type":"object","properties":{"query":{"type":"string"},"path_glob":{"type":"string"},"max_results":{"type":"integer","minimum":1,"maximum":500}},"required":["query"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"matches":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"line":{"type":"integer"},"snippet":{"type":"string"}},"required":["path","line","snippet"],"additionalProperties":false}}},"required":["matches"],"additionalProperties":false}),
         ),
         (
             "git_status",
             "Show the working tree status (git status --porcelain).",
             json!({"type":"object","properties":{},"additionalProperties":false}),
+            json!({"type":"object","properties":{"entries":{"type":"array","items":{"type":"object","properties":{"status":{"type":"string"},"path":{"type":"string"}},"required":["status","path"],"additionalProperties":false}},"stderr":{"type":"string"}},"required":["entries","stderr"],"additionalProperties":false}),
         ),
         (
             "git_diff",
             "Show workspace diff (git diff).",
             json!({"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}},"staged":{"type":"boolean"}},"additionalProperties":false}),
+            json!({"type":"object","properties":{"diff":{"type":"string"},"stderr":{"type":"string"}},"required":["diff","stderr"],"additionalProperties":false}),
         ),
         (
             "list_directory",
             "List entries in a workspace directory.",
             json!({"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":false}),
+            json!({"type":"object","properties":{"path":{"type":"string"},"entries":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"is_directory":{"type":"boolean"},"is_file":{"type":"boolean"}},"required":["name","is_directory","is_file"],"additionalProperties":false}}},"required":["path","entries"],"additionalProperties":false}),
         ),
         (
             "todo",
             "Manage a TODO checklist. Use `action: \"replace\"` to set the full list, `action: \"update\"` to check off or dismiss items by id. Returns the current state with summary and `all_done` flag. After each step, check if all_done is true; if not, continue working on remaining pending items.",
             json!({"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"description":{"type":"string"},"status":{"type":"string","enum":["pending","checked","dismissed"]}},"required":[],"additionalProperties":false}},"action":{"type":"string","enum":["replace","update"],"default":"replace"}},"required":["items"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"description":{"type":"string"},"status":{"type":"string","enum":["pending","checked","dismissed"]}},"required":["id","description","status"],"additionalProperties":false}},"summary":{"type":"object","properties":{"total":{"type":"integer"},"pending":{"type":"integer"},"checked":{"type":"integer"},"dismissed":{"type":"integer"}},"required":["total","pending","checked","dismissed"],"additionalProperties":false},"all_done":{"type":"boolean"}},"required":["items","summary","all_done"],"additionalProperties":false}),
         ),
     ]
     .into_iter()
-    .map(|(name, description, schema)| {
+    .map(|(name, description, schema, output_schema)| {
         Ok(Tool::new(
             Cow::Borrowed(name),
             Cow::Borrowed(description),
             Arc::new(serde_json::from_value::<JsonObject>(schema)?),
         )
+        .with_raw_output_schema(Arc::new(serde_json::from_value::<JsonObject>(output_schema)?))
         .with_annotations(tool_annotations(name)?))
     })
     .collect()
@@ -1326,20 +1338,19 @@ pub async fn http_router_with_state(
     static PROMETHEUS_HANDLE: std::sync::OnceLock<metrics_exporter_prometheus::PrometheusHandle> =
         std::sync::OnceLock::new();
     let prometheus_layer = PrometheusMetricLayer::new();
-    let _ = PROMETHEUS_HANDLE.get_or_init(|| {
-        let (_layer, handle) = PrometheusMetricLayer::pair();
-        handle
-    });
+    let prometheus_handle = PROMETHEUS_HANDLE
+        .get_or_init(|| {
+            let (_layer, handle) = PrometheusMetricLayer::pair();
+            handle
+        })
+        .clone();
 
     Ok(Router::new()
         .route(
             "/metrics",
-            get(|| async {
-                PROMETHEUS_HANDLE
-                    .get()
-                    .expect("Prometheus handle initialized")
-                    .clone()
-                    .render()
+            get(move || {
+                let prometheus_handle = prometheus_handle.clone();
+                async move { prometheus_handle.render() }
             }),
         )
         .route("/healthz", get(|| async { Json(json!({"status":"ok"})) }))
@@ -1445,6 +1456,57 @@ mod tests {
             ]
         );
         assert!(server.tools().iter().all(|tool| tool.annotations.is_some()));
+        assert!(
+            server
+                .tools()
+                .iter()
+                .all(|tool| tool.output_schema.is_some())
+        );
+    }
+
+    #[tokio::test]
+    async fn catalog_output_schemas_match_structured_results() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let server = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("server");
+
+        let view_image = server
+            .tools()
+            .iter()
+            .find(|tool| tool.name == "view_image")
+            .expect("view_image tool");
+        let output_schema = view_image.output_schema.as_ref().expect("output schema");
+        assert_eq!(
+            output_schema.get("required"),
+            Some(&serde_json::json!(["path"]))
+        );
+        assert_eq!(
+            output_schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+                .map(|properties| properties.keys().cloned().collect::<Vec<_>>()),
+            Some(vec!["path".to_string()])
+        );
+
+        for tool in server.tools() {
+            let output_schema = tool.output_schema.as_ref().expect("output schema");
+            assert_eq!(
+                output_schema.get("type"),
+                Some(&serde_json::json!("object")),
+                "{} output schema must describe an object",
+                tool.name
+            );
+            assert_eq!(
+                output_schema.get("additionalProperties"),
+                Some(&serde_json::json!(false)),
+                "{} output schema must reject undeclared fields",
+                tool.name
+            );
+        }
     }
 
     #[tokio::test]
