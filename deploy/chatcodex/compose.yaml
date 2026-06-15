@@ -14,8 +14,18 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=1777
     volumes:
       - type: bind
-        source: ${CHATCODEX_PROJECTS_DIR:?set CHATCODEX_PROJECTS_DIR}
+        source: ${CHATCODEX_WORKSPACE_BASE:?set CHATCODEX_WORKSPACE_BASE}
         target: /workspaces
+      # Optional: mount SSH keys for cloning private repositories.
+      # - type: bind
+      #   source: ${HOME}/.ssh
+      #   target: /toolchains/home/chatcodex/.ssh
+      #   read_only: true
+      # Optional: mount a git credentials helper or netrc for HTTPS private repos.
+      # - type: bind
+      #   source: ${HOME}/.git-credentials
+      #   target: /toolchains/home/chatcodex/.git-credentials
+      #   read_only: true
       - type: volume
         source: chatcodex-toolchains
         target: /toolchains

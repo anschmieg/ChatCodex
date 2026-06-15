@@ -21,12 +21,20 @@ The runtime uses two writable roots:
 
 | Path | Purpose |
 | --- | --- |
-| `/workspaces` | Project source trees and the writable uv cache |
+| `/workspaces` | Workspace base; actual projects live under `/workspaces/clients/<client_id>/` |
 | `/toolchains` | Persistent ChatCodex state, mise state/cache, and uv-managed Python/tools |
 
-Production should bind-mount only the allowed host projects at `/workspaces`
+Production should bind-mount a host directory at `/workspaces`
 and mount a Docker-managed persistent volume at `/toolchains`. It must not
-mount a host `/data` directory. The image configures:
+mount a host `/data` directory. Each client receives an isolated subtree:
+
+```text
+/workspaces/clients/<client_id>/
+  repos/<repo-name>/       # git clones
+  sandboxes/<sandbox-name>/ # persistent scratch directories
+```
+
+The image configures:
 
 ```text
 CHATCODEX_DATA_DIR=/toolchains/chatcodex

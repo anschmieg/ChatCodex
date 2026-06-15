@@ -56,7 +56,9 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_json::json;
+use std::time::Duration;
 use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info_span;
@@ -105,12 +107,14 @@ pub struct NativeHarnessMcp {
 }
 
 struct NativeHarness {
-    workspace: AbsolutePathBuf,
+    workspace_base: AbsolutePathBuf,
+    current_workspace: RwLock<Option<AbsolutePathBuf>>,
     environment: Environment,
     processes: Mutex<HashMap<ProcessId, ProcessSession>>,
     plan: Mutex<Value>,
     todo: Mutex<Vec<TodoItem>>,
     linux_sandbox_exe: Option<PathBuf>,
+    client_id: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -213,6 +217,56 @@ struct ListDirectoryArgs {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SetupWorkspaceArgs {
+    source: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitToolArgs {
+    command: String,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitCommitArgs {
+    message: String,
+    #[serde(default)]
+    allow_empty: bool,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitBranchArgs {
+    name: String,
+    #[serde(default)]
+    start_point: Option<String>,
+    #[serde(default)]
+    force: bool,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitCheckoutArgs {
+    target: String,
+    #[serde(default)]
+    create_branch: bool,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TodoArgs {
     items: Vec<TodoItemInput>,
     #[serde(default)]
@@ -251,10 +305,14 @@ impl NativeHarnessMcp {
     }
 
     async fn new_for_paths(
-        workspace: impl AsRef<Path>,
+        workspace_base: impl AsRef<Path>,
         arg0_paths: Arg0DispatchPaths,
     ) -> anyhow::Result<Self> {
-        let workspace = AbsolutePathBuf::from_absolute_path(workspace.as_ref())?;
+        let workspace_base = AbsolutePathBuf::from_absolute_path(workspace_base.as_ref())?;
+        validate_runtime(
+            &workspace_base,
+            arg0_paths.codex_linux_sandbox_exe.as_deref(),
+        )?;
         let environment = match arg0_paths.codex_self_exe {
             Some(self_exe) => {
                 let runtime_paths = ExecServerRuntimePaths::new(
@@ -263,18 +321,30 @@ impl NativeHarnessMcp {
                 )?;
                 Environment::create(std::env::var("CODEX_EXEC_SERVER_URL").ok(), runtime_paths)?
             }
-            None => Environment::create_for_tests(std::env::var("CODEX_EXEC_SERVER_URL").ok())?,
+            None => {
+                let linux_sandbox_exe = arg0_paths.codex_linux_sandbox_exe.clone();
+                let self_exe = linux_sandbox_exe
+                    .clone()
+                    .or_else(|| std::env::current_exe().ok())
+                    .ok_or_else(|| anyhow::anyhow!("could not determine self executable"))?;
+                let runtime_paths = ExecServerRuntimePaths::new(self_exe, linux_sandbox_exe)?;
+                Environment::create(std::env::var("CODEX_EXEC_SERVER_URL").ok(), runtime_paths)?
+            }
         };
+        let client_id =
+            std::env::var("CHATCODEX_CLIENT_ID").unwrap_or_else(|_| "default".to_string());
         Ok(Self {
             tools: Arc::new(tool_catalog()?),
             prompts: Arc::new(prompt_catalog()),
             harness: Arc::new(NativeHarness {
-                workspace,
+                workspace_base,
+                current_workspace: RwLock::new(None),
                 environment,
                 processes: Mutex::new(HashMap::new()),
                 plan: Mutex::new(json!({"plan": []})),
                 todo: Mutex::new(Vec::new()),
                 linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe,
+                client_id,
             }),
         })
     }
@@ -285,6 +355,14 @@ impl NativeHarnessMcp {
 }
 
 impl NativeHarness {
+    async fn workspace_or_error(&self) -> anyhow::Result<AbsolutePathBuf> {
+        let workspace = self.current_workspace.read().await;
+        workspace
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Workspace not configured. Call setup_workspace(source: '<git-url>') or setup_workspace(source: 'sandbox') first."))
+    }
+
     async fn call(&self, name: &str, arguments: Value) -> anyhow::Result<CallToolResult> {
         match name {
             "exec_command" => self.exec_command(serde_json::from_value(arguments)?).await,
@@ -294,8 +372,16 @@ impl NativeHarness {
             "view_image" => self.view_image(serde_json::from_value(arguments)?).await,
             "read_file" => self.read_file(serde_json::from_value(arguments)?).await,
             "search_code" => self.search_code(serde_json::from_value(arguments)?).await,
+            "setup_workspace" => {
+                self.setup_workspace(serde_json::from_value(arguments)?)
+                    .await
+            }
+            "git" => self.git_tool(serde_json::from_value(arguments)?).await,
             "git_status" => self.git_status(serde_json::from_value(arguments)?).await,
             "git_diff" => self.git_diff(serde_json::from_value(arguments)?).await,
+            "git_commit" => self.git_commit(serde_json::from_value(arguments)?).await,
+            "git_branch" => self.git_branch(serde_json::from_value(arguments)?).await,
+            "git_checkout" => self.git_checkout(serde_json::from_value(arguments)?).await,
             "list_directory" => {
                 self.list_directory(serde_json::from_value(arguments)?)
                     .await
@@ -306,6 +392,7 @@ impl NativeHarness {
     }
 
     async fn exec_command(&self, args: ExecCommandArgs) -> anyhow::Result<CallToolResult> {
+        let workspace = self.workspace_or_error().await?;
         let shell_argv = vec!["bash".to_string(), "-lc".to_string(), args.cmd];
         if command_might_be_dangerous(&shell_argv) {
             anyhow::bail!("command rejected by the deterministic command policy");
@@ -314,16 +401,14 @@ impl NativeHarness {
         let policy = SandboxPolicy::ReadOnly {
             network_access: true,
         };
-        let permissions = PermissionProfile::from_legacy_sandbox_policy_for_cwd(
-            &policy,
-            self.workspace.as_path(),
-        );
+        let permissions =
+            PermissionProfile::from_legacy_sandbox_policy_for_cwd(&policy, workspace.as_path());
         let (file_system_sandbox_policy, _) = permissions.to_runtime_permissions();
         let transformed = SandboxManager::new().transform(SandboxTransformRequest {
             command: SandboxCommand {
                 program: "bash".into(),
                 args: shell_argv[1..].to_vec(),
-                cwd: self.workspace.clone(),
+                cwd: workspace.clone(),
                 env: HashMap::new(),
                 additional_permissions: None,
             },
@@ -331,7 +416,7 @@ impl NativeHarness {
             sandbox: platform_sandbox()?,
             enforce_managed_network: false,
             network: None,
-            sandbox_policy_cwd: self.workspace.as_path(),
+            sandbox_policy_cwd: workspace.as_path(),
             codex_linux_sandbox_exe: self.linux_sandbox_exe.as_deref(),
             use_legacy_landlock: false,
             windows_sandbox_level: WindowsSandboxLevel::Disabled,
@@ -432,6 +517,7 @@ impl NativeHarness {
     }
 
     async fn apply_patch(&self, args: ApplyPatchArgs) -> anyhow::Result<CallToolResult> {
+        let workspace = self.workspace_or_error().await?;
         let policy = SandboxPolicy::WorkspaceWrite {
             writable_roots: Vec::new(),
             network_access: false,
@@ -439,18 +525,22 @@ impl NativeHarness {
             exclude_slash_tmp: true,
         };
         let sandbox =
-            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, self.workspace.clone());
-        let sandbox =
-            if self.environment.is_remote() || self.environment.local_runtime_paths().is_some() {
-                Some(&sandbox)
-            } else {
-                None
-            };
+            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, workspace.clone());
+        let sandbox = if self.environment.is_remote()
+            || self
+                .environment
+                .local_runtime_paths()
+                .is_some_and(|p| p.codex_linux_sandbox_exe.is_some())
+        {
+            Some(&sandbox)
+        } else {
+            None
+        };
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let result = codex_apply_patch::apply_patch(
             &args.input,
-            &self.workspace,
+            &workspace,
             &mut stdout,
             &mut stderr,
             self.environment.get_filesystem().as_ref(),
@@ -469,20 +559,24 @@ impl NativeHarness {
     }
 
     async fn view_image(&self, args: ViewImageArgs) -> anyhow::Result<CallToolResult> {
+        let workspace = self.workspace_or_error().await?;
         let policy = SandboxPolicy::ReadOnly {
             network_access: false,
         };
         let sandbox =
-            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, self.workspace.clone());
-        let sandbox =
-            if self.environment.is_remote() || self.environment.local_runtime_paths().is_some() {
-                Some(&sandbox)
-            } else {
-                None
-            };
+            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, workspace.clone());
+        let sandbox = if self.environment.is_remote()
+            || self
+                .environment
+                .local_runtime_paths()
+                .is_some_and(|p| p.codex_linux_sandbox_exe.is_some())
+        {
+            Some(&sandbox)
+        } else {
+            None
+        };
         let fs = self.environment.get_filesystem();
-        let path =
-            resolve_workspace_path(fs.as_ref(), &self.workspace, &args.path, sandbox).await?;
+        let path = resolve_workspace_path(fs.as_ref(), &workspace, &args.path, sandbox).await?;
         let data = fs.read_file(&path, sandbox).await?;
         let mime = mime_guess::from_path(path.as_path())
             .first_raw()
@@ -501,20 +595,24 @@ impl NativeHarness {
     }
 
     async fn read_file(&self, args: ReadFileArgs) -> anyhow::Result<CallToolResult> {
+        let workspace = self.workspace_or_error().await?;
         let policy = SandboxPolicy::ReadOnly {
             network_access: false,
         };
         let sandbox =
-            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, self.workspace.clone());
-        let sandbox =
-            if self.environment.is_remote() || self.environment.local_runtime_paths().is_some() {
-                Some(&sandbox)
-            } else {
-                None
-            };
+            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, workspace.clone());
+        let sandbox = if self.environment.is_remote()
+            || self
+                .environment
+                .local_runtime_paths()
+                .is_some_and(|p| p.codex_linux_sandbox_exe.is_some())
+        {
+            Some(&sandbox)
+        } else {
+            None
+        };
         let fs = self.environment.get_filesystem();
-        let path =
-            resolve_workspace_path(fs.as_ref(), &self.workspace, &args.path, sandbox).await?;
+        let path = resolve_workspace_path(fs.as_ref(), &workspace, &args.path, sandbox).await?;
         let data = fs.read_file_text(&path, sandbox).await?;
         let lines: Vec<&str> = data.lines().collect();
         let total_lines = lines.len();
@@ -542,6 +640,7 @@ impl NativeHarness {
     }
 
     async fn search_code(&self, args: SearchCodeArgs) -> anyhow::Result<CallToolResult> {
+        let workspace = self.workspace_or_error().await?;
         if args.query.is_empty() {
             return Ok(text_result(json!({"matches": []})));
         }
@@ -555,7 +654,7 @@ impl NativeHarness {
         cmd.arg("--");
         cmd.arg(&args.query);
         cmd.arg(".");
-        cmd.current_dir(self.workspace.as_path());
+        cmd.current_dir(workspace.as_path());
         let output = cmd.output().context("failed to run grep")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut matches = Vec::new();
@@ -583,14 +682,9 @@ impl NativeHarness {
     }
 
     async fn git_status(&self, _args: GitStatusArgs) -> anyhow::Result<CallToolResult> {
-        let output = std::process::Command::new("git")
-            .arg("status")
-            .arg("--porcelain")
-            .current_dir(self.workspace.as_path())
-            .output()
-            .context("failed to run git status")?;
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let result = self.git_raw("status --porcelain", None).await?;
+        let stdout = result.0;
+        let stderr = result.1;
         let entries: Vec<Value> = stdout
             .lines()
             .filter_map(|line| {
@@ -615,43 +709,45 @@ impl NativeHarness {
     }
 
     async fn git_diff(&self, args: GitDiffArgs) -> anyhow::Result<CallToolResult> {
-        let mut cmd = std::process::Command::new("git");
-        cmd.arg("diff");
+        let mut command = "diff".to_string();
         if args.staged {
-            cmd.arg("--staged");
+            command.push_str(" --staged");
         }
         if let Some(paths) = &args.paths {
-            cmd.arg("--");
+            command.push_str(" --");
             for p in paths {
-                cmd.arg(p);
+                command.push(' ');
+                command.push_str(&shell_escape(p));
             }
         }
-        cmd.current_dir(self.workspace.as_path());
-        let output = cmd.output().context("failed to run git diff")?;
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let result = self.git_raw(&command, None).await?;
         Ok(text_result(json!({
-            "diff": stdout,
-            "stderr": stderr,
+            "diff": result.0,
+            "stderr": result.1,
         })))
     }
 
     async fn list_directory(&self, args: ListDirectoryArgs) -> anyhow::Result<CallToolResult> {
+        let workspace = self.workspace_or_error().await?;
         let policy = SandboxPolicy::ReadOnly {
             network_access: false,
         };
         let sandbox =
-            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, self.workspace.clone());
-        let sandbox =
-            if self.environment.is_remote() || self.environment.local_runtime_paths().is_some() {
-                Some(&sandbox)
-            } else {
-                None
-            };
+            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, workspace.clone());
+        let sandbox = if self.environment.is_remote()
+            || self
+                .environment
+                .local_runtime_paths()
+                .is_some_and(|p| p.codex_linux_sandbox_exe.is_some())
+        {
+            Some(&sandbox)
+        } else {
+            None
+        };
         let fs = self.environment.get_filesystem();
         let path = match &args.path {
-            Some(p) => resolve_workspace_path(fs.as_ref(), &self.workspace, p, sandbox).await?,
-            None => self.workspace.clone(),
+            Some(p) => resolve_workspace_path(fs.as_ref(), &workspace, p, sandbox).await?,
+            None => workspace.clone(),
         };
         let entries = fs.read_directory(&path, sandbox).await?;
         let listing: Vec<Value> = entries
@@ -743,30 +839,336 @@ impl NativeHarness {
             "all_done": pending_count == 0,
         })))
     }
+
+    async fn setup_workspace(&self, args: SetupWorkspaceArgs) -> anyhow::Result<CallToolResult> {
+        let workspace_result = do_setup_workspace(
+            &self.workspace_base,
+            &self.client_id,
+            &args.source,
+            args.name.as_deref(),
+            args.timeout_ms,
+        )
+        .await?;
+        let mut guard = self.current_workspace.write().await;
+        *guard = Some(AbsolutePathBuf::from_absolute_path(
+            &workspace_result.workspace_root,
+        )?);
+        Ok(text_result(json!({
+            "workspace_root": workspace_result.workspace_root,
+            "source": workspace_result.source,
+            "action": workspace_result.action,
+        })))
+    }
+
+    async fn git_tool(&self, args: GitToolArgs) -> anyhow::Result<CallToolResult> {
+        let workspace = self.workspace_or_error().await?;
+        let result = self
+            .run_sandboxed_git(
+                &workspace,
+                &args.command,
+                args.timeout_ms,
+                GitSandboxMode::Unsandboxed,
+            )
+            .await?;
+        // Writable git commands cannot run inside the workspace-write sandbox
+        // because the upstream sandbox protects .git/ metadata under a writable
+        // workspace root. They run unsandboxed with outbound subcommands blocked
+        // by the parser and no declared network access.
+        Ok(text_result(json!({
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.exit_code,
+        })))
+    }
+
+    async fn git_raw(
+        &self,
+        command: &str,
+        timeout_ms: Option<u64>,
+    ) -> anyhow::Result<(String, String)> {
+        let workspace = self.workspace_or_error().await?;
+        let result = self
+            .run_sandboxed_git(&workspace, command, timeout_ms, GitSandboxMode::ReadOnly)
+            .await?;
+        Ok((result.stdout, result.stderr))
+    }
+
+    async fn git_commit(&self, args: GitCommitArgs) -> anyhow::Result<CallToolResult> {
+        let workspace = self.workspace_or_error().await?;
+        // Ensure git has an identity in this repo so commits succeed without
+        // relying on global user configuration.
+        let _ = self
+            .run_sandboxed_git(
+                &workspace,
+                "config user.email chatcodex@example.invalid",
+                Some(10_000),
+                GitSandboxMode::Unsandboxed,
+            )
+            .await;
+        let _ = self
+            .run_sandboxed_git(
+                &workspace,
+                "config user.name ChatCodex",
+                Some(10_000),
+                GitSandboxMode::Unsandboxed,
+            )
+            .await;
+        let mut command = format!("commit -m {}", shell_escape(&args.message));
+        if args.allow_empty {
+            command.push_str(" --allow-empty");
+        }
+        let result = self
+            .run_sandboxed_git(
+                &workspace,
+                &command,
+                args.timeout_ms,
+                GitSandboxMode::Unsandboxed,
+            )
+            .await?;
+        Ok(text_result(json!({
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.exit_code,
+        })))
+    }
+
+    async fn git_branch(&self, args: GitBranchArgs) -> anyhow::Result<CallToolResult> {
+        let workspace = self.workspace_or_error().await?;
+        let mut command = format!("branch {}", shell_escape(&args.name));
+        if args.force {
+            command.push_str(" --force");
+        }
+        if let Some(start_point) = args.start_point {
+            command.push(' ');
+            command.push_str(&shell_escape(&start_point));
+        }
+        let result = self
+            .run_sandboxed_git(
+                &workspace,
+                &command,
+                args.timeout_ms,
+                GitSandboxMode::Unsandboxed,
+            )
+            .await?;
+        Ok(text_result(json!({
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.exit_code,
+        })))
+    }
+
+    async fn git_checkout(&self, args: GitCheckoutArgs) -> anyhow::Result<CallToolResult> {
+        let workspace = self.workspace_or_error().await?;
+        let mut command = String::from("checkout");
+        if args.create_branch {
+            command.push_str(" -b");
+        }
+        command.push(' ');
+        command.push_str(&shell_escape(&args.target));
+        let result = self
+            .run_sandboxed_git(
+                &workspace,
+                &command,
+                args.timeout_ms,
+                GitSandboxMode::Unsandboxed,
+            )
+            .await?;
+        Ok(text_result(json!({
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.exit_code,
+        })))
+    }
+
+    /// Run a git command through the exec-server sandbox.
+    ///
+    /// ReadOnly mode applies the same filesystem policy as .
+    /// WorkspaceWrite mode applies the same policy as  so that
+    /// local git metadata writes (commit, branch, checkout) are allowed.
+    async fn run_sandboxed_git(
+        &self,
+        workspace: &AbsolutePathBuf,
+        command: &str,
+        timeout_ms: Option<u64>,
+        mode: GitSandboxMode,
+    ) -> anyhow::Result<GitCommandOutput> {
+        if is_outbound_git_command(command) {
+            anyhow::bail!("outbound git command blocked by policy: {command}");
+        }
+        let argv = shlex::split(command)
+            .unwrap_or_else(|| command.split_whitespace().map(String::from).collect());
+        self.run_sandboxed_git_with_args(workspace, argv, timeout_ms, mode)
+            .await
+    }
+
+    async fn run_sandboxed_git_with_args(
+        &self,
+        workspace: &AbsolutePathBuf,
+        argv: Vec<String>,
+        timeout_ms: Option<u64>,
+        mode: GitSandboxMode,
+    ) -> anyhow::Result<GitCommandOutput> {
+        let (permissions, sandbox) = match mode {
+            GitSandboxMode::ReadOnly => {
+                let policy = SandboxPolicy::ReadOnly {
+                    network_access: false,
+                };
+                (
+                    PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                        &policy,
+                        workspace.as_path(),
+                    ),
+                    platform_sandbox()?,
+                )
+            }
+            GitSandboxMode::Unsandboxed => {
+                // The upstream workspace-write sandbox always protects .git/
+                // metadata under a writable workspace root, so git metadata
+                // writes cannot be expressed there. Run git unsandboxed with
+                // no declared network access; outbound subcommands are still
+                // rejected by the parser.
+                let policy = SandboxPolicy::ExternalSandbox {
+                    network_access: codex_protocol::protocol::NetworkAccess::Restricted,
+                };
+                (
+                    PermissionProfile::from_legacy_sandbox_policy(&policy),
+                    SandboxType::None,
+                )
+            }
+        };
+        let (file_system_sandbox_policy, _) = permissions.to_runtime_permissions();
+        let transformed = SandboxManager::new().transform(SandboxTransformRequest {
+            command: SandboxCommand {
+                program: "git".into(),
+                args: argv,
+                cwd: workspace.clone(),
+                env: HashMap::new(),
+                additional_permissions: None,
+            },
+            permissions: &permissions,
+            sandbox,
+            enforce_managed_network: false,
+            network: None,
+            sandbox_policy_cwd: workspace.as_path(),
+            codex_linux_sandbox_exe: self.linux_sandbox_exe.as_deref(),
+            use_legacy_landlock: false,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
+            windows_sandbox_private_desktop: false,
+        })?;
+        debug_assert_eq!(
+            transformed.file_system_sandbox_policy,
+            file_system_sandbox_policy
+        );
+
+        let process_id = ProcessId::new(Uuid::new_v4().to_string());
+        let started = self
+            .environment
+            .get_exec_backend()
+            .start(ExecParams {
+                process_id: process_id.clone(),
+                argv: transformed.command,
+                cwd: transformed.cwd.into_path_buf(),
+                env_policy: None,
+                env: transformed.env,
+                tty: false,
+                pipe_stdin: false,
+                arg0: transformed.arg0,
+            })
+            .await?;
+        let yield_ms = timeout_ms.unwrap_or(30_000).min(MAX_YIELD_MS);
+        let (stdout, stderr, exit_code) =
+            read_process_streams(Arc::clone(&started.process), yield_ms).await?;
+        Ok(GitCommandOutput {
+            stdout,
+            stderr,
+            exit_code,
+        })
+    }
 }
 
+async fn read_process_streams(
+    process: Arc<dyn ExecProcess>,
+    yield_time_ms: u64,
+) -> anyhow::Result<(String, String, i32)> {
+    use codex_exec_server::ExecOutputStream;
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_millis(yield_time_ms.min(MAX_YIELD_MS));
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut next_seq: Option<u64> = None;
+    let mut exit_code: Option<i32> = None;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let response = process
+            .read(
+                next_seq,
+                Some(MAX_OUTPUT_BYTES),
+                Some(remaining.as_millis().max(1) as u64),
+            )
+            .await?;
+        for chunk in &response.chunks {
+            match chunk.stream {
+                ExecOutputStream::Stderr => stderr.extend(chunk.chunk.clone().into_inner()),
+                _ => stdout.extend(chunk.chunk.clone().into_inner()),
+            }
+        }
+        if response.exit_code.is_some() {
+            exit_code = response.exit_code;
+        }
+        next_seq = Some(response.next_seq);
+        if (response.exited && response.chunks.is_empty())
+            || tokio::time::Instant::now() >= deadline
+        {
+            break;
+        }
+    }
+    Ok((
+        String::from_utf8_lossy(&stdout).into_owned(),
+        String::from_utf8_lossy(&stderr).into_owned(),
+        exit_code.unwrap_or(-1),
+    ))
+}
+
+#[allow(unused_assignments)]
 async fn read_process(
     process: Arc<dyn ExecProcess>,
     after_seq: Option<u64>,
     yield_time_ms: u64,
 ) -> anyhow::Result<ProcessRead> {
-    let response = process
-        .read(
-            after_seq,
-            Some(MAX_OUTPUT_BYTES),
-            Some(yield_time_ms.min(MAX_YIELD_MS)),
-        )
-        .await?;
-    let output = response
-        .chunks
-        .into_iter()
-        .flat_map(|chunk| chunk.chunk.into_inner())
-        .collect::<Vec<_>>();
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_millis(yield_time_ms.min(MAX_YIELD_MS));
+    let mut output = Vec::new();
+    let mut next_seq = after_seq;
+    let mut exit_code: Option<i32> = None;
+    let mut exited = false;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let response = process
+            .read(
+                next_seq,
+                Some(MAX_OUTPUT_BYTES),
+                Some(remaining.as_millis().max(1) as u64),
+            )
+            .await?;
+        for chunk in &response.chunks {
+            output.extend(chunk.chunk.clone().into_inner());
+        }
+        if response.exit_code.is_some() {
+            exit_code = response.exit_code;
+        }
+        exited = response.exited;
+        next_seq = Some(response.next_seq);
+        if (response.exited && response.chunks.is_empty())
+            || tokio::time::Instant::now() >= deadline
+        {
+            break;
+        }
+    }
     Ok(ProcessRead {
         output: String::from_utf8_lossy(&output).into_owned(),
-        exited: response.exited,
-        exit_code: response.exit_code,
-        next_seq: response.next_seq,
+        exited,
+        exit_code,
+        next_seq: next_seq.unwrap_or(0),
     })
 }
 
@@ -807,6 +1209,326 @@ fn text_result(value: Value) -> CallToolResult {
 
 fn error_result(message: String) -> CallToolResult {
     CallToolResult::error(vec![Content::text(message)])
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GitSandboxMode {
+    ReadOnly,
+    Unsandboxed,
+}
+
+#[derive(Debug)]
+struct SetupWorkspaceResult {
+    workspace_root: PathBuf,
+    source: String,
+    action: String,
+}
+
+fn is_allowed_git_scheme(scheme: &str) -> bool {
+    matches!(scheme, "https" | "http" | "ssh" | "git+https" | "git+ssh")
+}
+
+fn sanitize_workspace_name(name: &str) -> anyhow::Result<String> {
+    if name.is_empty() {
+        anyhow::bail!("workspace name must not be empty");
+    }
+    if name.contains("..") || name.contains('/') || name.contains('\\') || name.starts_with('/') {
+        anyhow::bail!("workspace name must not contain path separators or '..'");
+    }
+    let sanitized = name
+        .replace(".git", "")
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let sanitized = sanitized
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if sanitized.is_empty() {
+        anyhow::bail!("workspace name is empty after sanitization");
+    }
+    Ok(sanitized)
+}
+
+fn derive_workspace_name(source: &str) -> anyhow::Result<String> {
+    if source == "sandbox" {
+        return Ok("sandbox".to_string());
+    }
+    let url_str = source.strip_prefix("git+").unwrap_or(source);
+    let url = url_str.parse::<url::Url>().context("invalid git URL")?;
+    let path = url.path();
+    let basename = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("repo")
+        .to_string();
+    sanitize_workspace_name(&basename)
+}
+
+async fn do_setup_workspace(
+    workspace_base: &AbsolutePathBuf,
+    client_id: &str,
+    source: &str,
+    name: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<SetupWorkspaceResult> {
+    let name = match name {
+        Some(n) => sanitize_workspace_name(n)?,
+        None => derive_workspace_name(source)?,
+    };
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(60_000).clamp(1_000, 120_000));
+
+    if source == "sandbox" {
+        let target = workspace_base
+            .as_path()
+            .join("clients")
+            .join(client_id)
+            .join("sandboxes")
+            .join(&name);
+        tokio::fs::create_dir_all(&target)
+            .await
+            .context("failed to create sandbox directory")?;
+        let git_dir = target.join(".git");
+        let existed = git_dir.exists();
+        if !existed {
+            run_git_command(&target, "init", Some(30_000))
+                .await
+                .context("failed to initialize git repo in sandbox")?;
+        }
+        let action = if existed {
+            "existing".to_string()
+        } else {
+            "created".to_string()
+        };
+        return Ok(SetupWorkspaceResult {
+            workspace_root: target,
+            source: source.to_string(),
+            action,
+        });
+    }
+
+    let url_str = source.strip_prefix("git+").unwrap_or(source);
+    let url = url_str.parse::<url::Url>().context("invalid git URL")?;
+    if !is_allowed_git_scheme(url.scheme()) {
+        anyhow::bail!("git URL scheme '{}' is not allowed", url.scheme());
+    }
+
+    let target = workspace_base
+        .as_path()
+        .join("clients")
+        .join(client_id)
+        .join("repos")
+        .join(&name);
+
+    if target.exists() {
+        let origin = run_git_command(&target, "remote get-url origin", Some(30_000))
+            .await
+            .context("failed to verify existing repo origin")?;
+        if origin.exit_code != 0 {
+            anyhow::bail!(
+                "workspace {} exists but is not a valid git repository",
+                target.display()
+            );
+        }
+        let current_origin = origin.stdout.trim();
+        if current_origin != url_str {
+            anyhow::bail!(
+                "workspace {} already exists and its origin remote ({}) does not match {}",
+                target.display(),
+                current_origin,
+                url_str
+            );
+        }
+        return Ok(SetupWorkspaceResult {
+            workspace_root: target,
+            source: source.to_string(),
+            action: "existing".to_string(),
+        });
+    }
+
+    let parent = target
+        .parent()
+        .context("target path has no parent directory")?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .context("failed to create repo parent directory")?;
+
+    let mut retries = 0;
+    let max_retries = 3;
+    let mut delays = [1_000, 2_000, 4_000].iter();
+    loop {
+        let result = run_git_command_with_args(
+            parent,
+            vec![
+                "clone".to_string(),
+                source.to_string(),
+                target.to_string_lossy().to_string(),
+            ],
+            Some(timeout.as_millis() as u64),
+        )
+        .await;
+
+        match result {
+            Ok(output) if output.exit_code == 0 => {
+                return Ok(SetupWorkspaceResult {
+                    workspace_root: target,
+                    source: source.to_string(),
+                    action: "cloned".to_string(),
+                });
+            }
+            Ok(output) => {
+                if retries >= max_retries || !is_retriable_git_error(&output.stderr) {
+                    anyhow::bail!(
+                        "git clone failed (exit {}): {}. stderr: {}",
+                        output.exit_code,
+                        source,
+                        output.stderr
+                    );
+                }
+            }
+            Err(error) => {
+                if retries >= max_retries {
+                    return Err(error.context(format!(
+                        "git clone failed after {max_retries} retries: {source}"
+                    )));
+                }
+            }
+        }
+        retries += 1;
+        if let Some(&delay) = delays.next() {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+    }
+}
+
+fn is_retriable_git_error(stderr: &str) -> bool {
+    let text = stderr.to_lowercase();
+    text.contains("429")
+        || ["500", "502", "503", "504", "507", "508", "509"]
+            .iter()
+            .any(|code| text.contains(code))
+        || text.contains("timeout")
+        || text.contains("timed out")
+        || text.contains("connection reset")
+}
+
+#[derive(Debug)]
+struct GitCommandOutput {
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+}
+
+async fn run_git_command(
+    cwd: &Path,
+    command: &str,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<GitCommandOutput> {
+    if is_outbound_git_command(command) {
+        anyhow::bail!("outbound git command blocked by policy: {command}");
+    }
+    let argv = shlex::split(command)
+        .unwrap_or_else(|| command.split_whitespace().map(String::from).collect());
+    run_git_command_with_args(cwd, argv, timeout_ms).await
+}
+
+fn is_outbound_git_command(command: &str) -> bool {
+    let trimmed = command.trim();
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    if words.is_empty() {
+        return false;
+    }
+    match words[0] {
+        "push" | "fetch" | "pull" | "clone" | "ls-remote" => return true,
+        "remote" if words.len() >= 3 && (words[1] == "add" || words[1] == "set-url") => {
+            return true;
+        }
+        "submodule" if words.iter().any(|w| w == &"update") => return true,
+        _ => {}
+    }
+    false
+}
+
+async fn run_git_command_with_args(
+    cwd: &Path,
+    argv: Vec<String>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<GitCommandOutput> {
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.args(&argv).current_dir(cwd);
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000).clamp(1_000, 120_000));
+    let output = tokio::time::timeout(timeout, cmd.output())
+        .await
+        .context("git command timed out")?
+        .context("failed to execute git")?;
+    Ok(GitCommandOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code().unwrap_or(-1),
+    })
+}
+
+fn shell_escape(s: &str) -> String {
+    if s.is_empty()
+        || s.chars()
+            .any(|c| matches!(c, ' ' | '\'' | '"' | '$' | '\\'))
+    {
+        format!("'{}'", s.replace('\'', "'\''"))
+    } else {
+        s.to_string()
+    }
+}
+
+fn validate_runtime(
+    workspace_base: &AbsolutePathBuf,
+    linux_sandbox_exe: Option<&Path>,
+) -> anyhow::Result<()> {
+    let bwrap_ok = linux_sandbox_exe
+        .map(Path::is_file)
+        .unwrap_or_else(|| codex_sandboxing::find_system_bwrap_in_path().is_some());
+    if !bwrap_ok {
+        anyhow::bail!(
+            "Bubblewrap is unavailable: no system bwrap on PATH and no bundled \n             codex-resources/bwrap binary. Install bubblewrap in the runtime image \n             or bundle the helper."
+        );
+    }
+    let base = workspace_base.as_path();
+    if !base.exists() || !base.is_dir() {
+        anyhow::bail!(
+            "Workspace base {} does not exist or is not a directory. \n             Mount a persistent directory at /workspaces.",
+            base.display()
+        );
+    }
+    let test_file = base.join(".chatcodex-write-test");
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&test_file)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&test_file);
+        }
+        Err(error) => {
+            anyhow::bail!(
+                "Workspace base {} is not writable: {error}. \n                 Mount a persistent directory at /workspaces.",
+                base.display()
+            );
+        }
+    }
+    if let Some(path) = linux_sandbox_exe {
+        tracing::info!(bwrap = %path.display(), "using bundled bubblewrap");
+    } else {
+        tracing::info!("using system bubblewrap");
+    }
+    Ok(())
 }
 
 fn tool_catalog() -> anyhow::Result<Vec<Tool>> {
@@ -854,16 +1576,46 @@ fn tool_catalog() -> anyhow::Result<Vec<Tool>> {
             json!({"type":"object","properties":{"matches":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"line":{"type":"integer"},"snippet":{"type":"string"}},"required":["path","line","snippet"],"additionalProperties":false}}},"required":["matches"],"additionalProperties":false}),
         ),
         (
+            "setup_workspace",
+            "Prepare the workspace for this client. Provide a git URL to clone a repository, or pass 'sandbox' for a persistent scratch directory with an initialized git repo.",
+            json!({"type":"object","properties":{"source":{"type":"string"},"name":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"required":["source"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"workspace_root":{"type":"string"},"source":{"type":"string"},"action":{"type":"string"}},"required":["workspace_root","source","action"],"additionalProperties":false}),
+        ),
+        (
+            "git",
+            "Run a local-only git command in the workspace. Outbound network operations (push, fetch, pull, clone, ls-remote, remote add/set-url, submodule update --init) are blocked by policy. Writable git commands run unsandboxed with declared network access restricted; read-only git_status and git_diff remain sandboxed.",
+            json!({"type":"object","properties":{"command":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"required":["command"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"stdout":{"type":"string"},"stderr":{"type":"string"},"exit_code":{"type":"integer"}},"required":["stdout","stderr","exit_code"],"additionalProperties":false}),
+        ),
+        (
             "git_status",
-            "Show the working tree status (git status --porcelain).",
+            "Show workspace status (git status --porcelain). Runs in the read-only sandbox.",
             json!({"type":"object","properties":{},"additionalProperties":false}),
             json!({"type":"object","properties":{"entries":{"type":"array","items":{"type":"object","properties":{"status":{"type":"string"},"path":{"type":"string"}},"required":["status","path"],"additionalProperties":false}},"stderr":{"type":"string"}},"required":["entries","stderr"],"additionalProperties":false}),
         ),
         (
             "git_diff",
-            "Show workspace diff (git diff).",
+            "Show workspace diff (git diff). Runs in the read-only sandbox.",
             json!({"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}},"staged":{"type":"boolean"}},"additionalProperties":false}),
             json!({"type":"object","properties":{"diff":{"type":"string"},"stderr":{"type":"string"}},"required":["diff","stderr"],"additionalProperties":false}),
+        ),
+        (
+            "git_commit",
+            "Create a git commit in the workspace. Runs unsandboxed with outbound network operations blocked; use only for local metadata writes.",
+            json!({"type":"object","properties":{"message":{"type":"string"},"allow_empty":{"type":"boolean"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"required":["message"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"stdout":{"type":"string"},"stderr":{"type":"string"},"exit_code":{"type":"integer"}},"required":["stdout","stderr","exit_code"],"additionalProperties":false}),
+        ),
+        (
+            "git_branch",
+            "Create or move a git branch in the workspace. Runs unsandboxed with outbound network operations blocked; use only for local metadata writes.",
+            json!({"type":"object","properties":{"name":{"type":"string"},"start_point":{"type":"string"},"force":{"type":"boolean"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"required":["name"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"stdout":{"type":"string"},"stderr":{"type":"string"},"exit_code":{"type":"integer"}},"required":["stdout","stderr","exit_code"],"additionalProperties":false}),
+        ),
+        (
+            "git_checkout",
+            "Switch branches in the workspace. Runs unsandboxed with outbound network operations blocked; use only for local metadata writes.",
+            json!({"type":"object","properties":{"target":{"type":"string"},"create_branch":{"type":"boolean"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"required":["target"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"stdout":{"type":"string"},"stderr":{"type":"string"},"exit_code":{"type":"integer"}},"required":["stdout","stderr","exit_code"],"additionalProperties":false}),
         ),
         (
             "list_directory",
@@ -937,6 +1689,31 @@ fn tool_annotations(name: &str) -> anyhow::Result<ToolAnnotations> {
             .read_only(true)
             .destructive(false)
             .idempotent(true)
+            .open_world(false),
+        "setup_workspace" => ToolAnnotations::with_title("Setup workspace")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(true),
+        "git" => ToolAnnotations::with_title("Run git command")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+        "git_commit" => ToolAnnotations::with_title("Git commit")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+        "git_branch" => ToolAnnotations::with_title("Git branch")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+        "git_checkout" => ToolAnnotations::with_title("Git checkout")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
             .open_world(false),
         "list_directory" => ToolAnnotations::with_title("List directory")
             .read_only(true)
@@ -1500,8 +2277,13 @@ mod tests {
                 "view_image",
                 "read_file",
                 "search_code",
+                "setup_workspace",
+                "git",
                 "git_status",
                 "git_diff",
+                "git_commit",
+                "git_branch",
+                "git_checkout",
                 "list_directory",
                 "todo",
             ]
@@ -1615,6 +2397,11 @@ mod tests {
         )
         .await
         .expect("server");
+        server
+            .harness
+            .call("setup_workspace", serde_json::json!({"source": "sandbox"}))
+            .await
+            .expect("setup workspace");
         let result = server
             .harness
             .call(
@@ -1627,7 +2414,16 @@ mod tests {
             .expect("apply patch");
         assert_eq!(result.is_error, Some(false), "{result:?}");
         assert_eq!(
-            std::fs::read_to_string(workspace.path().join("proof.txt")).expect("patched file"),
+            std::fs::read_to_string(
+                workspace
+                    .path()
+                    .join("clients")
+                    .join("default")
+                    .join("sandboxes")
+                    .join("sandbox")
+                    .join("proof.txt")
+            )
+            .expect("patched file"),
             "patched\n"
         );
     }
@@ -1748,5 +2544,394 @@ mod tests {
     #[tokio::test]
     async fn get_prompt_returns_none_for_unknown() {
         assert!(super::get_prompt_content("nonexistent-prompt").is_none());
+    }
+
+    #[tokio::test]
+    async fn git_tool_is_sandboxed_and_separate_stderr() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mut arg0_paths = codex_arg0::Arg0DispatchPaths::default();
+        let self_exe = std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../target/debug/chatcodex-mcp-server"
+        ));
+        arg0_paths.codex_self_exe = Some(self_exe.clone());
+        arg0_paths.codex_linux_sandbox_exe = Some(self_exe);
+        let server = NativeHarnessMcp::new_for_paths(workspace.path(), arg0_paths)
+            .await
+            .expect("server");
+        server
+            .harness
+            .call("setup_workspace", serde_json::json!({"source": "sandbox"}))
+            .await
+            .expect("setup workspace");
+
+        // status runs through the exec-server sandbox and returns structured fields.
+        let result = server
+            .harness
+            .call("git", serde_json::json!({"command": "status --short"}))
+            .await
+            .expect("git status via sandbox");
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert!(parsed.get("stdout").is_some());
+        assert!(parsed.get("stderr").is_some());
+        assert!(parsed.get("exit_code").is_some());
+    }
+
+    #[tokio::test]
+    async fn git_commit_and_branch_update_local_repo() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mut arg0_paths = codex_arg0::Arg0DispatchPaths::default();
+        let self_exe = std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../target/debug/chatcodex-mcp-server"
+        ));
+        arg0_paths.codex_self_exe = Some(self_exe.clone());
+        arg0_paths.codex_linux_sandbox_exe = Some(self_exe);
+        let server = NativeHarnessMcp::new_for_paths(workspace.path(), arg0_paths)
+            .await
+            .expect("server");
+        server
+            .harness
+            .call("setup_workspace", serde_json::json!({"source": "sandbox"}))
+            .await
+            .expect("setup workspace");
+
+        // Create a file via apply_patch so there is something to commit.
+        let patch_result = server
+            .harness
+            .call(
+                "apply_patch",
+                serde_json::json!({
+                    "input": "*** Begin Patch
+*** Add File: hello.txt
++world
+*** End Patch
+"
+                }),
+            )
+            .await
+            .expect("apply patch");
+        assert_eq!(patch_result.is_error, Some(false), "{patch_result:?}");
+
+        // Stage and commit through the writable git tools.
+        let result = server
+            .harness
+            .call("git", serde_json::json!({"command": "add hello.txt"}))
+            .await
+            .expect("git add");
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert_eq!(parsed["exit_code"], 0, "git add failed: {parsed}");
+
+        let result = server
+            .harness
+            .call(
+                "git_commit",
+                serde_json::json!({"message": "initial commit"}),
+            )
+            .await
+            .expect("git commit");
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert_eq!(parsed["exit_code"], 0, "commit failed: {parsed}");
+
+        // Create and checkout a new branch.
+        let result = server
+            .harness
+            .call("git_branch", serde_json::json!({"name": "feature"}))
+            .await
+            .expect("git branch");
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert_eq!(parsed["exit_code"], 0, "branch failed: {parsed}");
+
+        let result = server
+            .harness
+            .call("git_checkout", serde_json::json!({"target": "feature"}))
+            .await
+            .expect("git checkout");
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert_eq!(parsed["exit_code"], 0, "checkout failed: {parsed}");
+
+        // Verify the current branch.
+        let result = server
+            .harness
+            .call(
+                "git",
+                serde_json::json!({"command": "branch --show-current"}),
+            )
+            .await
+            .expect("git branch --show-current");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert_eq!(parsed["stdout"].as_str().unwrap().trim(), "feature");
+    }
+
+    #[tokio::test]
+    async fn setup_workspace_sandbox_initializes_git() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let server = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("server");
+
+        let result = server
+            .harness
+            .call("setup_workspace", serde_json::json!({"source": "sandbox"}))
+            .await
+            .expect("setup workspace");
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert_eq!(parsed["action"], "created");
+        assert!(
+            parsed["workspace_root"]
+                .as_str()
+                .unwrap()
+                .contains("sandboxes")
+        );
+        assert!(
+            std::path::Path::new(parsed["workspace_root"].as_str().unwrap())
+                .join(".git")
+                .exists(),
+            "sandbox should be a git repo"
+        );
+
+        // Second setup of the same sandbox is idempotent and reports existing.
+        let result = server
+            .harness
+            .call("setup_workspace", serde_json::json!({"source": "sandbox"}))
+            .await
+            .expect("setup workspace idempotent");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert_eq!(parsed["action"], "existing");
+    }
+
+    #[tokio::test]
+    async fn tools_require_setup_workspace_first() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let server = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("server");
+
+        let cases: [(&str, serde_json::Value); 6] = [
+            ("read_file", serde_json::json!({"path": "x.txt"})),
+            ("apply_patch", serde_json::json!({"input": ""})),
+            ("exec_command", serde_json::json!({"cmd": "echo x"})),
+            ("git_status", serde_json::json!({})),
+            ("git_diff", serde_json::json!({})),
+            ("git", serde_json::json!({"command": "status"})),
+        ];
+        for (tool, args) in cases {
+            let result = server.harness.call(tool, args).await;
+            assert!(
+                result.is_err() || result.as_ref().unwrap().is_error == Some(true),
+                "{tool} should fail before setup_workspace: {result:?}"
+            );
+            let err_text = match &result {
+                Ok(r) => r.content[0].as_text().unwrap().text.clone(),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                err_text.contains("Workspace not configured"),
+                "{tool} error should mention workspace not configured: {err_text}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn git_status_delegates_to_git_tool() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mut arg0_paths = codex_arg0::Arg0DispatchPaths::default();
+        let self_exe = std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../target/debug/chatcodex-mcp-server"
+        ));
+        arg0_paths.codex_self_exe = Some(self_exe.clone());
+        arg0_paths.codex_linux_sandbox_exe = Some(self_exe);
+        let server = NativeHarnessMcp::new_for_paths(workspace.path(), arg0_paths)
+            .await
+            .expect("server");
+
+        server
+            .harness
+            .call("setup_workspace", serde_json::json!({"source": "sandbox"}))
+            .await
+            .expect("setup workspace");
+
+        let result = server
+            .harness
+            .call("git_status", serde_json::json!({}))
+            .await
+            .expect("git_status");
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert!(parsed["entries"].is_array());
+    }
+
+    #[tokio::test]
+    async fn git_tool_blocks_push() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let server = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("server");
+
+        server
+            .harness
+            .call("setup_workspace", serde_json::json!({"source": "sandbox"}))
+            .await
+            .expect("setup workspace");
+
+        let blocked = [
+            "push origin main",
+            "fetch origin",
+            "pull origin main",
+            "clone https://example.com/repo.git",
+            "ls-remote origin",
+            "remote add origin https://example.com/repo.git",
+            "remote set-url origin https://example.com/repo.git",
+            "submodule update --init",
+        ];
+        for command in blocked {
+            let result = server
+                .harness
+                .call("git", serde_json::json!({"command": command}))
+                .await;
+            assert!(
+                result.is_err() || result.as_ref().unwrap().is_error == Some(true),
+                "git {command} should be blocked: {result:?}"
+            );
+            let err_text = match &result {
+                Ok(r) => r.content[0].as_text().unwrap().text.clone(),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                err_text.contains("blocked by policy"),
+                "git {command} error should mention policy: {err_text}"
+            );
+        }
+    }
+
+    #[test]
+    fn allowed_git_schemes() {
+        for scheme in ["https", "http", "ssh", "git+https", "git+ssh"] {
+            let source = format!("{scheme}://example.com/repo.git");
+            let stripped = source.strip_prefix("git+").unwrap_or(&source);
+            let url = stripped.parse::<url::Url>().unwrap();
+            assert!(
+                super::is_allowed_git_scheme(url.scheme()),
+                "{scheme} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn disallowed_git_schemes() {
+        for scheme in ["file", "ftp", "s3", "data"] {
+            let source = format!("{scheme}://example.com/repo.git");
+            let stripped = source.strip_prefix("git+").unwrap_or(&source);
+            let url = stripped.parse::<url::Url>().unwrap();
+            assert!(
+                !super::is_allowed_git_scheme(url.scheme()),
+                "{scheme} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_name_sanitization() {
+        assert_eq!(super::sanitize_workspace_name("repo.git").unwrap(), "repo");
+        assert_eq!(
+            super::sanitize_workspace_name("my repo").unwrap(),
+            "my-repo"
+        );
+        assert_eq!(
+            super::sanitize_workspace_name("a/../b")
+                .unwrap_err()
+                .to_string()
+                .contains(".."),
+            true
+        );
+        assert!(super::sanitize_workspace_name("").is_err());
+    }
+
+    #[test]
+    fn derive_workspace_name_from_url() {
+        assert_eq!(
+            super::derive_workspace_name("https://github.com/owner/repo.git").unwrap(),
+            "repo"
+        );
+        assert_eq!(
+            super::derive_workspace_name("git+ssh://git@github.com/owner/repo.git").unwrap(),
+            "repo"
+        );
+        assert_eq!(super::derive_workspace_name("sandbox").unwrap(), "sandbox");
+    }
+
+    #[test]
+    fn outbound_git_command_detection() {
+        assert!(super::is_outbound_git_command("push origin main"));
+        assert!(super::is_outbound_git_command("fetch"));
+        assert!(super::is_outbound_git_command("pull origin main"));
+        assert!(super::is_outbound_git_command(
+            "clone https://example.com/repo"
+        ));
+        assert!(super::is_outbound_git_command("ls-remote origin"));
+        assert!(super::is_outbound_git_command(
+            "remote add origin https://example.com"
+        ));
+        assert!(super::is_outbound_git_command(
+            "remote set-url origin https://example.com"
+        ));
+        assert!(super::is_outbound_git_command("submodule update --init"));
+
+        assert!(!super::is_outbound_git_command("status"));
+        assert!(!super::is_outbound_git_command("log --oneline -5"));
+        assert!(!super::is_outbound_git_command("diff --staged"));
+        assert!(!super::is_outbound_git_command("remote -v"));
+    }
+
+    #[tokio::test]
+    async fn workspace_path_construction() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let server = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("server");
+
+        let result = server
+            .harness
+            .call(
+                "setup_workspace",
+                serde_json::json!({
+                    "source": "sandbox",
+                    "name": "my-sandbox"
+                }),
+            )
+            .await
+            .expect("setup workspace");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        let root = parsed["workspace_root"].as_str().unwrap();
+        assert!(root.contains("clients/default/sandboxes/my-sandbox"));
     }
 }

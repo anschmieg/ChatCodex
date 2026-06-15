@@ -120,12 +120,14 @@ ARG UV_VERSION=0.11.18
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        bubblewrap \
         build-essential \
         ca-certificates \
         cmake \
         curl \
         fd-find \
         git \
+        git-lfs \
         gh \
         jq \
         openssh-client \

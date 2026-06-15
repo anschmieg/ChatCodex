@@ -11,6 +11,7 @@ edition = "2024"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+shlex = "2"
 # External
 anyhow = "1"
 axum = { version = "0.8", default-features = false }
@@ -26,6 +27,7 @@ rmcp = { version = "1.7.0", default-features = false, features = [
     "server",
     "transport-streamable-http-server",
 ] }
+url = "2"
 rsa = { version = "0.9", features = ["sha2"] }
 pkcs8 = { version = "0.10", features = ["pem", "alloc"] }
 spki = { version = "0.7", features = ["pem"] }
@@ -49,7 +51,6 @@ tower = { version = "0.5", default-features = false, features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
-url = "2"
 urlencoding = "2.1"
 uuid = { version = "1", features = ["v4"] }
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }

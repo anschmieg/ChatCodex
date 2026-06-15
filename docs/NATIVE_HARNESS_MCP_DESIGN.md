@@ -37,6 +37,17 @@ The MCP catalog is a strict allowlist:
 - `update_plan`
 - `apply_patch`
 - `view_image`
+- `setup_workspace`
+- `git`
+- `git_status`
+- `git_diff`
+ - `git_commit`
+ - `git_branch`
+ - `git_checkout`
+ - `read_file`
+ - `search_code`
+ - `list_directory`
+ - `todo`
 
 Unknown tool names are rejected. Schemas are owned by the ChatCodex adapter so
 upstream catalog changes cannot silently expand the public surface.
@@ -64,16 +75,60 @@ rejected.
 `update_plan` is deterministic in-memory state. It validates that no more than
 one plan item is `in_progress`.
 
+## Workspace Setup
+
+The workspace root is a per-client mutable pointer. Before any filesystem,
+command, or git tool runs, the client must call `setup_workspace` with either
+a git URL or the literal string `"sandbox"`.
+
+Sandbox workspaces are persistent scratch directories under
+`/workspaces/clients/<client_id>/sandboxes/<name>` and are automatically
+initialized as empty git repositories. Cloned repositories live under
+`/workspaces/clients/<client_id>/repos/<name>`. When a target repo directory
+already exists, `setup_workspace` verifies that its `origin` remote matches the
+requested URL and returns it unchanged; a mismatch is a hard error.
+
+Git clone errors are retried with exponential backoff for transient failures
+(HTTP 429, 5xx, timeouts). Authentication, 404, DNS, and scheme errors are
+returned to the client immediately.
+
+## Git Tool Policy
+
+A single generic `git` tool accepts local-only git subcommands. Outbound
+## Git Tool Policy
+
+The generic `git` tool accepts local-only git subcommands. Outbound network
+operations (`push`, `fetch`, `pull`, `clone`, `ls-remote`, `remote add`,
+`remote set-url`, `submodule update --init`) are rejected by the server.
+
+Read-only git tools (`git_status`, `git_diff`, and read-only uses of `git`)
+run through the exec-server read-only filesystem sandbox with no network
+access.
+
+Writable git operations cannot be expressed in the workspace-write sandbox
+because the upstream sandbox protects `.git/` metadata under a writable
+workspace root. The writable git surface (`git` for commands like `add`,
+`rm`, `mv`; plus `git_commit`, `git_branch`, `git_checkout`) therefore runs
+unsandboxed with declared network access restricted and outbound subcommands
+still blocked by the parser. `apply_patch` remains the only path for
+modifying working-tree file contents.
+
 ## Workspace and Container Boundary
 
-The canonical workspace root defaults to `/workspaces`. The deployment mounts
-only the selected host project directory there. `/toolchains` is a persistent
+The canonical workspace base defaults to `/workspaces`. The deployment mounts
+only the selected host directory there. Each client receives a sub-directory
+under `/workspaces/clients/<client_id>/`. `/toolchains` is a persistent
 Docker-managed volume for service state and installed toolchains. No host
 `/data` path or Docker socket is mounted.
 
 The runtime image uses a non-root user, a read-only root filesystem, dropped
 capabilities, and `no-new-privileges`. These container controls are independent
 of the command sandbox and remain required defense in depth.
+
+At startup the server validates that Bubblewrap is available (system `bwrap` or
+a bundled `codex-resources/bwrap` binary) and that the workspace base directory
+exists and is writable. If either check fails, the server exits immediately
+with a descriptive error.
 
 ## Authentication and Transport
 
