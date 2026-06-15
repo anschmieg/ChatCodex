@@ -57,9 +57,11 @@ WORKDIR /src
 # Copy upstream workspace first. ChatCodex depends on it via path deps.
 COPY codex-rs ./codex-rs
 
-# Copy ChatCodex workspace manifest and create stub sources for dependency
-# caching. The real sources are overlaid in a later stage.
+# Copy ChatCodex workspace and crate manifests, then create stub sources for
+# dependency caching. The real sources are overlaid in a later stage.
 COPY chatcodex/Cargo.toml ./chatcodex/Cargo.toml
+COPY chatcodex/crates/mcp-server/Cargo.toml ./chatcodex/crates/mcp-server/Cargo.toml
+COPY chatcodex/crates/oauth/Cargo.toml ./chatcodex/crates/oauth/Cargo.toml
 RUN mkdir -p \
         chatcodex/crates/mcp-server/src \
         chatcodex/crates/oauth/src && \
