@@ -41,8 +41,15 @@ use rmcp::model::GetPromptRequestParams;
 use rmcp::model::GetPromptResult;
 use rmcp::model::JsonObject;
 use rmcp::model::ListPromptsResult;
+use rmcp::model::AnnotateAble;
+use rmcp::model::ListResourcesResult;
+use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListToolsResult;
 use rmcp::model::PaginatedRequestParams;
+use rmcp::model::RawResource;
+use rmcp::model::ReadResourceRequestParams;
+use rmcp::model::ReadResourceResult;
+use rmcp::model::ResourceContents;
 use rmcp::model::Prompt;
 use rmcp::model::PromptMessage;
 use rmcp::model::PromptMessageRole;
@@ -404,16 +411,26 @@ impl NativeHarness {
         let permissions =
             PermissionProfile::from_legacy_sandbox_policy_for_cwd(&policy, workspace.as_path());
         let (file_system_sandbox_policy, _) = permissions.to_runtime_permissions();
+        let sandbox = self.resolve_sandbox_type();
+        let mut cmd_env = HashMap::new();
+        if sandbox != SandboxType::None {
+            if let Some(path) = std::env::var_os("PATH") {
+                cmd_env.insert("PATH".to_string(), path.to_string_lossy().into_owned());
+            }
+            if let Some(home) = std::env::var_os("HOME") {
+                cmd_env.insert("HOME".to_string(), home.to_string_lossy().into_owned());
+            }
+        }
         let transformed = SandboxManager::new().transform(SandboxTransformRequest {
             command: SandboxCommand {
                 program: "bash".into(),
                 args: shell_argv[1..].to_vec(),
                 cwd: workspace.clone(),
-                env: HashMap::new(),
+                env: cmd_env,
                 additional_permissions: None,
             },
             permissions: &permissions,
-            sandbox: platform_sandbox()?,
+            sandbox,
             enforce_managed_network: false,
             network: None,
             sandbox_policy_cwd: workspace.as_path(),
@@ -685,6 +702,10 @@ impl NativeHarness {
         let result = self.git_raw("status --porcelain", None).await?;
         let stdout = result.0;
         let stderr = result.1;
+        let exit_code = result.2;
+        if exit_code != 0 && !stderr.is_empty() {
+            anyhow::bail!("git status failed (exit {exit_code}): {stderr}");
+        }
         let entries: Vec<Value> = stdout
             .lines()
             .filter_map(|line| {
@@ -721,6 +742,10 @@ impl NativeHarness {
             }
         }
         let result = self.git_raw(&command, None).await?;
+        let exit_code = result.2;
+        if exit_code != 0 && !result.1.is_empty() {
+            anyhow::bail!("git diff failed (exit {exit_code}): {}", result.1);
+        }
         Ok(text_result(json!({
             "diff": result.0,
             "stderr": result.1,
@@ -885,12 +910,12 @@ impl NativeHarness {
         &self,
         command: &str,
         timeout_ms: Option<u64>,
-    ) -> anyhow::Result<(String, String)> {
+    ) -> anyhow::Result<(String, String, i32)> {
         let workspace = self.workspace_or_error().await?;
         let result = self
             .run_sandboxed_git(&workspace, command, timeout_ms, GitSandboxMode::ReadOnly)
             .await?;
-        Ok((result.stdout, result.stderr))
+        Ok((result.stdout, result.stderr, result.exit_code))
     }
 
     async fn git_commit(&self, args: GitCommitArgs) -> anyhow::Result<CallToolResult> {
@@ -1018,7 +1043,7 @@ impl NativeHarness {
                         &policy,
                         workspace.as_path(),
                     ),
-                    platform_sandbox()?,
+                    self.resolve_sandbox_type(),
                 )
             }
             GitSandboxMode::Unsandboxed => {
@@ -1036,13 +1061,22 @@ impl NativeHarness {
                 )
             }
         };
+        let mut cmd_env = HashMap::new();
+        if sandbox != SandboxType::None {
+            if let Some(path) = std::env::var_os("PATH") {
+                cmd_env.insert("PATH".to_string(), path.to_string_lossy().into_owned());
+            }
+            if let Some(home) = std::env::var_os("HOME") {
+                cmd_env.insert("HOME".to_string(), home.to_string_lossy().into_owned());
+            }
+        }
         let (file_system_sandbox_policy, _) = permissions.to_runtime_permissions();
         let transformed = SandboxManager::new().transform(SandboxTransformRequest {
             command: SandboxCommand {
                 program: "git".into(),
                 args: argv,
                 cwd: workspace.clone(),
-                env: HashMap::new(),
+                env: cmd_env,
                 additional_permissions: None,
             },
             permissions: &permissions,
@@ -1175,6 +1209,38 @@ async fn read_process(
 fn platform_sandbox() -> anyhow::Result<SandboxType> {
     codex_sandboxing::get_platform_sandbox(false)
         .ok_or_else(|| anyhow::anyhow!("this platform has no supported read-only sandbox"))
+}
+
+impl NativeHarness {
+    fn resolve_sandbox_type(&self) -> SandboxType {
+        if !(self.environment.is_remote()
+            || self
+                .environment
+                .local_runtime_paths()
+                .is_some_and(|p| p.codex_linux_sandbox_exe.is_some()))
+        {
+            return SandboxType::None;
+        }
+        let Ok(sandbox) = platform_sandbox() else {
+            return SandboxType::None;
+        };
+        #[cfg(target_os = "linux")]
+        if sandbox == SandboxType::LinuxSeccomp {
+            if let Some(bwrap_path) = codex_sandboxing::find_system_bwrap_in_path() {
+                let timeout = std::time::Duration::from_millis(500);
+                if !codex_sandboxing::system_bwrap_has_user_namespace_access(
+                    &bwrap_path,
+                    timeout,
+                ) {
+                    tracing::warn!(
+                        "bubblewrap user namespace access unavailable; disabling sandbox"
+                    );
+                    return SandboxType::None;
+                }
+            }
+        }
+        sandbox
+    }
 }
 
 async fn resolve_workspace_path(
@@ -2080,6 +2146,7 @@ impl ServerHandler for NativeHarnessMcp {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()
+                .enable_resources()
                 .build(),
         )
         .with_instructions(SERVER_INSTRUCTIONS)
@@ -2136,6 +2203,67 @@ impl ServerHandler for NativeHarnessMcp {
     ) -> impl std::future::Future<Output = Result<GetPromptResult, McpError>> + Send + '_ {
         let result = get_prompt_content(&request.name);
         async move { result.ok_or_else(|| McpError::invalid_params("unknown prompt", None)) }
+    }
+
+    fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListResourcesResult, McpError>> + Send + '_ {
+        let tools = Arc::clone(&self.tools);
+        async move {
+            let resources: Vec<rmcp::model::Resource> = tools
+                .iter()
+                .map(|tool| {
+                    RawResource::new(
+                        format!("tool:///{}", tool.name),
+                        tool.name.to_string(),
+                    )
+                    .with_description(tool.description.clone().unwrap_or_default())
+                    .no_annotation()
+                })
+                .collect();
+            Ok(ListResourcesResult {
+                resources,
+                next_cursor: None,
+                meta: None,
+            })
+        }
+    }
+
+    fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListResourceTemplatesResult, McpError>> + Send + '_ {
+        async move {
+            Ok(ListResourceTemplatesResult {
+                resource_templates: vec![],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        let uri = &request.uri;
+        if let Some(tool_name) = uri.strip_prefix("tool:///") {
+            let tools = self.tools.as_slice();
+            if let Some(tool) = tools.iter().find(|t| t.name == tool_name) {
+                let content = serde_json::to_string_pretty(tool).unwrap_or_default();
+                return Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                    content, uri,
+                )]));
+            }
+        }
+        Err(McpError::resource_not_found(
+            "resource_not_found",
+            Some(json!({ "uri": uri })),
+        ))
     }
 }
 

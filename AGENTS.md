@@ -8,7 +8,7 @@ The required architecture is:
 
 ChatGPT-hosted model
 → MCP server we own (native Rust)
-→ filesystem / git / patch / test / approvals / sandbox
+→ filesystem / git / patch / sandbox
 
 ## Absolute rules
 
@@ -37,21 +37,31 @@ ChatGPT-hosted model
    - The Rust server is deterministic.
    - All policy enforcement is server-side.
    - All file writes happen through `apply_patch`.
-   - All test execution happens through `run_tests`.
-   - `run_command` is restricted and whitelisted.
+   - `exec_command` runs inside a read-only filesystem sandbox.
 
 4. **Public MCP tool surface**
-   - `codex_prepare_run`
-   - `refresh_run_state`
-   - `replan_run`
-   - `approve_action`
-   - `get_workspace_summary`
-   - `search_code`
-   - `read_file`
-   - `apply_patch`
-   - `run_tests`
-   - `show_diff`
-   - `git_status`
+
+   Workspace lifecycle:
+   - `setup_workspace` — clone a git repo or create a scratch sandbox
+   - `todo` — manage a persistent task checklist
+   - `update_plan` — replace the task plan
+
+   Sandboxed filesystem tools:
+   - `exec_command` — run a bash command in the read-only sandbox
+   - `write_stdin` — write to or poll a running command session
+   - `read_file` — read a file with optional line range
+   - `search_code` — grep workspace source files
+   - `list_directory` — list entries in a workspace directory
+   - `apply_patch` — the *only* workspace write path
+   - `view_image` — display an image from the workspace
+
+   Git tools (unsandboxed for writes, sandboxed for reads):
+   - `git` — run arbitrary local git commands (network blocked)
+   - `git_status` — `git status --porcelain`
+   - `git_diff` — `git diff` with optional paths/staged flag
+   - `git_commit` — create a local commit
+   - `git_branch` — create or move a branch
+   - `git_checkout` — switch branches
 
 ## Architecture
 
@@ -84,15 +94,7 @@ Implement:
 - Cloudflare Access JWT verification
 - Bearer-token middleware
 - Prometheus metrics, structured logging, graceful shutdown
-- Tool handlers for:
-  - `codex_prepare_run`
-  - `get_workspace_summary`
-  - `read_file`
-  - `git_status`
-  - `search_code`
-  - `apply_patch`
-  - `run_tests`
-  - `show_diff`
+- Tool handlers for all tools in the public surface above
 
 ## Quality bar
 

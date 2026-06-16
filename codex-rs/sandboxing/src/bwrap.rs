@@ -71,7 +71,7 @@ fn system_bwrap_warning_for_path(system_bwrap_path: Option<&Path>) -> Option<Str
     None
 }
 
-fn system_bwrap_has_user_namespace_access(system_bwrap_path: &Path, timeout: Duration) -> bool {
+pub fn system_bwrap_has_user_namespace_access(system_bwrap_path: &Path, timeout: Duration) -> bool {
     let mut child = match Command::new(system_bwrap_path)
         .args([
             "--unshare-user",

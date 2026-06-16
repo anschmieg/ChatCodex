@@ -40,10 +40,11 @@ pub(crate) fn exec_bwrap(argv: Vec<String>, preserved_files: Vec<File>) -> ! {
         }
         BubblewrapLauncher::Bundled(launcher) => launcher.exec(argv, preserved_files),
         BubblewrapLauncher::Unavailable => {
-            panic!(
+            eprintln!(
                 "bubblewrap is unavailable: no system bwrap was found on PATH and no bundled \
                  codex-resources/bwrap binary was found next to the Codex executable"
-            )
+            );
+            std::process::exit(1);
         }
     }
 }
@@ -148,7 +149,8 @@ fn exec_system_bwrap(
         libc::execv(program.as_ptr(), argv_ptrs.as_ptr());
     }
     let err = std::io::Error::last_os_error();
-    panic!("failed to exec system bubblewrap {program_path}: {err}");
+    eprintln!("failed to exec system bubblewrap {program_path}: {err}");
+    std::process::exit(1);
 }
 
 #[cfg(test)]

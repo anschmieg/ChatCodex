@@ -9,6 +9,8 @@ pub mod seatbelt;
 #[cfg(target_os = "linux")]
 pub use bwrap::find_system_bwrap_in_path;
 #[cfg(target_os = "linux")]
+pub use bwrap::system_bwrap_has_user_namespace_access;
+#[cfg(target_os = "linux")]
 pub use bwrap::system_bwrap_warning;
 pub use manager::SandboxCommand;
 pub use manager::SandboxExecRequest;
