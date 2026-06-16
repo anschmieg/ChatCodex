@@ -77,6 +77,7 @@ RUN mkdir -p \
 # manifests change, not when ChatCodex source files change.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,sharing=locked,target=/src/chatcodex/target \
     arch="$(dpkg --print-architecture)" && \
     if [ "$arch" = "amd64" ]; then \
         TARGET="aarch64-unknown-linux-gnu"; \
@@ -97,6 +98,7 @@ COPY --from=chatcodex-oauth . /src/chatcodex/crates/oauth
 # previous stage and recompiles only the ChatCodex crates.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,sharing=locked,target=/src/chatcodex/target \
     find \
         chatcodex/crates/mcp-server \
         chatcodex/crates/oauth \
@@ -110,8 +112,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     echo "Building ChatCodex for target: $TARGET on arch: $arch" && \
     cd chatcodex && \
     cargo build --release --target "$TARGET" -p chatcodex-mcp-server && \
-    cp "target/$TARGET/release/chatcodex-mcp-server" /tmp/chatcodex && \
-    rm -rf target/*/release/incremental
+    cp "target/$TARGET/release/chatcodex-mcp-server" /tmp/chatcodex
 
 # ---------- runtime: minimal Ubuntu image ----------
 FROM --platform=$TARGETPLATFORM ubuntu:24.04
