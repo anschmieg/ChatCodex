@@ -1211,6 +1211,19 @@ fn platform_sandbox() -> anyhow::Result<SandboxType> {
         .ok_or_else(|| anyhow::anyhow!("this platform has no supported read-only sandbox"))
 }
 
+#[cfg(target_os = "linux")]
+fn user_namespaces_available() -> bool {
+    match std::process::Command::new("unshare")
+        .args(["-U", "true"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(status) => status.success(),
+        Err(_) => true,
+    }
+}
+
 impl NativeHarness {
     fn resolve_sandbox_type(&self) -> SandboxType {
         if !(self.environment.is_remote()
@@ -1237,6 +1250,11 @@ impl NativeHarness {
                     );
                     return SandboxType::None;
                 }
+            } else if !user_namespaces_available() {
+                tracing::warn!(
+                    "no bwrap on PATH and user namespaces unavailable; disabling sandbox"
+                );
+                return SandboxType::None;
             }
         }
         sandbox

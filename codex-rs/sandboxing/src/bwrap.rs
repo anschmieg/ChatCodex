@@ -27,11 +27,12 @@ pub(crate) const WSL1_BWRAP_WARNING: &str = concat!(
     "because WSL1 cannot create the required user namespaces. ",
     "Use WSL2 for sandboxed shell commands."
 );
-const USER_NAMESPACE_FAILURES: [&str; 4] = [
+const USER_NAMESPACE_FAILURES: [&str; 5] = [
     "loopback: Failed RTM_NEWADDR",
     "loopback: Failed RTM_NEWLINK",
     "setting up uid map: Permission denied",
     "No permissions to create a new namespace",
+    "No permissions to create new namespace",
 ];
 const SYSTEM_BWRAP_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const SYSTEM_BWRAP_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(50);
