@@ -42,10 +42,11 @@ RUN arch="$(dpkg --print-architecture)" && \
 
 # Cross-compilation environment (harmless on native aarch64 builds where
 # aarch64-linux-gnu-gcc is just the native compiler).
-ENV CARGO_BUILD_JOBS=2 \
+ENV CARGO_BUILD_JOBS=4 \
     CARGO_PROFILE_RELEASE_LTO=false \
-    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256 \
     CARGO_PROFILE_RELEASE_OPT_LEVEL=0 \
+    CARGO_TARGET_DIR=/src/chatcodex/target \
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
     CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
     CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
@@ -77,6 +78,7 @@ RUN mkdir -p \
 # manifests change, not when ChatCodex source files change.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/chatcodex/target,sharing=locked \
     arch="$(dpkg --print-architecture)" && \
     if [ "$arch" = "amd64" ]; then \
         TARGET="aarch64-unknown-linux-gnu"; \
@@ -97,6 +99,7 @@ COPY --from=chatcodex-oauth . /src/chatcodex/crates/oauth
 # previous stage and recompiles only the ChatCodex crates.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/chatcodex/target,sharing=locked \
     find \
         chatcodex/crates/mcp-server \
         chatcodex/crates/oauth \
@@ -110,7 +113,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     echo "Building ChatCodex for target: $TARGET on arch: $arch" && \
     cd chatcodex && \
     cargo build --release --target "$TARGET" -p chatcodex-mcp-server && \
-    cp "target/$TARGET/release/chatcodex-mcp-server" /tmp/chatcodex
+    cp "$CARGO_TARGET_DIR/$TARGET/release/chatcodex-mcp-server" /tmp/chatcodex
 
 # ---------- runtime: minimal Ubuntu image ----------
 FROM --platform=$TARGETPLATFORM ubuntu:24.04
