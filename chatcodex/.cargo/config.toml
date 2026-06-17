@@ -1,2 +1,4 @@
 [build]
 jobs = 4
+rustc-wrapper = "sccache"
+target-dir = "/home/t3/.cache/codex-rs/chatcodex-target"
