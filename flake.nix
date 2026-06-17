@@ -79,6 +79,7 @@
             shellHook = ''
               export CC=clang
               export CXX=clang++
+              export CARGO_TARGET_DIR="$HOME/.cache/codex-rs/chatcodex-target"
             '';
           };
         }

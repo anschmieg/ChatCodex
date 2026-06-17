@@ -412,6 +412,11 @@ impl NativeHarness {
             PermissionProfile::from_legacy_sandbox_policy_for_cwd(&policy, workspace.as_path());
         let (file_system_sandbox_policy, _) = permissions.to_runtime_permissions();
         let sandbox = self.resolve_sandbox_type();
+        let no_sandbox_warning = if sandbox == SandboxType::None {
+            Some("Warning: read-only filesystem sandbox is not available in this environment; commands MAY modify the workspace.")
+        } else {
+            None
+        };
         let mut cmd_env = HashMap::new();
         if sandbox != SandboxType::None {
             if let Some(path) = std::env::var_os("PATH") {
@@ -466,6 +471,10 @@ impl NativeHarness {
             args.yield_time_ms.unwrap_or(DEFAULT_YIELD_MS),
         )
         .await?;
+        let output = match no_sandbox_warning {
+            Some(warning) => format!("{warning}\n\n{}", result.output),
+            None => result.output,
+        };
         if !result.exited {
             self.processes.lock().await.insert(
                 process_id.clone(),
@@ -476,7 +485,7 @@ impl NativeHarness {
             );
         }
         Ok(text_result(json!({
-            "output": result.output,
+            "output": output,
             "exit_code": result.exit_code,
             "session_id": if !result.exited {
                 Some(process_id.into_inner())
@@ -497,6 +506,7 @@ impl NativeHarness {
         };
         if !args.chars.is_empty() {
             process.write(args.chars.into_bytes()).await?;
+            tokio::task::yield_now().await;
         }
         let result = read_process(
             Arc::clone(&process),
@@ -543,12 +553,7 @@ impl NativeHarness {
         };
         let sandbox =
             FileSystemSandboxContext::from_legacy_sandbox_policy(policy, workspace.clone());
-        let sandbox = if self.environment.is_remote()
-            || self
-                .environment
-                .local_runtime_paths()
-                .is_some_and(|p| p.codex_linux_sandbox_exe.is_some())
-        {
+        let sandbox = if self.sandbox_available() {
             Some(&sandbox)
         } else {
             None
@@ -582,12 +587,7 @@ impl NativeHarness {
         };
         let sandbox =
             FileSystemSandboxContext::from_legacy_sandbox_policy(policy, workspace.clone());
-        let sandbox = if self.environment.is_remote()
-            || self
-                .environment
-                .local_runtime_paths()
-                .is_some_and(|p| p.codex_linux_sandbox_exe.is_some())
-        {
+        let sandbox = if self.sandbox_available() {
             Some(&sandbox)
         } else {
             None
@@ -618,12 +618,7 @@ impl NativeHarness {
         };
         let sandbox =
             FileSystemSandboxContext::from_legacy_sandbox_policy(policy, workspace.clone());
-        let sandbox = if self.environment.is_remote()
-            || self
-                .environment
-                .local_runtime_paths()
-                .is_some_and(|p| p.codex_linux_sandbox_exe.is_some())
-        {
+        let sandbox = if self.sandbox_available() {
             Some(&sandbox)
         } else {
             None
@@ -662,17 +657,38 @@ impl NativeHarness {
             return Ok(text_result(json!({"matches": []})));
         }
         let max = args.max_results.unwrap_or(50);
-        let mut cmd = std::process::Command::new("grep");
-        cmd.arg("-rn");
-        if let Some(glob) = &args.path_glob {
-            cmd.arg("--include");
-            cmd.arg(glob);
-        }
-        cmd.arg("--");
-        cmd.arg(&args.query);
-        cmd.arg(".");
-        cmd.current_dir(workspace.as_path());
-        let output = cmd.output().context("failed to run grep")?;
+        let output = if let Some(glob) = &args.path_glob {
+            let glob = glob.trim_start_matches("**/");
+            let mut find_cmd = std::process::Command::new("find");
+            find_cmd.arg(".");
+            find_cmd.arg("-type").arg("f");
+            if glob.contains('/') {
+                find_cmd.arg("-path");
+                find_cmd.arg(format!("./{}", glob));
+            } else {
+                find_cmd.arg("-name");
+                find_cmd.arg(glob);
+            }
+            find_cmd
+                .arg("-exec")
+                .arg("grep")
+                .arg("-nH")
+                .arg("--")
+                .arg(&args.query)
+                .arg("{}")
+                .arg("+")
+                .current_dir(workspace.as_path())
+                .output()
+                .context("failed to run find+grep")?
+        } else {
+            let mut cmd = std::process::Command::new("grep");
+            cmd.arg("-rn");
+            cmd.arg("--");
+            cmd.arg(&args.query);
+            cmd.arg(".");
+            cmd.current_dir(workspace.as_path());
+            cmd.output().context("failed to run grep")?
+        };
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut matches = Vec::new();
         for line in stdout.lines() {
@@ -759,12 +775,7 @@ impl NativeHarness {
         };
         let sandbox =
             FileSystemSandboxContext::from_legacy_sandbox_policy(policy, workspace.clone());
-        let sandbox = if self.environment.is_remote()
-            || self
-                .environment
-                .local_runtime_paths()
-                .is_some_and(|p| p.codex_linux_sandbox_exe.is_some())
-        {
+        let sandbox = if self.sandbox_available() {
             Some(&sandbox)
         } else {
             None
@@ -1192,7 +1203,7 @@ async fn read_process(
         }
         exited = response.exited;
         next_seq = Some(response.next_seq);
-        if (response.exited && response.chunks.is_empty())
+        if (response.closed && response.chunks.is_empty())
             || tokio::time::Instant::now() >= deadline
         {
             break;
@@ -1225,6 +1236,10 @@ fn user_namespaces_available() -> bool {
 }
 
 impl NativeHarness {
+    fn sandbox_available(&self) -> bool {
+        self.resolve_sandbox_type() != SandboxType::None
+    }
+
     fn resolve_sandbox_type(&self) -> SandboxType {
         if !(self.environment.is_remote()
             || self
