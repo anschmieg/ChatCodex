@@ -28,6 +28,7 @@ RUN arch="$(dpkg --print-architecture)" && \
             libc6-dev-arm64-cross \
             libcap-dev:arm64 \
             liblzma-dev:arm64 \
+            lld \
             pkg-config \
         && rm -rf /var/lib/apt/lists/* && \
         rustup target add aarch64-unknown-linux-gnu; \
@@ -36,6 +37,7 @@ RUN arch="$(dpkg --print-architecture)" && \
         apt-get install -y --no-install-recommends \
             gcc \
             libcap-dev \
+            lld \
             pkg-config \
         && rm -rf /var/lib/apt/lists/*; \
     fi
@@ -46,12 +48,14 @@ ENV CARGO_BUILD_JOBS=4 \
     CARGO_PROFILE_RELEASE_LTO=false \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256 \
     CARGO_PROFILE_RELEASE_OPT_LEVEL=0 \
+    CARGO_PROFILE_RELEASE_INCREMENTAL=true \
     CARGO_TARGET_DIR=/src/chatcodex/target \
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
     CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
     CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
     PKG_CONFIG_ALLOW_CROSS=1 \
-    PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
+    PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
+    RUSTFLAGS="-C link-arg=-fuse-ld=lld"
 
 WORKDIR /src
 
@@ -78,7 +82,6 @@ RUN mkdir -p \
 # manifests change, not when ChatCodex source files change.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/chatcodex/target,sharing=locked \
     arch="$(dpkg --print-architecture)" && \
     if [ "$arch" = "amd64" ]; then \
         TARGET="aarch64-unknown-linux-gnu"; \
@@ -99,7 +102,6 @@ COPY --from=chatcodex-oauth . /src/chatcodex/crates/oauth
 # previous stage and recompiles only the ChatCodex crates.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/chatcodex/target,sharing=locked \
     find \
         chatcodex/crates/mcp-server \
         chatcodex/crates/oauth \
