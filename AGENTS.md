@@ -96,6 +96,38 @@ Implement:
 - Prometheus metrics, structured logging, graceful shutdown
 - Tool handlers for all tools in the public surface above
 
+## Build pipeline
+
+ChatCodex uses a tuned Cargo build pipeline for <2 min incremental compilation:
+
+### Configuration
+- **Profile** (`chatcodex/Cargo.toml`): `opt-level = 1`, `debug = 1` (line tables), `codegen-units = 256`
+- **Linker**: Default (BFD ld on ARM64; mold preferred on x86_64)
+- **Caching**: `sccache` via `chatcodex/.cargo/config.toml:rustc-wrapper`
+- **Target dir**: Redirected to `~/.cache/codex-rs/chatcodex-target` by `chatcodex/.envrc`
+- **sccache**: 2G limit, stored in `~/.cache/codex-rs/sccache`
+
+### Commands
+```bash
+# Build (in chatcodex/)
+cd chatcodex && cargo build -p chatcodex-mcp-server
+
+# Full clean + rebuild
+scripts/clean-chatcodex-build.sh
+cd chatcodex && cargo build -p chatcodex-mcp-server
+
+# Disk cleanup
+cargo cache -a                          # Remove stale registry/git checkouts
+scripts/clean-chatcodex-build.sh        # Wipe all build artifacts + sccache
+```
+
+### Performance
+| Scenario | Time |
+|----------|------|
+| Full build (cold) | ~13 min |
+| Incremental (1 crate changed) | ~15 s |
+| Incremental (2 crates changed) | ~51 s |
+
 ## Quality bar
 
 - Prefer compiling code over placeholder docs.

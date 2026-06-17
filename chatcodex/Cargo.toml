@@ -5,6 +5,13 @@ members = [
 ]
 resolver = "2"
 
+# Fast dev builds: trade some runtime perf and debug info for <2 min compilation
+[profile.dev]
+opt-level = 1          # Skip -O0; still fast to compile, but ~10x runtime perf for tests
+debug = 1              # Line tables only (saves 30-50% compile time over full debug info)
+codegen-units = 256    # Maximise parallelism across 4 cores
+incremental = true     # Default, explicit for clarity
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
