@@ -90,7 +90,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     fi && \
     echo "Caching dependencies for target: $TARGET on arch: $arch" && \
     cd chatcodex && \
-    cargo build --release --target "$TARGET" -p chatcodex-mcp-server
+    cargo build --release --target "$TARGET" -p chatcodex-mcp-server && \
+    find "$CARGO_TARGET_DIR/$TARGET/release/" -maxdepth 1 -name incremental -prune -exec rm -rf {} + 2>/dev/null && \
+    find "$CARGO_TARGET_DIR/$TARGET/release/deps/" -name "*.o" -delete && \
+    find "$CARGO_TARGET_DIR/$TARGET/release/deps/" -name "*.d" -delete && \
+    echo "Cleaned up intermediate artifacts, layer size reduced"
 
 # Overlay only ChatCodex-owned source. These named contexts are hashed
 # independently from the upstream codex-rs workspace.
