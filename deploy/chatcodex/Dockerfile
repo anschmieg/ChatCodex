@@ -46,7 +46,7 @@ RUN arch="$(dpkg --print-architecture)" && \
 # aarch64-linux-gnu-gcc is just the native compiler).
 ENV CARGO_BUILD_JOBS=4 \
     CARGO_PROFILE_RELEASE_LTO=false \
-    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256 \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
     CARGO_PROFILE_RELEASE_OPT_LEVEL=0 \
     CARGO_TARGET_DIR=/src/chatcodex/target \
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
@@ -79,8 +79,7 @@ RUN mkdir -p \
 # Build upstream dependencies and the ChatCodex dependency closure in one
 # layer. This layer is invalidated only when upstream or workspace
 # manifests change, not when ChatCodex source files change.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN \
     arch="$(dpkg --print-architecture)" && \
     if [ "$arch" = "amd64" ]; then \
         TARGET="aarch64-unknown-linux-gnu"; \
@@ -99,8 +98,7 @@ COPY --from=chatcodex-oauth . /src/chatcodex/crates/oauth
 
 # Build the real binary. Cargo reuses the dependency artifacts from the
 # previous stage and recompiles only the ChatCodex crates.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN \
     find \
         chatcodex/crates/mcp-server \
         chatcodex/crates/oauth \
