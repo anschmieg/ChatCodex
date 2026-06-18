@@ -81,7 +81,6 @@ RUN mkdir -p \
 # manifests change, not when ChatCodex source files change.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/chatcodex/target,sharing=locked \
     arch="$(dpkg --print-architecture)" && \
     if [ "$arch" = "amd64" ]; then \
         TARGET="aarch64-unknown-linux-gnu"; \
@@ -102,7 +101,6 @@ COPY --from=chatcodex-oauth . /src/chatcodex/crates/oauth
 # previous stage and recompiles only the ChatCodex crates.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/chatcodex/target,sharing=locked \
     find \
         chatcodex/crates/mcp-server \
         chatcodex/crates/oauth \
