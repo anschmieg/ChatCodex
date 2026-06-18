@@ -48,14 +48,13 @@ ENV CARGO_BUILD_JOBS=4 \
     CARGO_PROFILE_RELEASE_LTO=false \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256 \
     CARGO_PROFILE_RELEASE_OPT_LEVEL=0 \
-    CARGO_PROFILE_RELEASE_INCREMENTAL=true \
     CARGO_TARGET_DIR=/src/chatcodex/target \
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
     CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
     CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
     PKG_CONFIG_ALLOW_CROSS=1 \
     PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
-    RUSTFLAGS="-C link-arg=-fuse-ld=lld"
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=lld"
 
 WORKDIR /src
 
