@@ -85,4 +85,3 @@ async fn shutdown_signal() {
 
     tracing::info!("shutdown signal received, starting graceful shutdown");
 }
-// warm-cache test
