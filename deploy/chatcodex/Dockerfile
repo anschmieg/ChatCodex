@@ -46,8 +46,9 @@ RUN arch="$(dpkg --print-architecture)" && \
 # aarch64-linux-gnu-gcc is just the native compiler).
 ENV CARGO_BUILD_JOBS=4 \
     CARGO_PROFILE_RELEASE_LTO=false \
-    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256 \
     CARGO_PROFILE_RELEASE_OPT_LEVEL=0 \
+    CARGO_PROFILE_RELEASE_INCREMENTAL=true \
     CARGO_TARGET_DIR=/src/chatcodex/target \
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
     CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
