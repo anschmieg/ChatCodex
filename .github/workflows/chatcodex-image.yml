@@ -142,8 +142,11 @@ jobs:
           # ChatCodex crates are independent contexts, so edits to them do not
           # invalidate the upstream Codex dependency layer.
           cache-from: |
+            type=registry,ref=ghcr.io/anschmieg/chatcodex:build-cache-branch-${{ needs.resolve-ref.outputs.branch_tag }}
+            type=registry,ref=ghcr.io/anschmieg/chatcodex:latest
             type=gha,scope=chatcodex-image-linux-arm64
           cache-to: |
+            type=registry,ref=ghcr.io/anschmieg/chatcodex:build-cache-branch-${{ needs.resolve-ref.outputs.branch_tag }},mode=max
             type=gha,scope=chatcodex-image-linux-arm64,mode=max
           provenance: false
           sbom: false
