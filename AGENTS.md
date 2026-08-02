@@ -62,6 +62,16 @@ ChatGPT-hosted model
    - `git_commit` — create a local commit
    - `git_branch` — create or move a branch
    - `git_checkout` — switch branches
+   - `git_push` — push a branch to the origin remote, optionally opening a PR (the only sanctioned outbound git op; authenticated via server-side `CHATCODEX_GITHUB_TOKEN`)
+
+   Private repositories: `setup_workspace` authenticates clones of
+   `https://github.com/...` URLs using the server-side
+   `CHATCODEX_GITHUB_TOKEN` environment variable (credential-free URLs only —
+   URLs with embedded credentials are rejected). The token is never written
+   to `.git/config` or exposed to the model: it is injected into git via an
+   ephemeral credential helper that reads the environment variable, and
+   `git_push` passes it through the same mechanism. Without the token
+   configured, public-repo behavior is unchanged.
 
 ## Architecture
 

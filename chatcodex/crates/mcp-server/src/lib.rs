@@ -230,6 +230,9 @@ struct SetupWorkspaceArgs {
     name: Option<String>,
     #[serde(default)]
     timeout_ms: Option<u64>,
+    /// Branch, tag, or commit-ish to check out after clone (JSON key: `ref`).
+    #[serde(default, rename = "ref")]
+    ref_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -268,6 +271,23 @@ struct GitCheckoutArgs {
     target: String,
     #[serde(default)]
     create_branch: bool,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitPushArgs {
+    /// Branch to push. Defaults to the current branch.
+    #[serde(default)]
+    branch: Option<String>,
+    /// When true, create a pull request after the push using the gh CLI
+    /// (requires CHATCODEX_GITHUB_TOKEN and a github.com remote).
+    #[serde(default)]
+    create_pr: bool,
+    /// Base branch for the pull request (default: the remote default branch).
+    #[serde(default)]
+    base: Option<String>,
     #[serde(default)]
     timeout_ms: Option<u64>,
 }
@@ -389,6 +409,7 @@ impl NativeHarness {
             "git_commit" => self.git_commit(serde_json::from_value(arguments)?).await,
             "git_branch" => self.git_branch(serde_json::from_value(arguments)?).await,
             "git_checkout" => self.git_checkout(serde_json::from_value(arguments)?).await,
+            "git_push" => self.git_push(serde_json::from_value(arguments)?).await,
             "list_directory" => {
                 self.list_directory(serde_json::from_value(arguments)?)
                     .await
@@ -882,6 +903,7 @@ impl NativeHarness {
             &self.client_id,
             &args.source,
             args.name.as_deref(),
+            args.ref_name.as_deref(),
             args.timeout_ms,
         )
         .await?;
@@ -1014,6 +1036,191 @@ impl NativeHarness {
             "stderr": result.stderr,
             "exit_code": result.exit_code,
         })))
+    }
+
+    /// Push the current (or named) branch to the origin remote and,
+    /// optionally, open a pull request for it.
+    ///
+    /// This is the only sanctioned outbound network path for git: the `git`
+    /// tool deliberately blocks push/fetch/ls-remote. Authentication is
+    /// provided exclusively by the server-side `CHATCODEX_GITHUB_TOKEN`
+    /// environment variable — never by credentials embedded in URLs or by
+    /// interactive prompts. The token is passed to git via a credential
+    /// helper that reads the environment variable, so it is never written to
+    /// `.git/config` or any other file the model can read.
+    async fn git_push(&self, args: GitPushArgs) -> anyhow::Result<CallToolResult> {
+        let workspace = self.workspace_or_error().await?;
+        let token = std::env::var("CHATCODEX_GITHUB_TOKEN").ok();
+        let Some(token) = token.filter(|t| !t.is_empty()) else {
+            anyhow::bail!(
+                "git_push is disabled: CHATCODEX_GITHUB_TOKEN is not configured on the server"
+            );
+        };
+
+        // Ensure git has an identity in this repo so pushes from branches
+        // without commits still behave deterministically.
+        for config in [
+            "config user.email chatcodex@example.invalid",
+            "config user.name ChatCodex",
+        ] {
+            let _ = self
+                .run_sandboxed_git(&workspace, config, Some(10_000), GitSandboxMode::Unsandboxed)
+                .await;
+        }
+
+        // Resolve the branch to push: explicit arg, or the current branch.
+        // A detached HEAD cannot be pushed under a name, so require one.
+        let branch = if let Some(branch) = args.branch {
+            let command = format!("checkout -B {}", shell_escape(&branch));
+            let result = self
+                .run_sandboxed_git(
+                    &workspace,
+                    &command,
+                    args.timeout_ms,
+                    GitSandboxMode::Unsandboxed,
+                )
+                .await?;
+            if result.exit_code != 0 {
+                anyhow::bail!(
+                    "failed to switch to branch {}: {}",
+                    branch,
+                    result.stderr.trim()
+                );
+            }
+            branch
+        } else {
+            let result = self
+                .run_sandboxed_git(
+                    &workspace,
+                    "symbolic-ref --short HEAD",
+                    Some(10_000),
+                    GitSandboxMode::Unsandboxed,
+                )
+                .await?;
+            if result.exit_code != 0 {
+                anyhow::bail!(
+                    "cannot push: HEAD is detached. Create a branch first (git_checkout with create_branch, or pass a branch). stderr: {}",
+                    result.stderr.trim()
+                );
+            }
+            result.stdout.trim().to_string()
+        };
+
+        let mut env = std::collections::HashMap::new();
+        env.insert("CHATCODEX_GITHUB_TOKEN".to_string(), token);
+        env.insert("GIT_TERMINAL_PROMPT".to_string(), "0".to_string());
+        env.insert("GIT_ASKPASS".to_string(), "/bin/true".to_string());
+        env.insert(
+            "GCM_INTERACTIVE".to_string(),
+            "Never".to_string(),
+        );
+
+        let push_argv = vec![
+            "-c".to_string(),
+            format!("credential.helper={}", github_credential_helper()),
+            "push".to_string(),
+            "-u".to_string(),
+            "origin".to_string(),
+            format!("HEAD:{branch}"),
+        ];
+        let push = run_git_command_with_env(
+            workspace.as_path(),
+            push_argv,
+            &env,
+            args.timeout_ms.or(Some(120_000)),
+        )
+        .await?;
+        let pushed = push.exit_code == 0;
+
+        let mut result = json!({
+            "branch": branch,
+            "pushed": pushed,
+            "stdout": push.stdout,
+            "stderr": push.stderr,
+            "exit_code": push.exit_code,
+        });
+
+        if pushed && args.create_pr {
+            let pr = self
+                .create_pull_request(&workspace, &branch, args.base.as_deref(), &env)
+                .await;
+            match pr {
+                Ok(url) => {
+                    result["pr_url"] = json!(url);
+                }
+                Err(err) => {
+                    result["pr_error"] = json!(err.to_string());
+                }
+            }
+        }
+
+        Ok(text_result(result))
+    }
+
+    /// Open a pull request for `branch` against `base` using the gh CLI.
+    /// Returns the PR URL on success.
+    async fn create_pull_request(
+        &self,
+        workspace: &AbsolutePathBuf,
+        branch: &str,
+        base: Option<&str>,
+        env: &std::collections::HashMap<String, String>,
+    ) -> anyhow::Result<String> {
+        let base = match base {
+            Some(base) => base.to_string(),
+            None => {
+                let result = run_git_command_with_env(
+                    workspace.as_path(),
+                    vec![
+                        "symbolic-ref".to_string(),
+                        "refs/remotes/origin/HEAD".to_string(),
+                    ],
+                    env,
+                    Some(10_000),
+                )
+                .await?;
+                if result.exit_code == 0 {
+                    result
+                        .stdout
+                        .trim()
+                        .trim_start_matches("refs/remotes/origin/")
+                        .to_string()
+                } else {
+                    "main".to_string()
+                }
+            }
+        };
+        // After a fresh push the origin/HEAD ref may not exist yet, so fall
+        // back to the symbolic default branch if resolution produced garbage.
+        let base = if base.is_empty() { "main".to_string() } else { base };
+
+        let mut gh_env = env.clone();
+        gh_env.insert(
+            "GH_TOKEN".to_string(),
+            env.get("CHATCODEX_GITHUB_TOKEN").cloned().unwrap_or_default(),
+        );
+
+        let output = tokio::process::Command::new("gh")
+            .args(["pr", "create", "--fill", "--base", &base, "--head", branch])
+            .current_dir(workspace.as_path())
+            .env_clear()
+            .envs(&gh_env)
+            .output()
+            .await
+            .context("failed to spawn gh; is the GitHub CLI installed in the container?")?;
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !output.status.success() {
+            anyhow::bail!(
+                "gh pr create failed (base={base}): {stderr}{}",
+                if stdout.is_empty() { String::new() } else { format!(" stdout: {stdout}") }
+            );
+        }
+        // gh prints the PR URL on stdout; fall back to a search if it didn't.
+        if let Some(url) = stdout.lines().find(|l| l.contains("https://")) {
+            return Ok(url.to_string());
+        }
+        anyhow::bail!("gh pr create succeeded but no URL was found in output: {stdout}");
     }
 
     /// Run a git command through the exec-server sandbox.
@@ -1377,6 +1584,7 @@ async fn do_setup_workspace(
     client_id: &str,
     source: &str,
     name: Option<&str>,
+    ref_name: Option<&str>,
     timeout_ms: Option<u64>,
 ) -> anyhow::Result<SetupWorkspaceResult> {
     let name = match name {
@@ -1418,6 +1626,22 @@ async fn do_setup_workspace(
     let url = url_str.parse::<url::Url>().context("invalid git URL")?;
     if !is_allowed_git_scheme(url.scheme()) {
         anyhow::bail!("git URL scheme '{}' is not allowed", url.scheme());
+    }
+    // Reject URLs that embed credentials: git would write them verbatim into
+    // `.git/config`, where the model can read them back. Private-repo access
+    // must go through the server-side CHATCODEX_GITHUB_TOKEN instead.
+    if !url.username().is_empty() || url.password().is_some() {
+        anyhow::bail!(
+            "git URL must not contain embedded credentials; configure CHATCODEX_GITHUB_TOKEN on the server and use a credential-free https URL instead"
+        );
+    }
+
+    // Private GitHub repos: when the server holds a CHATCODEX_GITHUB_TOKEN,
+    // authenticate the clone via an ephemeral credential helper so the token
+    // is never written to disk. Public clones are untouched.
+    let use_token = github_token_from_env().is_some() && is_github_host(url.host_str());
+    if use_token {
+        tracing::info!("setup_workspace: using CHATCODEX_GITHUB_TOKEN for {url_str}");
     }
 
     let target = workspace_base
@@ -1466,17 +1690,42 @@ async fn do_setup_workspace(
     loop {
         let result = run_git_command_with_args(
             parent,
-            vec![
-                "clone".to_string(),
-                source.to_string(),
-                target.to_string_lossy().to_string(),
-            ],
+            build_clone_argv(url_str, ref_name, use_token, &target),
             Some(timeout.as_millis() as u64),
         )
         .await;
 
         match result {
             Ok(output) if output.exit_code == 0 => {
+                if use_token {
+                    // Hardening: record the credential-free origin (git never
+                    // saw credentials in the URL, but keep the remote clean
+                    // anyway) and install the env-based credential helper so
+                    // later fetch/push operations authenticate without the
+                    // token ever being written to .git/config.
+                    let clean = clean_git_url(&url);
+                    let _ = run_git_command_with_args(
+                        &target,
+                        vec![
+                            "remote".into(),
+                            "set-url".into(),
+                            "origin".into(),
+                            clean.clone(),
+                        ],
+                        Some(30_000),
+                    )
+                    .await;
+                    let _ = run_git_command_with_args(
+                        &target,
+                        vec![
+                            "config".into(),
+                            "credential.helper".into(),
+                            github_credential_helper(),
+                        ],
+                        Some(30_000),
+                    )
+                    .await;
+                }
                 return Ok(SetupWorkspaceResult {
                     workspace_root: target,
                     source: source.to_string(),
@@ -1580,10 +1829,101 @@ fn shell_escape(s: &str) -> String {
         || s.chars()
             .any(|c| matches!(c, ' ' | '\'' | '"' | '$' | '\\'))
     {
-        format!("'{}'", s.replace('\'', "'\''"))
+        format!("'{}'", s.replace('\'', "'\\''"))
     } else {
         s.to_string()
     }
+}
+
+/// Build the `git clone` argv for a workspace setup.
+///
+/// When `use_token` is set, a credential helper is injected via `-c` so the
+/// clone authenticates against GitHub without the token appearing in the URL
+/// or on disk. The helper reads the token from the `CHATCODEX_GITHUB_TOKEN`
+/// environment variable at call time.
+fn build_clone_argv(
+    source: &str,
+    ref_name: Option<&str>,
+    use_token: bool,
+    target: &Path,
+) -> Vec<String> {
+    let mut argv = Vec::new();
+    if use_token {
+        argv.push("-c".to_string());
+        argv.push(format!("credential.helper={}", github_credential_helper()));
+    }
+    argv.push("clone".to_string());
+    if let Some(ref_name) = ref_name {
+        argv.push("--branch".to_string());
+        argv.push(ref_name.to_string());
+    }
+    argv.push("--".to_string());
+    argv.push(source.to_string());
+    argv.push(target.to_string_lossy().to_string());
+    argv
+}
+
+/// Credential helper that feeds the server-side GitHub token to git without
+/// ever writing it to disk. The helper only references the environment
+/// variable name — the value lives exclusively in the daemon's environment.
+fn github_credential_helper() -> String {
+    "!f(){ echo \"username=x-access-token\"; echo \"password=$CHATCODEX_GITHUB_TOKEN\"; }; f"
+        .to_string()
+}
+
+/// Whether the server has a non-empty CHATCODEX_GITHUB_TOKEN configured.
+fn github_token_from_env() -> Option<String> {
+    std::env::var("CHATCODEX_GITHUB_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty())
+}
+
+/// Whether the URL host is GitHub (github.com or a GitHub Enterprise host).
+fn is_github_host(host: Option<&str>) -> bool {
+    matches!(host, Some(h) if h == "github.com" || h.ends_with(".github.com"))
+}
+
+/// Reconstruct a git URL with any userinfo (credentials) stripped. Used to
+/// keep the recorded `origin` remote free of credentials the model could read.
+fn clean_git_url(url: &url::Url) -> String {
+    let mut s = format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default());
+    if let Some(port) = url.port() {
+        s.push_str(&format!(":{port}"));
+    }
+    s.push_str(url.path());
+    s
+}
+
+/// Run a git command with an explicit, minimal environment (no inherited
+/// secrets beyond what the caller passes). Used for the sanctioned outbound
+/// git_push path, where the credential env vars are injected deliberately.
+async fn run_git_command_with_env(
+    cwd: &Path,
+    argv: Vec<String>,
+    env: &std::collections::HashMap<String, String>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<GitCommandOutput> {
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(60_000));
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.args(&argv).current_dir(cwd).env_clear();
+    if let Some(path) = std::env::var_os("PATH") {
+        cmd.env("PATH", path);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        cmd.env("HOME", home);
+    }
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let output = tokio::time::timeout(timeout, cmd.output())
+        .await
+        .context("git command timed out")?
+        .context("failed to execute git")?;
+    Ok(GitCommandOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code().unwrap_or(-1),
+    })
 }
 
 fn validate_runtime(
@@ -1676,8 +2016,8 @@ fn tool_catalog() -> anyhow::Result<Vec<Tool>> {
         ),
         (
             "setup_workspace",
-            "Prepare the workspace for this client. Provide a git URL to clone a repository, or pass 'sandbox' for a persistent scratch directory with an initialized git repo.",
-            json!({"type":"object","properties":{"source":{"type":"string"},"name":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"required":["source"],"additionalProperties":false}),
+            "Prepare the workspace for this client. Provide a git URL to clone a repository, or pass 'sandbox' for a persistent scratch directory with an initialized git repo. Private GitHub repositories are supported when the server has CHATCODEX_GITHUB_TOKEN configured: use a credential-free https://github.com/... URL and the clone is authenticated server-side. Pass \"ref\" (a branch, tag, or commit) to check out a specific ref after clone. URLs containing embedded credentials are rejected.",
+            json!({"type":"object","properties":{"source":{"type":"string"},"name":{"type":"string"},"ref":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"required":["source"],"additionalProperties":false}),
             json!({"type":"object","properties":{"workspace_root":{"type":"string"},"source":{"type":"string"},"action":{"type":"string"}},"required":["workspace_root","source","action"],"additionalProperties":false}),
         ),
         (
@@ -1715,6 +2055,12 @@ fn tool_catalog() -> anyhow::Result<Vec<Tool>> {
             "Switch branches in the workspace. Runs unsandboxed with outbound network operations blocked; use only for local metadata writes.",
             json!({"type":"object","properties":{"target":{"type":"string"},"create_branch":{"type":"boolean"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"required":["target"],"additionalProperties":false}),
             json!({"type":"object","properties":{"stdout":{"type":"string"},"stderr":{"type":"string"},"exit_code":{"type":"integer"}},"required":["stdout","stderr","exit_code"],"additionalProperties":false}),
+        ),
+        (
+            "git_push",
+            "Push the current (or named) branch to the origin remote, and optionally open a pull request for it. This is the only sanctioned outbound git operation: authentication uses the server-side CHATCODEX_GITHUB_TOKEN (the token is never exposed to the model or written to disk). Requires a cloned repository with a github.com (or GitHub Enterprise) origin. Set create_pr to true to open a pull request via the gh CLI; base defaults to the remote default branch.",
+            json!({"type":"object","properties":{"branch":{"type":"string"},"create_pr":{"type":"boolean"},"base":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"additionalProperties":false}),
+            json!({"type":"object","properties":{"branch":{"type":"string"},"pushed":{"type":"boolean"},"stdout":{"type":"string"},"stderr":{"type":"string"},"exit_code":{"type":"integer"},"pr_url":{"type":"string"},"pr_error":{"type":"string"}},"required":["branch","pushed","stdout","stderr","exit_code"],"additionalProperties":false}),
         ),
         (
             "list_directory",
@@ -1814,6 +2160,11 @@ fn tool_annotations(name: &str) -> anyhow::Result<ToolAnnotations> {
             .destructive(false)
             .idempotent(false)
             .open_world(false),
+        "git_push" => ToolAnnotations::with_title("Git push")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(true),
         "list_directory" => ToolAnnotations::with_title("List directory")
             .read_only(true)
             .destructive(false)
@@ -2445,6 +2796,7 @@ mod tests {
                 "git_commit",
                 "git_branch",
                 "git_checkout",
+                "git_push",
                 "list_directory",
                 "todo",
             ]
@@ -3067,6 +3419,88 @@ mod tests {
         assert!(!super::is_outbound_git_command("log --oneline -5"));
         assert!(!super::is_outbound_git_command("diff --staged"));
         assert!(!super::is_outbound_git_command("remote -v"));
+    }
+
+    #[test]
+    fn clone_argv_building() {
+        let target = std::path::Path::new("/tmp/workspaces/repo");
+        // Plain public clone.
+        assert_eq!(
+            super::build_clone_argv(
+                "https://github.com/owner/repo.git",
+                None,
+                false,
+                target
+            ),
+            vec![
+                "clone".to_string(),
+                "--".to_string(),
+                "https://github.com/owner/repo.git".to_string(),
+                "/tmp/workspaces/repo".to_string(),
+            ]
+        );
+        // Clone at a specific ref.
+        let with_ref = super::build_clone_argv(
+            "https://github.com/owner/repo.git",
+            Some("feature/xyz"),
+            false,
+            target,
+        );
+        assert_eq!(with_ref[1], "--branch");
+        assert_eq!(with_ref[2], "feature/xyz");
+        // Authenticated clone: -c credential.helper must precede `clone`.
+        let authed =
+            super::build_clone_argv("https://github.com/owner/repo.git", None, true, target);
+        assert_eq!(authed[0], "-c");
+        assert!(authed[1].starts_with("credential.helper="));
+        assert_eq!(authed[2], "clone");
+        // The helper value must reference the env var, never an inline secret.
+        assert!(authed[1].contains("CHATCODEX_GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn credential_helper_references_env_only() {
+        let helper = super::github_credential_helper();
+        assert!(helper.contains("$CHATCODEX_GITHUB_TOKEN"));
+        // Must not contain any plausible secret value.
+        for leak in ["ghp_", "github_pat_", "password=ghp"] {
+            assert!(!helper.contains(leak), "helper leaked {leak}: {helper}");
+        }
+    }
+
+    #[test]
+    fn github_host_detection() {
+        assert!(super::is_github_host(Some("github.com")));
+        assert!(super::is_github_host(Some("ghe.example.github.com")));
+        assert!(!super::is_github_host(Some("gitlab.com")));
+        assert!(!super::is_github_host(Some("notgithub.com")));
+        assert!(!super::is_github_host(None));
+    }
+
+    #[test]
+    fn clean_git_url_strips_credentials() {
+        let url = url::Url::parse("https://user:secret@github.com/owner/repo.git").unwrap();
+        let cleaned = super::clean_git_url(&url);
+        assert_eq!(cleaned, "https://github.com/owner/repo.git");
+        assert!(!cleaned.contains("secret"));
+
+        let url = url::Url::parse("https://github.com/owner/repo.git").unwrap();
+        assert_eq!(
+            super::clean_git_url(&url),
+            "https://github.com/owner/repo.git"
+        );
+    }
+
+    #[test]
+    fn embedded_credentials_are_detectable() {
+        // Mirrors the guard in do_setup_workspace: URLs carrying userinfo
+        // must be rejected so git never persists credentials to .git/config.
+        let bad = url::Url::parse("https://token@github.com/owner/repo.git").unwrap();
+        assert!(!bad.username().is_empty() || bad.password().is_some());
+        let bad2 = url::Url::parse("https://user:pass@github.com/owner/repo.git").unwrap();
+        assert!(!bad2.username().is_empty() || bad2.password().is_some());
+        let good = url::Url::parse("https://github.com/owner/repo.git").unwrap();
+        assert!(good.username().is_empty() && good.password().is_none());
     }
 
     #[tokio::test]
