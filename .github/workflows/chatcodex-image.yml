@@ -1,36 +1,5 @@
 name: chatcodex-image
 
-# Build the ChatCodex deployment image in CI and trigger a Coolify redeploy.
-#
-# This workflow exists because the Coolify production node OOMs while
-# compiling the `chatcodex-oauth` closure graph. Building the
-# image on GitHub's ARM64 runners and shipping a prebuilt
-# `ghcr.io/anschmieg/chatcodex:<sha>` to the Coolify "Docker Image" build
-# pack avoids the builder memory cliff entirely.
-#
-# Architecture:
-#   The Coolify production node is aarch64. We build natively on an ARM64
-#   GitHub runner so that Docker builds the linux/arm64 image without
-#   cross-compilation overhead or QEMU emulation.
-#
-# Required secrets:
-#   COOLIFY_API_BASE_URL       — e.g. `https://panel.nothing.pink/api/v1`
-#   COOLIFY_API_TOKEN          — bearer token with read+write on the app,
-#       used to point the app at the freshly built `<sha>` tag, trigger
-#       a deploy, and poll the resulting deployment's status.
-#   COOLIFY_APP_UUID           — `d3mcg7hwb1aoyno8ok4jxdry` for the
-#       production ChatCodex app.
-#
-# Tags produced:
-#   ghcr.io/anschmieg/chatcodex:<short-sha>  — immutable reference
-#   ghcr.io/anschmieg/chatcodex:branch-<sanitized-branch>
-#   ghcr.io/anschmieg/chatcodex:latest
-#
-# To run manually:
-#   gh workflow run chatcodex-image.yml -f sha=<git-sha-or-branch>
-#   or
-#   gh workflow run chatcodex-image.yml        # uses HEAD
-
 on:
   push:
     branches:
@@ -56,19 +25,19 @@ env:
   COOLIFY_DEPLOY_TIMEOUT_SECS: "1500"
 
 jobs:
-  resolve-ref:
-    name: Resolve ref and compute image tag
+  build-and-deploy:
+    name: Build, push and deploy ChatCodex
     runs-on: ubuntu-24.04-arm
-    outputs:
-      resolved_sha: ${{ steps.resolve.outputs.sha }}
-      short_sha: ${{ steps.resolve.outputs.short }}
-      image_tag: ${{ steps.resolve.outputs.image_tag }}
-      branch_tag: ${{ steps.resolve.outputs.branch_tag }}
+    timeout-minutes: 45
+
     steps:
-      - name: Checkout
+      # Resolve ref with smart checkout depth
+      # On push events GITHUB_SHA is the commit, so we only need depth 1.
+      # On workflow_dispatch with a custom sha we need full history to resolve it.
+      - name: Checkout (shallow for push, full for manual sha)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: ${{ inputs.sha != '' && 0 || 1 }}
 
       - name: Resolve SHA, short SHA, and tags
         id: resolve
@@ -78,8 +47,13 @@ jobs:
           input_sha="${{ inputs.sha }}"
           if [[ -n "${input_sha}" ]]; then
             sha="$(git rev-parse "${input_sha}")"
-            short="$(git rev-parse --short "${sha}")"
+            short="$(git rev-parse --short "${input_sha}")"
             base_ref="${input_sha}"
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            sha="${{ github.sha }}"
+            short="${{ github.sha }}"
+            short="$(git rev-parse --short "${sha}")"
+            base_ref="${GITHUB_REF_NAME}"
           else
             sha="$(git rev-parse HEAD)"
             short="$(git rev-parse --short HEAD)"
@@ -97,17 +71,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Resolved ${sha} (${short}) for ref '${base_ref}'; image_tag=${short}; branch_tag=${branch_tag}" >&2
 
-  build:
-    name: Build and push image
-    needs: resolve-ref
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
+      # Build Docker image
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -118,7 +82,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PAT }}
 
-      - name: Build and push with native ARM64 + multi-level caching
+      - name: Build and push with native ARM64 + registry cache
         id: build
         uses: docker/build-push-action@v6
         with:
@@ -130,24 +94,19 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ needs.resolve-ref.outputs.image_tag }}
-            ${{ env.IMAGE_NAME }}:${{ needs.resolve-ref.outputs.branch_tag }}
+            ${{ env.IMAGE_NAME }}:${{ steps.resolve.outputs.image_tag }}
+            ${{ env.IMAGE_NAME }}:${{ steps.resolve.outputs.branch_tag }}
             ${{ env.IMAGE_NAME }}:latest
           labels: |
             org.opencontainers.image.title=chatcodex
             org.opencontainers.image.source=https://github.com/anschmieg/ChatCodex
-            org.opencontainers.image.revision=${{ needs.resolve-ref.outputs.resolved_sha }}
+            org.opencontainers.image.revision=${{ steps.resolve.outputs.sha }}
             org.opencontainers.image.ref.name=${{ github.ref_name }}
-          # Stable caches retain the dependency stage across commits.
-          # ChatCodex crates are independent contexts, so edits to them do not
-          # invalidate the upstream Codex dependency layer.
           cache-from: |
-            type=registry,ref=ghcr.io/anschmieg/chatcodex:build-cache-branch-${{ needs.resolve-ref.outputs.branch_tag }}
+            type=registry,ref=ghcr.io/anschmieg/chatcodex:build-cache-branch-${{ steps.resolve.outputs.branch_tag }}
             type=registry,ref=ghcr.io/anschmieg/chatcodex:latest
-            type=gha,scope=chatcodex-image-linux-arm64
           cache-to: |
-            type=registry,ref=ghcr.io/anschmieg/chatcodex:build-cache-branch-${{ needs.resolve-ref.outputs.branch_tag }},mode=max
-            type=gha,scope=chatcodex-image-linux-arm64,mode=max
+            type=registry,ref=ghcr.io/anschmieg/chatcodex:build-cache-branch-${{ steps.resolve.outputs.branch_tag }},mode=max
           provenance: false
           sbom: false
 
@@ -159,21 +118,13 @@ jobs:
           curl -fsSL \
             -H "Authorization: Bearer ${ANON_TOKEN}" \
             -H "Accept: application/vnd.oci.image.manifest.v1+json" \
-            "https://ghcr.io/v2/anschmieg/chatcodex/manifests/${{ needs.resolve-ref.outputs.image_tag }}" \
+            "https://ghcr.io/v2/anschmieg/chatcodex/manifests/${{ steps.resolve.outputs.image_tag }}" \
             | head -c 400 >&2
           echo >&2
 
-  deploy:
-    name: Trigger Coolify redeploy and poll to completion
-    needs: [resolve-ref, build]
-    if: ${{ inputs.force_redeploy != false || github.event_name == 'push' }}
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
-    env:
-      IMAGE_TAG: ${{ needs.resolve-ref.outputs.image_tag }}
-    steps:
+      # Deploy to Coolify (conditional)
       - name: Validate deploy inputs
-        id: validate
+        if: ${{ inputs.force_redeploy != false || github.event_name == 'push' }}
         shell: bash
         env:
           API_BASE: ${{ secrets.COOLIFY_API_BASE_URL }}
@@ -196,6 +147,7 @@ jobs:
           echo "Deploy inputs validated" >&2
 
       - name: Ensure persistent toolchain storage
+        if: ${{ inputs.force_redeploy != false || github.event_name == 'push' }}
         shell: bash
         env:
           API_BASE: ${{ secrets.COOLIFY_API_BASE_URL }}
@@ -218,27 +170,21 @@ jobs:
 
           storage_state=$(python3 - <<'PY'
           import json
-
           with open("/tmp/coolify-storages.json", encoding="utf-8") as handle:
               storages = json.load(handle)
-
           persistent = [
-              storage
-              for storage in storages.get("persistent_storages", [])
-              if storage.get("mount_path") == "/toolchains"
+              s for s in storages.get("persistent_storages", [])
+              if s.get("mount_path") == "/toolchains"
           ]
           files = [
-              storage
-              for storage in storages.get("file_storages", [])
-              if storage.get("mount_path") == "/toolchains"
+              s for s in storages.get("file_storages", [])
+              if s.get("mount_path") == "/toolchains"
           ]
           forbidden_data = [
-              storage
-              for storage_type in ("persistent_storages", "file_storages")
-              for storage in storages.get(storage_type, [])
-              if storage.get("mount_path") == "/data"
+              s for storage_type in ("persistent_storages", "file_storages")
+              for s in storages.get(storage_type, [])
+              if s.get("mount_path") == "/data"
           ]
-
           if forbidden_data:
               print("forbidden-data")
           elif files:
@@ -286,6 +232,7 @@ jobs:
           esac
 
       - name: Re-point Coolify at the freshly built image tag
+        if: ${{ inputs.force_redeploy != false || github.event_name == 'push' }}
         shell: bash
         env:
           API_BASE: ${{ secrets.COOLIFY_API_BASE_URL }}
@@ -297,11 +244,10 @@ jobs:
             echo "::error::COOLIFY_API_BASE_URL / COOLIFY_API_TOKEN / COOLIFY_APP_UUID must be set" >&2
             exit 1
           fi
-          # Update the image tag the app should pull
           payload=$(cat <<JSON
           {
             "docker_registry_image_name": "ghcr.io/anschmieg/chatcodex",
-            "docker_registry_image_tag":  "${IMAGE_TAG}",
+            "docker_registry_image_tag":  "${{ steps.resolve.outputs.image_tag }}",
             "custom_docker_run_options": "--cap-drop=ALL",
             "limits_memory": "4g",
             "limits_memory_swap": "4g",
@@ -325,6 +271,7 @@ jobs:
           fi
 
       - name: Trigger Coolify deploy via API
+        if: ${{ inputs.force_redeploy != false || github.event_name == 'push' }}
         shell: bash
         env:
           API_BASE: ${{ secrets.COOLIFY_API_BASE_URL }}
@@ -356,14 +303,16 @@ jobs:
           open('/tmp/coolify-deployment-uuid','w').write(du)
           print('Deployment UUID:', du, file=sys.stderr)
           "
-      - name: Poll the deployment to completion
+
+      - name: Poll the deployment to completion (5s intervals)
+        if: ${{ inputs.force_redeploy != false || github.event_name == 'push' }}
         env:
           API_BASE: ${{ secrets.COOLIFY_API_BASE_URL }}
           API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
         run: |
           set -euo pipefail
           du="$(cat /tmp/coolify-deployment-uuid)"
-          echo "Polling deployment ${du} every 10s for up to ${COOLIFY_DEPLOY_TIMEOUT_SECS}s" >&2
+          echo "Polling deployment ${du} every 5s for up to ${COOLIFY_DEPLOY_TIMEOUT_SECS}s" >&2
           end=$(( $(date +%s) + COOLIFY_DEPLOY_TIMEOUT_SECS ))
           status="queued"
           while (( $(date +%s) < end )); do
@@ -393,11 +342,11 @@ jobs:
                   print(logs[-3000:], file=sys.stderr)
           except Exception:
               print(logs[-3000:], file=sys.stderr)
-          "
+          """
                 exit 1
                 ;;
               *)
-                sleep 10
+                sleep 5
                 ;;
             esac
           done

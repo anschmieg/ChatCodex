@@ -1,7 +1,6 @@
 [build]
 jobs = 4
-rustc-wrapper = "sccache"
-target-dir = "/home/t3/.cache/codex-rs/chatcodex-target"
+target-dir = "/home/hermes/.cache/chatcodex-target"
 
 # GCC as linker driver with LLD — LLD is ~5× faster than BFD ld on aarch64
 # -fuse-ld=lld tells GCC to use LLD instead of the system BFD ld

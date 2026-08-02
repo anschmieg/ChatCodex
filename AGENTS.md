@@ -30,6 +30,10 @@ ChatGPT-hosted model
      - `agent_step`
      - `fix_end_to_end`
    - The backend must never own planning/execution through an LLM.
+   - Sanctioned exception: `memory_reflect` calls Hindsight's synthesis endpoint,
+     which runs on Hindsight's own server-side LLM (a memory service, not a
+     harness control loop). Approved by Adrian. `memory_search`/`memory_retain`
+     are pure retrieval/storage and add no LLM.
 
 3. **Required architecture**
    - ChatGPT reasons.

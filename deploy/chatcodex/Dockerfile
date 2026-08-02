@@ -44,7 +44,8 @@ RUN arch="$(dpkg --print-architecture)" && \
 
 # Cross-compilation environment (harmless on native aarch64 builds where
 # aarch64-linux-gnu-gcc is just the native compiler).
-ENV CARGO_BUILD_JOBS=4 \
+# Use 16 parallel jobs to match the ubuntu-24.04-arm runner's 16 cores.
+ENV CARGO_BUILD_JOBS=16 \
     CARGO_PROFILE_RELEASE_LTO=false \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256 \
     CARGO_PROFILE_RELEASE_OPT_LEVEL=0 \
@@ -89,7 +90,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     fi && \
     echo "Caching dependencies for target: $TARGET on arch: $arch" && \
     cd chatcodex && \
-    cargo build --release --target "$TARGET" -p chatcodex-mcp-server
+    cargo build --release --target "$TARGET" -p chatcodex-mcp-server && \
+    find "$CARGO_TARGET_DIR/$TARGET/release/" -maxdepth 1 -name incremental -prune -exec rm -rf {} + 2>/dev/null && \
+    find "$CARGO_TARGET_DIR/$TARGET/release/deps/" -name "*.o" -delete 2>/dev/null && \
+    find "$CARGO_TARGET_DIR/$TARGET/release/deps/" -name "*.d" -delete 2>/dev/null && \
+    echo "Cleaned up intermediate artifacts, layer size reduced"
 
 # Overlay only ChatCodex-owned source. These named contexts are hashed
 # independently from the upstream codex-rs workspace.

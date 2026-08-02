@@ -11,6 +11,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod hindsight;
+
 use anyhow::Context;
 use axum::Router;
 use axum::response::Json;
@@ -421,6 +423,15 @@ impl NativeHarness {
             "git" => self.git_tool(serde_json::from_value(arguments)?).await,
             "git_status" => self.git_status(serde_json::from_value(arguments)?).await,
             "get_time" => self.get_time(serde_json::from_value(arguments)?).await,
+            "memory_search" => {
+                hindsight::memory_search(serde_json::from_value(arguments)?).await
+            }
+            "memory_retain" => {
+                hindsight::memory_retain(serde_json::from_value(arguments)?).await
+            }
+            "memory_reflect" => {
+                hindsight::memory_reflect(serde_json::from_value(arguments)?).await
+            }
             "git_diff" => self.git_diff(serde_json::from_value(arguments)?).await,
             "git_commit" => self.git_commit(serde_json::from_value(arguments)?).await,
             "git_branch" => self.git_branch(serde_json::from_value(arguments)?).await,
@@ -1548,7 +1559,7 @@ async fn resolve_workspace_path(
     Ok(canonical_path)
 }
 
-fn text_result(value: Value) -> CallToolResult {
+pub(crate) fn text_result(value: Value) -> CallToolResult {
     let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
     let mut result = CallToolResult::success(vec![Content::text(text)]);
     result.structured_content = Some(value);
@@ -2081,6 +2092,24 @@ fn tool_catalog() -> anyhow::Result<Vec<Tool>> {
             json!({"type":"object","properties":{"iso8601":{"type":"string"},"unix_seconds":{"type":"integer"}},"required":["iso8601","unix_seconds"],"additionalProperties":false}),
         ),
         (
+            "memory_search",
+            "Search persistent project memory (Hindsight) for facts, decisions, and context relevant to a query. Returns matched memory records with their text. Use before asking questions the workspace may not answer, and to pick up context from previous sessions. Requires the server to have CHATCODEX_HINDSIGHT_URL configured.",
+            json!({"type":"object","properties":{"query":{"type":"string"},"budget":{"type":"string","enum":["low","mid","high"]},"tags":{"type":"array","items":{"type":"string"}},"max_tokens":{"type":"integer","minimum":1}},"required":["query"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"query":{"type":"string"},"results":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"text":{"type":"string"},"context":{"type":"string"},"occurred_start":{"type":"string"}},"additionalProperties":true}}},"required":["query","results"],"additionalProperties":false}),
+        ),
+        (
+            "memory_retain",
+            "Store a fact in persistent project memory (Hindsight). Use for durable knowledge that future sessions should remember: project conventions, user preferences, architectural decisions, and lessons learned. Content should be a self-contained declarative statement. Requires the server to have CHATCODEX_HINDSIGHT_URL configured.",
+            json!({"type":"object","properties":{"content":{"type":"string"},"context":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}},"required":["content"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"stored":{"type":"boolean"},"content":{"type":"string"}},"required":["stored","content"],"additionalProperties":false}),
+        ),
+        (
+            "memory_reflect",
+            "Ask the Hindsight memory service to synthesize an answer across stored memories (runs on Hindsight's own model, not ChatGPT). Use for cross-session synthesis: 'what decisions did we make about X', 'summarize what we know about Y'. Requires the server to have CHATCODEX_HINDSIGHT_URL configured.",
+            json!({"type":"object","properties":{"query":{"type":"string"},"budget":{"type":"string","enum":["low","mid","high"]},"tags":{"type":"array","items":{"type":"string"}},"max_tokens":{"type":"integer","minimum":1}},"required":["query"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"reflection":{"type":"string"}},"required":["reflection"],"additionalProperties":false}),
+        ),
+        (
             "git_diff",
             "Show workspace diff (git diff). Runs in the read-only sandbox.",
             json!({"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}},"staged":{"type":"boolean"}},"additionalProperties":false}),
@@ -2182,6 +2211,21 @@ fn tool_annotations(name: &str) -> anyhow::Result<ToolAnnotations> {
             .read_only(true)
             .destructive(false)
             .idempotent(true)
+            .open_world(true),
+        "memory_search" => ToolAnnotations::with_title("Search memory")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(true),
+        "memory_retain" => ToolAnnotations::with_title("Store memory")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(true),
+        "memory_reflect" => ToolAnnotations::with_title("Reflect over memory")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(false)
             .open_world(true),
         "git_diff" => ToolAnnotations::with_title("Git diff")
             .read_only(true)
@@ -2846,6 +2890,9 @@ mod tests {
                 "git",
                 "git_status",
                 "get_time",
+                "memory_search",
+                "memory_retain",
+                "memory_reflect",
                 "git_diff",
                 "git_commit",
                 "git_branch",
