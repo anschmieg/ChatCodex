@@ -211,6 +211,10 @@ struct GitStatusArgs {}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct GetTimeArgs {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GitDiffArgs {
     #[serde(default)]
     paths: Option<Vec<String>>,
@@ -416,6 +420,7 @@ impl NativeHarness {
             }
             "git" => self.git_tool(serde_json::from_value(arguments)?).await,
             "git_status" => self.git_status(serde_json::from_value(arguments)?).await,
+            "get_time" => self.get_time(serde_json::from_value(arguments)?).await,
             "git_diff" => self.git_diff(serde_json::from_value(arguments)?).await,
             "git_commit" => self.git_commit(serde_json::from_value(arguments)?).await,
             "git_branch" => self.git_branch(serde_json::from_value(arguments)?).await,
@@ -752,6 +757,18 @@ impl NativeHarness {
             }
         }
         Ok(text_result(json!({"matches": matches})))
+    }
+
+    async fn get_time(&self, _args: GetTimeArgs) -> anyhow::Result<CallToolResult> {
+        use time::format_description::well_known::Rfc3339;
+        let now = time::OffsetDateTime::now_utc();
+        let iso8601 = now
+            .format(&Rfc3339)
+            .unwrap_or_else(|_| now.to_string());
+        Ok(text_result(json!({
+            "iso8601": iso8601,
+            "unix_seconds": now.unix_timestamp(),
+        })))
     }
 
     async fn git_status(&self, _args: GitStatusArgs) -> anyhow::Result<CallToolResult> {
@@ -2058,6 +2075,12 @@ fn tool_catalog() -> anyhow::Result<Vec<Tool>> {
             json!({"type":"object","properties":{"entries":{"type":"array","items":{"type":"object","properties":{"status":{"type":"string"},"path":{"type":"string"}},"required":["status","path"],"additionalProperties":false}},"stderr":{"type":"string"}},"required":["entries","stderr"],"additionalProperties":false}),
         ),
         (
+            "get_time",
+            "Return the current UTC time as ISO 8601 and unix seconds. Works even before a workspace is configured; useful for timestamps in commits, commit messages, and time-sensitive decisions.",
+            json!({"type":"object","properties":{},"additionalProperties":false}),
+            json!({"type":"object","properties":{"iso8601":{"type":"string"},"unix_seconds":{"type":"integer"}},"required":["iso8601","unix_seconds"],"additionalProperties":false}),
+        ),
+        (
             "git_diff",
             "Show workspace diff (git diff). Runs in the read-only sandbox.",
             json!({"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}},"staged":{"type":"boolean"}},"additionalProperties":false}),
@@ -2155,6 +2178,11 @@ fn tool_annotations(name: &str) -> anyhow::Result<ToolAnnotations> {
             .destructive(false)
             .idempotent(true)
             .open_world(false),
+        "get_time" => ToolAnnotations::with_title("Get current time")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(true),
         "git_diff" => ToolAnnotations::with_title("Git diff")
             .read_only(true)
             .destructive(false)
@@ -2817,6 +2845,7 @@ mod tests {
                 "setup_workspace",
                 "git",
                 "git_status",
+                "get_time",
                 "git_diff",
                 "git_commit",
                 "git_branch",
@@ -2833,6 +2862,53 @@ mod tests {
                 .iter()
                 .all(|tool| tool.output_schema.is_some())
         );
+    }
+
+    #[tokio::test]
+    async fn get_time_returns_valid_utc() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let server = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("server");
+
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("before epoch")
+            .as_secs() as i64;
+        let result = server
+            .harness
+            .call("get_time", serde_json::json!({}))
+            .await
+            .expect("get_time call");
+        assert!(
+            result.is_error != Some(true),
+            "get_time reported an error: {result:?}"
+        );
+        let parsed = result
+            .structured_content
+            .as_ref()
+            .expect("structured content");
+        let iso = parsed["iso8601"].as_str().expect("iso8601 string");
+        let unix = parsed["unix_seconds"].as_i64().expect("unix_seconds int");
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after epoch")
+            .as_secs() as i64;
+        assert!(
+            unix >= before && unix <= after,
+            "unix_seconds {unix} outside [{before}, {after}]"
+        );
+        // ISO 8601 must be UTC (Z suffix) and round-trip to the same instant.
+        assert!(iso.ends_with('Z'), "iso8601 should be UTC: {iso}");
+        let parsed_back = time::OffsetDateTime::parse(
+            iso,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .expect("rfc3339 parse");
+        assert_eq!(parsed_back.unix_timestamp(), unix, "iso/unix mismatch");
     }
 
     #[tokio::test]
