@@ -23,6 +23,8 @@ use codex_exec_server::ExecProcess;
 use codex_exec_server::ExecServerRuntimePaths;
 use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::ProcessId;
+use codex_http_client::HttpClientFactory;
+use codex_http_client::OutboundProxyPolicy;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::SandboxPolicy;
@@ -30,8 +32,9 @@ use codex_sandboxing::SandboxCommand;
 use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxTransformRequest;
 use codex_sandboxing::SandboxType;
-use codex_shell_command::is_dangerous_command::command_might_be_dangerous;
+use codex_shell_command::is_dangerous_command::dangerous_command_match;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::CallToolRequestParams;
@@ -346,7 +349,11 @@ impl NativeHarnessMcp {
                     self_exe,
                     arg0_paths.codex_linux_sandbox_exe.clone(),
                 )?;
-                Environment::create(std::env::var("CODEX_EXEC_SERVER_URL").ok(), runtime_paths)?
+                Environment::create(
+                    std::env::var("CODEX_EXEC_SERVER_URL").ok(),
+                    runtime_paths,
+                    HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+                )?
             }
             None => {
                 let linux_sandbox_exe = arg0_paths.codex_linux_sandbox_exe.clone();
@@ -355,7 +362,11 @@ impl NativeHarnessMcp {
                     .or_else(|| std::env::current_exe().ok())
                     .ok_or_else(|| anyhow::anyhow!("could not determine self executable"))?;
                 let runtime_paths = ExecServerRuntimePaths::new(self_exe, linux_sandbox_exe)?;
-                Environment::create(std::env::var("CODEX_EXEC_SERVER_URL").ok(), runtime_paths)?
+                Environment::create(
+                    std::env::var("CODEX_EXEC_SERVER_URL").ok(),
+                    runtime_paths,
+                    HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+                )?
             }
         };
         let client_id =
@@ -422,7 +433,7 @@ impl NativeHarness {
     async fn exec_command(&self, args: ExecCommandArgs) -> anyhow::Result<CallToolResult> {
         let workspace = self.workspace_or_error().await?;
         let shell_argv = vec!["bash".to_string(), "-lc".to_string(), args.cmd];
-        if command_might_be_dangerous(&shell_argv) {
+        if dangerous_command_match(&shell_argv).is_some() {
             anyhow::bail!("command rejected by the deterministic command policy");
         }
 
@@ -447,19 +458,22 @@ impl NativeHarness {
                 cmd_env.insert("HOME".to_string(), home.to_string_lossy().into_owned());
             }
         }
+        let workspace_uri = PathUri::from_abs_path(&workspace);
         let transformed = SandboxManager::new().transform(SandboxTransformRequest {
             command: SandboxCommand {
                 program: "bash".into(),
                 args: shell_argv[1..].to_vec(),
-                cwd: workspace.clone(),
+                cwd: workspace_uri.clone(),
                 env: cmd_env,
+                managed_network: None,
                 additional_permissions: None,
             },
             permissions: &permissions,
             sandbox,
             enforce_managed_network: false,
+            environment_id: None,
             network: None,
-            sandbox_policy_cwd: workspace.as_path(),
+            sandbox_policy_cwd: &workspace_uri,
             codex_linux_sandbox_exe: self.linux_sandbox_exe.as_deref(),
             use_legacy_landlock: false,
             windows_sandbox_level: WindowsSandboxLevel::Disabled,
@@ -477,12 +491,16 @@ impl NativeHarness {
             .start(ExecParams {
                 process_id: process_id.clone(),
                 argv: transformed.command,
-                cwd: transformed.cwd.into_path_buf(),
+                cwd: transformed.cwd,
                 env_policy: None,
                 env: transformed.env,
                 tty: false,
                 pipe_stdin: true,
                 arg0: transformed.arg0,
+                sandbox: None,
+                enforce_managed_network: false,
+                managed_network: None,
+                network_proxy: None,
             })
             .await?;
         let process = started.process;
@@ -572,8 +590,9 @@ impl NativeHarness {
             exclude_tmpdir_env_var: true,
             exclude_slash_tmp: true,
         };
+        let workspace_uri = PathUri::from_abs_path(&workspace);
         let sandbox =
-            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, workspace.clone());
+            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, workspace_uri.clone())?;
         let sandbox = if self.sandbox_available() {
             Some(&sandbox)
         } else {
@@ -583,7 +602,7 @@ impl NativeHarness {
         let mut stderr = Vec::new();
         let result = codex_apply_patch::apply_patch(
             &args.input,
-            &workspace,
+            &workspace_uri,
             &mut stdout,
             &mut stderr,
             self.environment.get_filesystem().as_ref(),
@@ -607,7 +626,7 @@ impl NativeHarness {
             network_access: false,
         };
         let sandbox =
-            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, workspace.clone());
+            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, PathUri::from_abs_path(&workspace))?;
         let sandbox = if self.sandbox_available() {
             Some(&sandbox)
         } else {
@@ -616,7 +635,7 @@ impl NativeHarness {
         let fs = self.environment.get_filesystem();
         let path = resolve_workspace_path(fs.as_ref(), &workspace, &args.path, sandbox).await?;
         let data = fs.read_file(&path, sandbox).await?;
-        let mime = mime_guess::from_path(path.as_path())
+        let mime = mime_guess::from_path(path.to_path_buf())
             .first_raw()
             .unwrap_or("application/octet-stream");
         let content: Content = serde_json::from_value(json!({
@@ -628,7 +647,7 @@ impl NativeHarness {
             "mimeType": mime
         }))?;
         let mut result = CallToolResult::success(vec![content]);
-        result.structured_content = Some(json!({"path": path.as_path()}));
+        result.structured_content = Some(json!({"path": path.to_path_buf()}));
         Ok(result)
     }
 
@@ -638,7 +657,7 @@ impl NativeHarness {
             network_access: false,
         };
         let sandbox =
-            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, workspace.clone());
+            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, PathUri::from_abs_path(&workspace))?;
         let sandbox = if self.sandbox_available() {
             Some(&sandbox)
         } else {
@@ -664,7 +683,7 @@ impl NativeHarness {
             data.clone()
         };
         Ok(text_result(json!({
-            "path": path.as_path(),
+            "path": path.to_path_buf(),
             "total_lines": total_lines,
             "start_line": start + 1,
             "end_line": end,
@@ -795,7 +814,7 @@ impl NativeHarness {
             network_access: false,
         };
         let sandbox =
-            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, workspace.clone());
+            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, PathUri::from_abs_path(&workspace))?;
         let sandbox = if self.sandbox_available() {
             Some(&sandbox)
         } else {
@@ -804,7 +823,7 @@ impl NativeHarness {
         let fs = self.environment.get_filesystem();
         let path = match &args.path {
             Some(p) => resolve_workspace_path(fs.as_ref(), &workspace, p, sandbox).await?,
-            None => workspace.clone(),
+            None => PathUri::from_abs_path(&workspace),
         };
         let entries = fs.read_directory(&path, sandbox).await?;
         let listing: Vec<Value> = entries
@@ -818,7 +837,7 @@ impl NativeHarness {
             })
             .collect();
         Ok(text_result(json!({
-            "path": path.as_path(),
+            "path": path.to_path_buf(),
             "entries": listing,
         })))
     }
@@ -1289,19 +1308,22 @@ impl NativeHarness {
             }
         }
         let (file_system_sandbox_policy, _) = permissions.to_runtime_permissions();
+        let workspace_uri = PathUri::from_abs_path(&workspace);
         let transformed = SandboxManager::new().transform(SandboxTransformRequest {
             command: SandboxCommand {
                 program: "git".into(),
                 args: argv,
-                cwd: workspace.clone(),
+                cwd: workspace_uri.clone(),
                 env: cmd_env,
+                managed_network: None,
                 additional_permissions: None,
             },
             permissions: &permissions,
             sandbox,
             enforce_managed_network: false,
+            environment_id: None,
             network: None,
-            sandbox_policy_cwd: workspace.as_path(),
+            sandbox_policy_cwd: &workspace_uri,
             codex_linux_sandbox_exe: self.linux_sandbox_exe.as_deref(),
             use_legacy_landlock: false,
             windows_sandbox_level: WindowsSandboxLevel::Disabled,
@@ -1319,12 +1341,16 @@ impl NativeHarness {
             .start(ExecParams {
                 process_id: process_id.clone(),
                 argv: transformed.command,
-                cwd: transformed.cwd.into_path_buf(),
+                cwd: transformed.cwd,
                 env_policy: None,
                 env: transformed.env,
                 tty: false,
                 pipe_stdin: false,
                 arg0: transformed.arg0,
+                sandbox: None,
+                enforce_managed_network: false,
+                managed_network: None,
+                network_proxy: None,
             })
             .await?;
         let yield_ms = timeout_ms.unwrap_or(30_000).min(MAX_YIELD_MS);
@@ -1488,19 +1514,18 @@ async fn resolve_workspace_path(
     workspace: &AbsolutePathBuf,
     requested: &Path,
     sandbox: Option<&FileSystemSandboxContext>,
-) -> anyhow::Result<AbsolutePathBuf> {
+) -> anyhow::Result<PathUri> {
     let path = if requested.is_absolute() {
         requested.to_path_buf()
     } else {
         workspace.as_path().join(requested)
     };
     let path = AbsolutePathBuf::from_absolute_path(path)?;
-    let canonical_workspace = fs.canonicalize(workspace, sandbox).await?;
-    let canonical_path = fs.canonicalize(&path, sandbox).await?;
-    if !canonical_path
-        .as_path()
-        .starts_with(canonical_workspace.as_path())
-    {
+    let workspace_uri = PathUri::from_abs_path(workspace);
+    let path_uri = PathUri::from_abs_path(&path);
+    let canonical_workspace = fs.canonicalize(&workspace_uri, sandbox).await?;
+    let canonical_path = fs.canonicalize(&path_uri, sandbox).await?;
+    if !canonical_path.starts_with(&canonical_workspace) {
         anyhow::bail!("path is outside the configured workspace");
     }
     Ok(canonical_path)
@@ -2898,7 +2923,7 @@ mod tests {
             "-lc".to_string(),
             "rm -rf /".to_string(),
         ];
-        assert!(codex_shell_command::is_dangerous_command::command_might_be_dangerous(&command));
+        assert!(codex_shell_command::is_dangerous_command::dangerous_command_match(&command).is_some());
     }
 
     #[tokio::test]

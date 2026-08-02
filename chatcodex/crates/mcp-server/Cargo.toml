@@ -23,10 +23,12 @@ base64 = { workspace = true }
 codex-arg0 = { path = "../../../codex-rs/arg0" }
 codex-apply-patch = { path = "../../../codex-rs/apply-patch" }
 codex-exec-server = { path = "../../../codex-rs/exec-server" }
+codex-http-client = { path = "../../../codex-rs/http-client" }
 codex-protocol = { path = "../../../codex-rs/protocol" }
 codex-sandboxing = { path = "../../../codex-rs/sandboxing" }
 codex-shell-command = { path = "../../../codex-rs/shell-command" }
 codex-utils-absolute-path = { path = "../../../codex-rs/utils/absolute-path" }
+codex-utils-path-uri = { path = "../../../codex-rs/utils/path-uri" }
 chatcodex-oauth = { path = "../oauth" }
 metrics-exporter-prometheus = { workspace = true, default-features = false }
 mime_guess = { workspace = true }

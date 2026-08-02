@@ -1,12 +1,10 @@
 use super::*;
 use crate::tools::handlers::multi_agents_spec::create_interrupt_agent_tool_v2;
-use crate::turn_timing::now_unix_timestamp_ms;
-use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for Handler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("interrupt_agent")
@@ -16,13 +14,12 @@ impl ToolExecutor<ToolInvocation> for Handler {
         create_interrupt_agent_tool_v2()
     }
 
-    async fn handle(
-        &self,
-        invocation: ToolInvocation,
-    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        handle_interrupt_agent(invocation)
-            .await
-            .map(boxed_tool_output)
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(async move {
+            handle_interrupt_agent(invocation)
+                .await
+                .map(boxed_tool_output)
+        })
     }
 }
 
@@ -59,18 +56,9 @@ async fn handle_interrupt_agent(
                 .to_string(),
         ));
     }
-    session
-        .send_event(
-            &turn,
-            CollabCloseBeginEvent {
-                call_id: call_id.clone(),
-                started_at_ms: now_unix_timestamp_ms(),
-                sender_thread_id: session.thread_id,
-                receiver_thread_id: agent_id,
-            }
-            .into(),
-        )
-        .await;
+    let receiver_agent_path = receiver_agent.agent_path.clone().ok_or_else(|| {
+        FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
+    })?;
     let status = session.services.agent_control.get_status(agent_id).await;
     let result = match session
         .services
@@ -78,25 +66,29 @@ async fn handle_interrupt_agent(
         .interrupt_agent(agent_id)
         .await
     {
-        Ok(_) | Err(CodexErr::ThreadNotFound(_)) | Err(CodexErr::InternalAgentDied) => Ok(()),
+        Ok(_) => Ok(()),
+        Err(err)
+            if matches!(
+                err.details(),
+                CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
+            ) =>
+        {
+            Ok(())
+        }
         Err(err) => Err(collab_agent_error(agent_id, err)),
     };
-    session
-        .send_event(
-            &turn,
-            CollabCloseEndEvent {
-                call_id,
-                completed_at_ms: now_unix_timestamp_ms(),
-                sender_thread_id: session.thread_id,
-                receiver_thread_id: agent_id,
-                receiver_agent_nickname: receiver_agent.agent_nickname,
-                receiver_agent_role: receiver_agent.agent_role,
-                status: status.clone(),
-            }
-            .into(),
-        )
-        .await;
     result?;
+    emit_sub_agent_activity(
+        &session,
+        &turn,
+        SubAgentActivityItem {
+            id: call_id,
+            agent_thread_id: agent_id,
+            agent_path: receiver_agent_path,
+            kind: SubAgentActivityKind::Interrupted,
+        },
+    )
+    .await;
 
     Ok(InterruptAgentResult {
         previous_status: status,
