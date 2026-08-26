@@ -3748,11 +3748,12 @@ mod tests {
 
     #[test]
     fn catalog_excludes_backend_llm_tools() {
-        let names: Vec<_> = super::tool_catalog()
+        let catalog = super::tool_catalog().expect("tool_catalog");
+        let names: Vec<_> = catalog
             .into_iter()
-            .map(|(name, _, _, _)| name)
+            .map(|tool| tool.name)
             .collect();
-        assert!(!names.contains(&"memory_reflect"));
+        assert!(!names.iter().any(|n| n == "memory_reflect"));
     }
 
     #[tokio::test]
