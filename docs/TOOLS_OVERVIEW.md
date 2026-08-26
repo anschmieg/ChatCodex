@@ -67,6 +67,19 @@ step limit atomically pauses the run and blocks further coding tools.
 | `git_commit` | Create a local commit | Requires run autonomy to allow commits |
 | `git_branch` | Create or move a local branch | Requires run autonomy to allow local git writes |
 | `git_checkout` | Switch branches | Requires run autonomy to allow local git writes |
+| `git_push` | Push a branch and optionally open a PR | Active runs require an explicit approved invocation; otherwise transition to `awaiting_approval` |
+
+### Deterministic Utilities And Memory
+
+| Tool | Purpose |
+|------|---------|
+| `get_time` | Return current UTC time as ISO 8601 and Unix seconds |
+| `memory_search` | Retrieve persistent Hindsight memory records |
+| `memory_retain` | Store a durable Hindsight memory record |
+| `memory_reflect` | Request cross-memory synthesis from the separately approved Hindsight service |
+
+`memory_reflect` is the documented narrow exception to the no-other-model rule;
+it does not plan, code, or control a harness loop.
 
 ## Typical Flow
 

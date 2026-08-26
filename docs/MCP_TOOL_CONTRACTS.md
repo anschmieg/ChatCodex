@@ -475,9 +475,10 @@ Returns:
 
 ## Git Tools
 
-Outbound network operations are rejected by deterministic policy. Read-only git
-inspection runs through the read-only sandbox. Local git metadata writes are
-limited to explicit git tools and are still network-blocked.
+Outbound network operations are rejected by deterministic policy except for the
+explicit `git_push` tool. Read-only git inspection runs through the read-only
+sandbox. Local git metadata writes are limited to explicit git tools and are
+still network-blocked.
 
 ### git
 
@@ -585,6 +586,58 @@ Returns:
 
 Requires `allow_git_commits: true` in the selected run autonomy envelope when a
 run is active.
+
+### git_push
+
+Push a branch to the configured origin and optionally open a pull request.
+
+Input:
+
+- `branch?: string`; defaults to the current branch
+- `create_pr?: boolean`
+- `base?: string`
+- `approved?: boolean`; must be `true` after explicit user approval when a run is active
+- `timeout_ms?: integer`
+
+Returns:
+
+- `branch`
+- `pushed`
+- `stdout`
+- `stderr`
+- `exit_code`
+- `awaiting_approval`
+- `pr_url?`
+- `pr_error?`
+- `run_metadata?`
+
+For an active run, omitting `approved: true` performs no network operation and
+atomically moves the run to `awaiting_approval`. The caller must present the
+exact push/PR effect to the user, receive approval, resume the run, and invoke
+the tool once with `approved: true`. Legacy calls without an active run retain
+their existing behavior.
+
+## Deterministic Utility And Memory Tools
+
+### get_time
+
+Returns current UTC time as `iso8601` and `unix_seconds`.
+
+### memory_search
+
+Searches configured Hindsight memory using `query` plus optional `budget`,
+`tags`, and `max_tokens`.
+
+### memory_retain
+
+Stores durable Hindsight memory from `content` plus optional `context` and
+`tags`.
+
+### memory_reflect
+
+Returns Hindsight synthesis for `query` plus optional `budget`, `tags`, and
+`max_tokens`. This is the separately approved memory-service exception; it does
+not execute coding work or control a harness loop.
 
 ## ChatGPT App Resource
 

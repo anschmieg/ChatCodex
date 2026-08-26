@@ -287,6 +287,9 @@ struct GitPushArgs {
     /// Base branch for the pull request (default: the remote default branch).
     #[serde(default)]
     base: Option<String>,
+    /// Confirms that the user approved this exact push/PR effect.
+    #[serde(default)]
+    approved: bool,
     #[serde(default)]
     timeout_ms: Option<u64>,
 }
@@ -1179,6 +1182,7 @@ impl NativeHarness {
             self.lifecycle.client_id(),
             "sandbox",
             Some(&name),
+            None,
             args.timeout_ms,
         )
         .await?;
@@ -1214,6 +1218,7 @@ impl NativeHarness {
             self.lifecycle.client_id(),
             source,
             Some(&name),
+            None,
             args.timeout_ms,
         )
         .await?;
@@ -1598,6 +1603,24 @@ impl NativeHarness {
     /// helper that reads the environment variable, so it is never written to
     /// `.git/config` or any other file the model can read.
     async fn git_push(&self, args: GitPushArgs) -> anyhow::Result<CallToolResult> {
+        if !args.approved && self.lifecycle.active_run()?.is_some() {
+            self.lifecycle.update_run(lifecycle::RunUpdate {
+                status: Some(lifecycle::RunStatus::AwaitingApproval),
+                next_action: Some(
+                    "present the exact git push and optional pull request effect for user approval"
+                        .to_string(),
+                ),
+                ..lifecycle::RunUpdate::default()
+            })?;
+            return Ok(text_result(json!({
+                "branch": args.branch.as_deref().unwrap_or("current"),
+                "pushed": false,
+                "stdout": "",
+                "stderr": "explicit user approval is required before git_push",
+                "exit_code": 1,
+                "awaiting_approval": true,
+            })));
+        }
         let workspace = self.workspace_or_error().await?;
         let token = std::env::var("CHATCODEX_GITHUB_TOKEN").ok();
         let Some(token) = token.filter(|t| !t.is_empty()) else {
@@ -1687,6 +1710,7 @@ impl NativeHarness {
             "stdout": push.stdout,
             "stderr": push.stderr,
             "exit_code": push.exit_code,
+            "awaiting_approval": false,
         });
 
         if pushed && args.create_pr {
@@ -2127,6 +2151,7 @@ fn tool_gets_active_run_metadata(name: &str) -> bool {
             | "git_commit"
             | "git_branch"
             | "git_checkout"
+            | "git_push"
             | "list_directory"
             | "todo"
     )
@@ -2711,9 +2736,9 @@ fn tool_catalog() -> anyhow::Result<Vec<Tool>> {
         ),
         (
             "git_push",
-            "Push the current (or named) branch to the origin remote, and optionally open a pull request for it. This is the only sanctioned outbound git operation: authentication uses the server-side CHATCODEX_GITHUB_TOKEN (the token is never exposed to the model or written to disk). Requires a cloned repository with a github.com (or GitHub Enterprise) origin. Set create_pr to true to open a pull request via the gh CLI; base defaults to the remote default branch.",
-            json!({"type":"object","properties":{"branch":{"type":"string"},"create_pr":{"type":"boolean"},"base":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"additionalProperties":false}),
-            json!({"type":"object","properties":{"branch":{"type":"string"},"pushed":{"type":"boolean"},"stdout":{"type":"string"},"stderr":{"type":"string"},"exit_code":{"type":"integer"},"pr_url":{"type":"string"},"pr_error":{"type":"string"}},"required":["branch","pushed","stdout","stderr","exit_code"],"additionalProperties":false}),
+            "Push the current (or named) branch to the origin remote, and optionally open a pull request for it. Active runs must first transition to awaiting_approval, then be resumed and invoke this tool with approved=true after explicit user approval of the exact branch and PR terms. This is the only sanctioned outbound git operation: authentication uses the server-side CHATCODEX_GITHUB_TOKEN (the token is never exposed to the model or written to disk). Requires a cloned repository with a github.com (or GitHub Enterprise) origin. Set create_pr to true to open a pull request via the gh CLI; base defaults to the remote default branch.",
+            json!({"type":"object","properties":{"branch":{"type":"string"},"create_pr":{"type":"boolean"},"base":{"type":"string"},"approved":{"type":"boolean"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"additionalProperties":false}),
+            json!({"type":"object","properties":{"branch":{"type":"string"},"pushed":{"type":"boolean"},"stdout":{"type":"string"},"stderr":{"type":"string"},"exit_code":{"type":"integer"},"awaiting_approval":{"type":"boolean"},"pr_url":{"type":"string"},"pr_error":{"type":"string"},"run_metadata": run_metadata_schema()},"required":["branch","pushed","stdout","stderr","exit_code","awaiting_approval"],"additionalProperties":false}),
         ),
         (
             "list_directory",
@@ -4129,6 +4154,56 @@ mod tests {
             serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
         assert!(parsed["entries"].is_array());
         assert!(parsed.get("run_metadata").is_none());
+    }
+
+    #[tokio::test]
+    async fn active_run_git_push_requires_explicit_approval() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let server = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("server");
+        let setup = server
+            .harness
+            .call("setup_workspace", serde_json::json!({"source": "sandbox"}))
+            .await
+            .expect("setup workspace");
+        let setup_json: serde_json::Value =
+            serde_json::from_str(setup.content[0].as_text().unwrap().text.as_str()).unwrap();
+        server
+            .harness
+            .call(
+                "run_start",
+                serde_json::json!({
+                    "project_id": setup_json["project_id"].as_str().unwrap(),
+                    "objective": "publish verified changes"
+                }),
+            )
+            .await
+            .expect("run start");
+
+        let result = server
+            .harness
+            .call("git_push", serde_json::json!({"approved": false}))
+            .await
+            .expect("approval gate");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert_eq!(parsed["pushed"], false);
+        assert_eq!(parsed["awaiting_approval"], true);
+        assert_eq!(parsed["run_metadata"]["status"], "awaiting_approval");
+        assert_eq!(
+            server
+                .harness
+                .lifecycle
+                .active_run()
+                .expect("active run")
+                .expect("selected run")
+                .status,
+            super::lifecycle::RunStatus::AwaitingApproval
+        );
     }
 
     #[tokio::test]
