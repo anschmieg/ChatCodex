@@ -173,11 +173,11 @@ Expected: ChatGPT creates a run and shows the `runId`.
 
 ## Known Limitations
 
-1. **Single workspace** — Each daemon instance manages one project/workspace
-2. **No concurrent runs** — Only one active run at a time per daemon
+1. **Per-client namespace** — Projects and runs are isolated by `CHATCODEX_CLIENT_ID`
+2. **Selected run context** — One run is selected for tool context, while multiple persistent runs may exist
 3. **Manual intervention** — Operators must approve certain actions
 4. **No web UI** — All interaction through ChatGPT MCP client
-5. **SQLite only** — No other database backends
+5. **Atomic JSON lifecycle store** — Project/run metadata uses the native Rust store
 
 ---
 

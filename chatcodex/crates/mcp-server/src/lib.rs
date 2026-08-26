@@ -5,6 +5,9 @@
 
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+mod app_resources;
+mod lifecycle;
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
@@ -39,6 +42,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
+use rmcp::model::AnnotateAble;
 use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
 use rmcp::model::Content;
@@ -46,18 +50,18 @@ use rmcp::model::GetPromptRequestParams;
 use rmcp::model::GetPromptResult;
 use rmcp::model::JsonObject;
 use rmcp::model::ListPromptsResult;
-use rmcp::model::AnnotateAble;
-use rmcp::model::ListResourcesResult;
 use rmcp::model::ListResourceTemplatesResult;
+use rmcp::model::ListResourcesResult;
 use rmcp::model::ListToolsResult;
+use rmcp::model::Meta;
 use rmcp::model::PaginatedRequestParams;
+use rmcp::model::Prompt;
+use rmcp::model::PromptMessage;
+use rmcp::model::PromptMessageRole;
 use rmcp::model::RawResource;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
 use rmcp::model::ResourceContents;
-use rmcp::model::Prompt;
-use rmcp::model::PromptMessage;
-use rmcp::model::PromptMessageRole;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::model::Tool;
@@ -65,12 +69,11 @@ use rmcp::model::ToolAnnotations;
 use rmcp::transport::StreamableHttpServerConfig;
 use rmcp::transport::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info_span;
@@ -80,32 +83,38 @@ const SERVER_INSTRUCTIONS: &str = "\
 # ChatCodex — Deterministic Coding Harness
 
 You are connected to a deterministic coding harness. Your goal is to complete the \
-user's task end-to-end. Plan your work, execute each step, verify results, and do not \
-stop until every item on your TODO checklist is checked off or explicitly dismissed.
+user's coding task end-to-end. ChatGPT is the only reasoning engine: the server only \
+records deterministic project/run state and executes explicit tools.
 
 ## Golden rules
-1. Commands execute in a read-only filesystem sandbox — use `apply_patch` for ALL writes.
-2. Inspect manifests and understand the project before modifying anything.
-3. Prefer `mise exec -- <command>` for toolchains and `uv` for Python.
-4. System package installation and privilege escalation are FORBIDDEN.
-5. After each step, check your TODO list. If items remain, continue working.
-6. Stop only when ALL items are checked off or dismissed — or when you need user input.
+1. Commands execute in a read-only filesystem sandbox — use `apply_patch` for ALL workspace source writes.
+2. Create or select a persistent project, then start or resume a persistent run for the first coding request.
+3. Keep the run phase accurate: inspect, plan, execute, then verify.
+4. Track the plan with `update_plan` and the checklist with `todo`; these persist on the active run.
+5. Chain fine-grained deterministic tools while work remains and the run is active.
+6. Verify every acceptance criterion before marking the run completed.
+7. Stop only when the run is completed, cancelled, blocked, paused, or awaiting approval.
+8. External effects require awaiting_approval unless an existing authorized tool policy explicitly permits them.
+9. System package installation and privilege escalation are FORBIDDEN.
 
 ## Tool usage
+- `project_create` / `project_select` / `project_list` / `project_get` — manage persistent projects
+- `run_start` / `run_list` / `run_get` / `run_update` / `run_resume` / `run_cancel` — manage persistent runs
 - `exec_command` / `write_stdin` — run commands, start interactive sessions
-- `apply_patch` — the ONLY workspace write path
+- `apply_patch` — the ONLY workspace source write path
 - `read_file` / `search_code` / `list_directory` — inspect the workspace
 - `git_status` / `git_diff` — inspect git state
-- `update_plan` / `todo` — track progress
+- `git` / `git_commit` / `git_branch` / `git_checkout` — local git operations with outbound network commands blocked
+- `setup_workspace` — legacy compatibility path that creates/selects a persistent project
+- `update_plan` / `todo` — track run progress
 - `view_image` — view images in the workspace
-- `update_plan` — track the current plan step
-- `todo` — manage a persistent checklist
 
 ## Completion protocol
-1. **Plan**: Break the task into concrete TODO items using the `todo` tool.
-2. **Execute**: Work through items one at a time. After each, check it off with `todo(items: [{id: \"...\", status: \"checked\"}], action: \"update\")`.
-3. **Verify**: After all items are done, verify the result works.
-4. **Finish**: Only stop once your TODO list is empty (all checked or dismissed).";
+1. **Select context**: Create/select a project and start/resume a run.
+2. **Plan**: Record phase `plan`, then create concrete plan and TODO items.
+3. **Execute**: Record phase `execute`, work one item at a time, and update the checklist after each item.
+4. **Verify**: Record phase `verify`, run the real checks, and compare results to acceptance criteria.
+5. **Finish**: Use `run_update(status: \"completed\", work_remaining: false)` only after verification passes. Use `blocked`, `paused`, or `awaiting_approval` when work cannot safely continue.";
 
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const DEFAULT_YIELD_MS: u64 = 10_000;
@@ -120,29 +129,10 @@ pub struct NativeHarnessMcp {
 
 struct NativeHarness {
     workspace_base: AbsolutePathBuf,
-    current_workspace: RwLock<Option<AbsolutePathBuf>>,
+    lifecycle: lifecycle::LifecycleStore,
     environment: Environment,
     processes: Mutex<HashMap<ProcessId, ProcessSession>>,
-    plan: Mutex<Value>,
-    todo: Mutex<Vec<TodoItem>>,
     linux_sandbox_exe: Option<PathBuf>,
-    client_id: String,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TodoItem {
-    id: String,
-    description: String,
-    status: TodoStatus,
-}
-
-#[derive(Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-enum TodoStatus {
-    Pending,
-    Checked,
-    Dismissed,
 }
 
 struct ProcessSession {
@@ -328,6 +318,132 @@ enum TodoAction {
     Update,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectCreateArgs {
+    kind: lifecycle::ProjectKind,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    path: Option<PathBuf>,
+    #[serde(default = "default_true")]
+    select: bool,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectSelectArgs {
+    project_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectListArgs {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectGetArgs {
+    #[serde(default)]
+    project_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunStartArgs {
+    #[serde(default)]
+    project_id: Option<String>,
+    objective: String,
+    #[serde(default)]
+    acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    autonomy: lifecycle::AutonomyEnvelope,
+    #[serde(default = "default_true")]
+    select: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunListArgs {
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    status: Option<lifecycle::RunStatus>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunGetArgs {
+    #[serde(default)]
+    run_id: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RunUpdateArgs {
+    #[serde(default)]
+    run_id: Option<String>,
+    #[serde(default)]
+    phase: Option<lifecycle::RunPhase>,
+    #[serde(default)]
+    status: Option<lifecycle::RunStatus>,
+    #[serde(default)]
+    acceptance_criteria: Option<Vec<String>>,
+    #[serde(default)]
+    plan: Option<Vec<lifecycle::PlanItem>>,
+    #[serde(default)]
+    checklist: Option<Vec<lifecycle::ChecklistItem>>,
+    #[serde(default)]
+    checkpoint: Option<lifecycle::CheckpointInput>,
+    #[serde(default)]
+    work_remaining: Option<bool>,
+    #[serde(default)]
+    next_action: Option<String>,
+    #[serde(default)]
+    step_delta: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunResumeArgs {
+    #[serde(default)]
+    run_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunCancelArgs {
+    #[serde(default)]
+    run_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FollowupLeaseArgs {
+    run_id: String,
+    #[serde(default)]
+    requested_nonce: Option<String>,
+    #[serde(default)]
+    ttl_ms: Option<u64>,
+    #[serde(default)]
+    delay_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlanEnvelope {
+    #[serde(default)]
+    explanation: Option<String>,
+    plan: Vec<lifecycle::PlanItem>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 impl NativeHarnessMcp {
     pub async fn new() -> anyhow::Result<Self> {
         Self::new_with_arg0_paths(Arg0DispatchPaths::default()).await
@@ -377,18 +493,16 @@ impl NativeHarnessMcp {
         };
         let client_id =
             std::env::var("CHATCODEX_CLIENT_ID").unwrap_or_else(|_| "default".to_string());
+        let lifecycle = lifecycle::LifecycleStore::open(workspace_base.as_path(), &client_id)?;
         Ok(Self {
             tools: Arc::new(tool_catalog()?),
             prompts: Arc::new(prompt_catalog()),
             harness: Arc::new(NativeHarness {
                 workspace_base,
-                current_workspace: RwLock::new(None),
+                lifecycle,
                 environment,
                 processes: Mutex::new(HashMap::new()),
-                plan: Mutex::new(json!({"plan": []})),
-                todo: Mutex::new(Vec::new()),
                 linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe,
-                client_id,
             }),
         })
     }
@@ -400,15 +514,24 @@ impl NativeHarnessMcp {
 
 impl NativeHarness {
     async fn workspace_or_error(&self) -> anyhow::Result<AbsolutePathBuf> {
-        let workspace = self.current_workspace.read().await;
-        workspace
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Workspace not configured. Call setup_workspace(source: '<git-url>') or setup_workspace(source: 'sandbox') first."))
+        let state = self.lifecycle.snapshot()?;
+        let active_project_id = state.active_project_id.clone();
+        let project_id = state
+            .active_run_id
+            .as_deref()
+            .and_then(|run_id| state.runs.get(run_id))
+            .map(|run| run.project_id.clone())
+            .or(active_project_id);
+        let project = project_id
+            .as_deref()
+            .and_then(|id| state.projects.get(id))
+            .ok_or_else(|| anyhow::anyhow!("Workspace not configured. Call project_create/project_select or setup_workspace(source: '<git-url>'|'sandbox') first."))?;
+        AbsolutePathBuf::from_absolute_path(&project.workspace_root)
+            .context("selected project workspace path is not absolute")
     }
 
     async fn call(&self, name: &str, arguments: Value) -> anyhow::Result<CallToolResult> {
-        match name {
+        let mut result = match name {
             "exec_command" => self.exec_command(serde_json::from_value(arguments)?).await,
             "write_stdin" => self.write_stdin(serde_json::from_value(arguments)?).await,
             "update_plan" => self.update_plan(arguments).await,
@@ -442,11 +565,38 @@ impl NativeHarness {
                     .await
             }
             "todo" => self.todo(serde_json::from_value(arguments)?).await,
+            "project_create" => {
+                self.project_create(serde_json::from_value(arguments)?)
+                    .await
+            }
+            "project_select" => {
+                self.project_select(serde_json::from_value(arguments)?)
+                    .await
+            }
+            "project_list" => self.project_list(serde_json::from_value(arguments)?).await,
+            "project_get" => self.project_get(serde_json::from_value(arguments)?).await,
+            "run_start" => self.run_start(serde_json::from_value(arguments)?).await,
+            "run_list" => self.run_list(serde_json::from_value(arguments)?).await,
+            "run_get" => self.run_get(serde_json::from_value(arguments)?).await,
+            "run_update" => self.run_update(serde_json::from_value(arguments)?).await,
+            "run_resume" => self.run_resume(serde_json::from_value(arguments)?).await,
+            "run_cancel" => self.run_cancel(serde_json::from_value(arguments)?).await,
+            "run_followup_lease" => {
+                self.run_followup_lease(serde_json::from_value(arguments)?)
+                    .await
+            }
             _ => anyhow::bail!("unknown deterministic tool: {name}"),
+        }?;
+        if tool_gets_active_run_metadata(name) {
+            self.attach_active_run_metadata(&mut result)?;
         }
+        Ok(result)
     }
 
     async fn exec_command(&self, args: ExecCommandArgs) -> anyhow::Result<CallToolResult> {
+        self.ensure_active_run_can("run local commands", |run| {
+            run.autonomy.allow_local_commands
+        })?;
         let workspace = self.workspace_or_error().await?;
         let shell_argv = vec!["bash".to_string(), "-lc".to_string(), args.cmd];
         if dangerous_command_match(&shell_argv).is_some() {
@@ -461,7 +611,9 @@ impl NativeHarness {
         let (file_system_sandbox_policy, _) = permissions.to_runtime_permissions();
         let sandbox = self.resolve_sandbox_type();
         let no_sandbox_warning = if sandbox == SandboxType::None {
-            Some("Warning: read-only filesystem sandbox is not available in this environment; commands MAY modify the workspace.")
+            Some(
+                "Warning: read-only filesystem sandbox is not available in this environment; commands MAY modify the workspace.",
+            )
         } else {
             None
         };
@@ -582,23 +734,23 @@ impl NativeHarness {
     }
 
     async fn update_plan(&self, arguments: Value) -> anyhow::Result<CallToolResult> {
-        let plan = arguments
-            .get("plan")
-            .and_then(Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("plan must be an array"))?;
-        if plan
-            .iter()
-            .filter(|item| item["status"] == "in_progress")
-            .count()
-            > 1
-        {
-            anyhow::bail!("at most one plan item may be in progress");
+        let envelope: PlanEnvelope = serde_json::from_value(arguments.clone())?;
+        lifecycle::validate_plan(&envelope.plan)?;
+        if let Some(run) = self.lifecycle.active_run()? {
+            let PlanEnvelope { plan, .. } = envelope;
+            self.lifecycle.update_run(lifecycle::RunUpdate {
+                run_id: Some(run.id),
+                plan: Some(plan),
+                ..lifecycle::RunUpdate::default()
+            })?;
+        } else {
+            self.lifecycle.set_legacy_plan(arguments.clone())?;
         }
-        *self.plan.lock().await = arguments.clone();
         Ok(text_result(arguments))
     }
 
     async fn apply_patch(&self, args: ApplyPatchArgs) -> anyhow::Result<CallToolResult> {
+        self.ensure_active_run_can("edit files", |run| run.autonomy.allow_file_edits)?;
         let workspace = self.workspace_or_error().await?;
         let policy = SandboxPolicy::WorkspaceWrite {
             writable_roots: Vec::new(),
@@ -871,22 +1023,27 @@ impl NativeHarness {
     }
 
     async fn todo(&self, args: TodoArgs) -> anyhow::Result<CallToolResult> {
-        let mut todo = self.todo.lock().await;
+        let active_run = self.lifecycle.active_run()?;
+        let mut todo = if let Some(run) = &active_run {
+            run.checklist.clone()
+        } else {
+            self.lifecycle.snapshot()?.legacy_todo
+        };
         match args.action {
             TodoAction::Replace => {
                 let mut items = Vec::new();
                 for (i, input) in args.items.into_iter().enumerate() {
-                    items.push(TodoItem {
+                    items.push(lifecycle::ChecklistItem {
                         id: input.id.unwrap_or_else(|| format!("t{}", i + 1)),
                         description: input.description.unwrap_or_default(),
                         status: match input.status.as_deref() {
-                            Some("checked") => TodoStatus::Checked,
-                            Some("dismissed") => TodoStatus::Dismissed,
-                            _ => TodoStatus::Pending,
+                            Some("checked") => lifecycle::ChecklistStatus::Checked,
+                            Some("dismissed") => lifecycle::ChecklistStatus::Dismissed,
+                            _ => lifecycle::ChecklistStatus::Pending,
                         },
                     });
                 }
-                *todo = items;
+                todo = items;
             }
             TodoAction::Update => {
                 for input in args.items {
@@ -896,22 +1053,31 @@ impl NativeHarness {
                             existing.description = desc;
                         }
                         existing.status = match input.status.as_deref() {
-                            Some("checked") => TodoStatus::Checked,
-                            Some("dismissed") => TodoStatus::Dismissed,
-                            Some("pending") => TodoStatus::Pending,
+                            Some("checked") => lifecycle::ChecklistStatus::Checked,
+                            Some("dismissed") => lifecycle::ChecklistStatus::Dismissed,
+                            Some("pending") => lifecycle::ChecklistStatus::Pending,
                             _ => continue,
                         };
                     }
                 }
             }
         }
+        if let Some(run) = active_run {
+            self.lifecycle.update_run(lifecycle::RunUpdate {
+                run_id: Some(run.id),
+                checklist: Some(todo.clone()),
+                ..lifecycle::RunUpdate::default()
+            })?;
+        } else {
+            self.lifecycle.set_legacy_todo(todo.clone())?;
+        }
         let response: Vec<Value> = todo
             .iter()
             .map(|item| {
                 let status_str = match item.status {
-                    TodoStatus::Pending => "pending",
-                    TodoStatus::Checked => "checked",
-                    TodoStatus::Dismissed => "dismissed",
+                    lifecycle::ChecklistStatus::Pending => "pending",
+                    lifecycle::ChecklistStatus::Checked => "checked",
+                    lifecycle::ChecklistStatus::Dismissed => "dismissed",
                 };
                 json!({
                     "id": item.id,
@@ -922,15 +1088,15 @@ impl NativeHarness {
             .collect();
         let pending_count = todo
             .iter()
-            .filter(|i| i.status == TodoStatus::Pending)
+            .filter(|i| i.status == lifecycle::ChecklistStatus::Pending)
             .count();
         let checked_count = todo
             .iter()
-            .filter(|i| i.status == TodoStatus::Checked)
+            .filter(|i| i.status == lifecycle::ChecklistStatus::Checked)
             .count();
         let dismissed_count = todo
             .iter()
-            .filter(|i| i.status == TodoStatus::Dismissed)
+            .filter(|i| i.status == lifecycle::ChecklistStatus::Dismissed)
             .count();
         Ok(text_result(json!({
             "items": response,
@@ -947,25 +1113,353 @@ impl NativeHarness {
     async fn setup_workspace(&self, args: SetupWorkspaceArgs) -> anyhow::Result<CallToolResult> {
         let workspace_result = do_setup_workspace(
             &self.workspace_base,
-            &self.client_id,
+            self.lifecycle.client_id(),
             &args.source,
             args.name.as_deref(),
             args.ref_name.as_deref(),
             args.timeout_ms,
         )
         .await?;
-        let mut guard = self.current_workspace.write().await;
-        *guard = Some(AbsolutePathBuf::from_absolute_path(
-            &workspace_result.workspace_root,
-        )?);
+        let name = args
+            .name
+            .as_deref()
+            .map(sanitize_workspace_name)
+            .transpose()?
+            .unwrap_or_else(|| {
+                derive_workspace_name(&args.source).unwrap_or_else(|_| "workspace".to_string())
+            });
+        let source = if args.source == "sandbox" {
+            lifecycle::ProjectSource::Scratch
+        } else {
+            lifecycle::redacted_git_source(&args.source)?
+        };
+        let project = self.lifecycle.upsert_project(lifecycle::ProjectUpsert {
+            kind: if args.source == "sandbox" {
+                lifecycle::ProjectKind::Scratch
+            } else {
+                lifecycle::ProjectKind::Repo
+            },
+            name,
+            workspace_root: workspace_result.workspace_root.clone(),
+            source,
+            select: true,
+        })?;
+        let response_source = match &project.project.source {
+            lifecycle::ProjectSource::Git { url, .. } => url.clone(),
+            _ => workspace_result.source,
+        };
         Ok(text_result(json!({
             "workspace_root": workspace_result.workspace_root,
-            "source": workspace_result.source,
+            "source": response_source,
             "action": workspace_result.action,
+            "project_id": project.project.id,
         })))
     }
 
+    async fn project_create(&self, args: ProjectCreateArgs) -> anyhow::Result<CallToolResult> {
+        match args.kind.clone() {
+            lifecycle::ProjectKind::Scratch => self.project_create_scratch(args).await,
+            lifecycle::ProjectKind::Repo => self.project_create_repo(args).await,
+            lifecycle::ProjectKind::Workspace => self.project_create_workspace(args).await,
+        }
+    }
+
+    async fn project_create_scratch(
+        &self,
+        args: ProjectCreateArgs,
+    ) -> anyhow::Result<CallToolResult> {
+        let name = args.name.unwrap_or_else(|| "sandbox".to_string());
+        let workspace_result = do_setup_workspace(
+            &self.workspace_base,
+            self.lifecycle.client_id(),
+            "sandbox",
+            Some(&name),
+            args.timeout_ms,
+        )
+        .await?;
+        let project = self.lifecycle.upsert_project(lifecycle::ProjectUpsert {
+            kind: lifecycle::ProjectKind::Scratch,
+            name: sanitize_workspace_name(&name)?,
+            workspace_root: workspace_result.workspace_root,
+            source: lifecycle::ProjectSource::Scratch,
+            select: args.select,
+        })?;
+        Ok(text_result(json!({
+            "project": project.project,
+            "action": project.action,
+            "selected": args.select,
+        })))
+    }
+
+    async fn project_create_repo(&self, args: ProjectCreateArgs) -> anyhow::Result<CallToolResult> {
+        let source = args
+            .source
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("source is required for repo projects"))?;
+        let name = args
+            .name
+            .as_deref()
+            .map(sanitize_workspace_name)
+            .transpose()?
+            .unwrap_or_else(|| {
+                derive_workspace_name(source).unwrap_or_else(|_| "repo".to_string())
+            });
+        let workspace_result = do_setup_workspace(
+            &self.workspace_base,
+            self.lifecycle.client_id(),
+            source,
+            Some(&name),
+            args.timeout_ms,
+        )
+        .await?;
+        let project = self.lifecycle.upsert_project(lifecycle::ProjectUpsert {
+            kind: lifecycle::ProjectKind::Repo,
+            name,
+            workspace_root: workspace_result.workspace_root,
+            source: lifecycle::redacted_git_source(source)?,
+            select: args.select,
+        })?;
+        Ok(text_result(json!({
+            "project": project.project,
+            "action": workspace_result.action,
+            "selected": args.select,
+        })))
+    }
+
+    async fn project_create_workspace(
+        &self,
+        args: ProjectCreateArgs,
+    ) -> anyhow::Result<CallToolResult> {
+        let requested = args
+            .path
+            .or_else(|| args.source.map(PathBuf::from))
+            .ok_or_else(|| anyhow::anyhow!("path or source is required for workspace projects"))?;
+        let path = if requested.is_absolute() {
+            requested
+        } else {
+            self.workspace_base.as_path().join(requested)
+        };
+        let canonical_base =
+            std::fs::canonicalize(self.workspace_base.as_path()).with_context(|| {
+                format!(
+                    "failed to resolve workspace base {}",
+                    self.workspace_base.as_path().display()
+                )
+            })?;
+        let canonical = std::fs::canonicalize(&path)
+            .with_context(|| format!("failed to resolve workspace {}", path.display()))?;
+        if !canonical.starts_with(&canonical_base) {
+            anyhow::bail!("registered workspace must be under the workspace base");
+        }
+        if !canonical.is_dir() {
+            anyhow::bail!(
+                "registered workspace is not a directory: {}",
+                canonical.display()
+            );
+        }
+        let name = args
+            .name
+            .as_deref()
+            .map(sanitize_workspace_name)
+            .transpose()?
+            .or_else(|| {
+                canonical
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| sanitize_workspace_name(name).ok())
+            })
+            .unwrap_or_else(|| "workspace".to_string());
+        let project = self.lifecycle.upsert_project(lifecycle::ProjectUpsert {
+            kind: lifecycle::ProjectKind::Workspace,
+            name,
+            workspace_root: canonical.clone(),
+            source: lifecycle::workspace_source(canonical),
+            select: args.select,
+        })?;
+        Ok(text_result(json!({
+            "project": project.project,
+            "action": project.action,
+            "selected": args.select,
+        })))
+    }
+
+    async fn project_select(&self, args: ProjectSelectArgs) -> anyhow::Result<CallToolResult> {
+        let project = self.lifecycle.select_project(&args.project_id)?;
+        Ok(text_result(json!({
+            "project": project,
+            "selected": true,
+        })))
+    }
+
+    async fn project_list(&self, _args: ProjectListArgs) -> anyhow::Result<CallToolResult> {
+        let snapshot = self.lifecycle.snapshot()?;
+        let active_project_id = snapshot.active_project_id.clone();
+        Ok(text_result(json!({
+            "projects": snapshot.projects.into_values().collect::<Vec<_>>(),
+            "active_project_id": active_project_id,
+        })))
+    }
+
+    async fn project_get(&self, args: ProjectGetArgs) -> anyhow::Result<CallToolResult> {
+        let snapshot = self.lifecycle.snapshot()?;
+        let active_project_id = snapshot.active_project_id.clone();
+        let project_id = args
+            .project_id
+            .or(active_project_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("project_id is required when no project is selected"))?;
+        let project = snapshot
+            .projects
+            .get(&project_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("unknown project: {project_id}"))?;
+        Ok(text_result(json!({
+            "project": project,
+            "selected": active_project_id.as_deref() == Some(project_id.as_str()),
+        })))
+    }
+
+    async fn run_start(&self, args: RunStartArgs) -> anyhow::Result<CallToolResult> {
+        let run = self.lifecycle.start_run(lifecycle::RunStart {
+            project_id: args.project_id,
+            objective: args.objective,
+            acceptance_criteria: args.acceptance_criteria,
+            autonomy: args.autonomy,
+            select: args.select,
+        })?;
+        Ok(run_result(run.run))
+    }
+
+    async fn run_list(&self, args: RunListArgs) -> anyhow::Result<CallToolResult> {
+        let snapshot = self.lifecycle.snapshot()?;
+        let active_run_id = snapshot.active_run_id.clone();
+        let runs = snapshot
+            .runs
+            .into_values()
+            .filter(|run| {
+                args.project_id
+                    .as_deref()
+                    .is_none_or(|project_id| run.project_id == project_id)
+            })
+            .filter(|run| {
+                args.status
+                    .as_ref()
+                    .is_none_or(|status| run.status == *status)
+            })
+            .collect::<Vec<_>>();
+        Ok(text_result(json!({
+            "runs": runs,
+            "active_run_id": active_run_id,
+        })))
+    }
+
+    async fn run_get(&self, args: RunGetArgs) -> anyhow::Result<CallToolResult> {
+        let run = self.resolve_run(args.run_id.as_deref())?;
+        Ok(run_result(run))
+    }
+
+    async fn run_update(&self, args: RunUpdateArgs) -> anyhow::Result<CallToolResult> {
+        let update = lifecycle::RunUpdate {
+            run_id: args.run_id,
+            phase: args.phase,
+            status: args.status,
+            acceptance_criteria: args.acceptance_criteria,
+            plan: args.plan,
+            checklist: args.checklist,
+            checkpoint: args.checkpoint,
+            work_remaining: args.work_remaining,
+            next_action: args.next_action,
+            step_delta: args.step_delta,
+        };
+        let run = self.lifecycle.update_run(update)?;
+        Ok(run_result(run.run))
+    }
+
+    async fn run_resume(&self, args: RunResumeArgs) -> anyhow::Result<CallToolResult> {
+        let run_id = self.resolve_run_id(args.run_id.as_deref())?;
+        let run = self.lifecycle.resume_run(&run_id)?;
+        Ok(run_result(run.run))
+    }
+
+    async fn run_cancel(&self, args: RunCancelArgs) -> anyhow::Result<CallToolResult> {
+        let run_id = self.resolve_run_id(args.run_id.as_deref())?;
+        let run = self.lifecycle.cancel_run(&run_id)?;
+        Ok(run_result(run.run))
+    }
+
+    async fn run_followup_lease(&self, args: FollowupLeaseArgs) -> anyhow::Result<CallToolResult> {
+        let lease = self
+            .lifecycle
+            .acquire_followup_lease(lifecycle::FollowupLeaseRequest {
+                run_id: args.run_id.clone(),
+                requested_nonce: args.requested_nonce,
+                now_ms: None,
+                ttl_ms: args.ttl_ms,
+                delay_ms: args.delay_ms,
+            })?;
+        let run = self.lifecycle.get_run(&args.run_id)?;
+        let mut value = serde_json::to_value(lease)?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "run_metadata".to_string(),
+                lifecycle::run_metadata(&run, lifecycle::current_time_ms()),
+            );
+        }
+        Ok(text_result(value))
+    }
+
+    fn resolve_run_id(&self, explicit: Option<&str>) -> anyhow::Result<String> {
+        if let Some(run_id) = explicit {
+            return Ok(run_id.to_string());
+        }
+        self.lifecycle
+            .snapshot()?
+            .active_run_id
+            .ok_or_else(|| anyhow::anyhow!("run_id is required when no run is selected"))
+    }
+
+    fn resolve_run(&self, explicit: Option<&str>) -> anyhow::Result<lifecycle::Run> {
+        let run_id = self.resolve_run_id(explicit)?;
+        self.lifecycle.get_run(&run_id)
+    }
+
+    fn attach_active_run_metadata(&self, result: &mut CallToolResult) -> anyhow::Result<()> {
+        let Some(run) = self.lifecycle.active_run()? else {
+            return Ok(());
+        };
+        attach_run_metadata(
+            result,
+            lifecycle::run_metadata(&run, lifecycle::current_time_ms()),
+        )
+    }
+
+    fn ensure_active_run_can(
+        &self,
+        action: &str,
+        allowed: impl FnOnce(&lifecycle::Run) -> bool,
+    ) -> anyhow::Result<()> {
+        let Some(run) = self.lifecycle.active_run()? else {
+            return Ok(());
+        };
+        if run.status != lifecycle::RunStatus::Active {
+            anyhow::bail!(
+                "selected run {} is {}; cannot {} until the run is active",
+                run.id,
+                run.status.as_str(),
+                action
+            );
+        }
+        if !allowed(&run) {
+            anyhow::bail!("selected run {} does not allow {}", run.id, action);
+        }
+        Ok(())
+    }
+
     async fn git_tool(&self, args: GitToolArgs) -> anyhow::Result<CallToolResult> {
+        if git_command_requires_commit_permission(&args.command) {
+            self.ensure_active_run_can("run local git writes", |run| {
+                run.autonomy.allow_git_commits
+            })?;
+        }
         let workspace = self.workspace_or_error().await?;
         let result = self
             .run_sandboxed_git(
@@ -999,6 +1493,7 @@ impl NativeHarness {
     }
 
     async fn git_commit(&self, args: GitCommitArgs) -> anyhow::Result<CallToolResult> {
+        self.ensure_active_run_can("create git commits", |run| run.autonomy.allow_git_commits)?;
         let workspace = self.workspace_or_error().await?;
         // Ensure git has an identity in this repo so commits succeed without
         // relying on global user configuration.
@@ -1038,6 +1533,7 @@ impl NativeHarness {
     }
 
     async fn git_branch(&self, args: GitBranchArgs) -> anyhow::Result<CallToolResult> {
+        self.ensure_active_run_can("run local git writes", |run| run.autonomy.allow_git_commits)?;
         let workspace = self.workspace_or_error().await?;
         let mut command = format!("branch {}", shell_escape(&args.name));
         if args.force {
@@ -1063,6 +1559,7 @@ impl NativeHarness {
     }
 
     async fn git_checkout(&self, args: GitCheckoutArgs) -> anyhow::Result<CallToolResult> {
+        self.ensure_active_run_can("run local git writes", |run| run.autonomy.allow_git_commits)?;
         let workspace = self.workspace_or_error().await?;
         let mut command = String::from("checkout");
         if args.create_branch {
@@ -1272,9 +1769,9 @@ impl NativeHarness {
 
     /// Run a git command through the exec-server sandbox.
     ///
-    /// ReadOnly mode applies the same filesystem policy as .
-    /// WorkspaceWrite mode applies the same policy as  so that
-    /// local git metadata writes (commit, branch, checkout) are allowed.
+    /// ReadOnly mode applies the command sandbox. Unsandboxed mode is reserved
+    /// for local git metadata writes after outbound subcommands and active-run
+    /// autonomy gates have been checked.
     async fn run_sandboxed_git(
         &self,
         workspace: &AbsolutePathBuf,
@@ -1517,10 +2014,7 @@ impl NativeHarness {
         if sandbox == SandboxType::LinuxSeccomp {
             if let Some(bwrap_path) = codex_sandboxing::find_system_bwrap_in_path() {
                 let timeout = std::time::Duration::from_millis(500);
-                if !codex_sandboxing::system_bwrap_has_user_namespace_access(
-                    &bwrap_path,
-                    timeout,
-                ) {
+                if !codex_sandboxing::system_bwrap_has_user_namespace_access(&bwrap_path, timeout) {
                     tracing::warn!(
                         "bubblewrap user namespace access unavailable; disabling sandbox"
                     );
@@ -1568,6 +2062,69 @@ pub(crate) fn text_result(value: Value) -> CallToolResult {
 
 fn error_result(message: String) -> CallToolResult {
     CallToolResult::error(vec![Content::text(message)])
+}
+
+fn run_result(run: lifecycle::Run) -> CallToolResult {
+    let metadata = lifecycle::run_metadata(&run, lifecycle::current_time_ms());
+    text_result(json!({
+        "run": run,
+        "run_metadata": metadata,
+    }))
+}
+
+fn attach_run_metadata(result: &mut CallToolResult, metadata: Value) -> anyhow::Result<()> {
+    let structured = result
+        .structured_content
+        .take()
+        .unwrap_or_else(|| json!({}));
+    let mut structured = match structured {
+        Value::Object(object) => object,
+        other => {
+            let mut object = serde_json::Map::new();
+            object.insert("value".to_string(), other);
+            object
+        }
+    };
+    structured.insert("run_metadata".to_string(), metadata.clone());
+    let structured = Value::Object(structured);
+    if result
+        .content
+        .first()
+        .and_then(|content| content.as_text())
+        .is_some()
+    {
+        let text =
+            serde_json::to_string_pretty(&structured).unwrap_or_else(|_| structured.to_string());
+        result.content = vec![Content::text(text)];
+    }
+    result.structured_content = Some(structured);
+
+    let mut meta = result.meta.take().map(|meta| meta.0).unwrap_or_default();
+    meta.insert("chatcodex/run".to_string(), metadata);
+    result.meta = Some(Meta(meta));
+    Ok(())
+}
+
+fn tool_gets_active_run_metadata(name: &str) -> bool {
+    matches!(
+        name,
+        "exec_command"
+            | "write_stdin"
+            | "update_plan"
+            | "apply_patch"
+            | "view_image"
+            | "read_file"
+            | "search_code"
+            | "setup_workspace"
+            | "git"
+            | "git_status"
+            | "git_diff"
+            | "git_commit"
+            | "git_branch"
+            | "git_checkout"
+            | "list_directory"
+            | "todo"
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1858,6 +2415,20 @@ fn is_outbound_git_command(command: &str) -> bool {
     false
 }
 
+fn git_command_requires_commit_permission(command: &str) -> bool {
+    let words = shlex::split(command)
+        .unwrap_or_else(|| command.split_whitespace().map(String::from).collect());
+    let Some(subcommand) = words.first().map(String::as_str) else {
+        return false;
+    };
+    match subcommand {
+        "add" | "am" | "apply" | "bisect" | "branch" | "checkout" | "cherry-pick" | "clean"
+        | "commit" | "config" | "merge" | "mv" | "rebase" | "reset" | "restore" | "revert"
+        | "rm" | "stash" | "switch" | "tag" | "worktree" => true,
+        _ => false,
+    }
+}
+
 async fn run_git_command_with_args(
     cwd: &Path,
     argv: Vec<String>,
@@ -2071,7 +2642,7 @@ fn tool_catalog() -> anyhow::Result<Vec<Tool>> {
             "setup_workspace",
             "Prepare the workspace for this client. Provide a git URL to clone a repository, or pass 'sandbox' for a persistent scratch directory with an initialized git repo. Private GitHub repositories are supported when the server has CHATCODEX_GITHUB_TOKEN configured: use a credential-free https://github.com/... URL and the clone is authenticated server-side. Pass \"ref\" (a branch, tag, or commit) to check out a specific ref after clone. URLs containing embedded credentials are rejected.",
             json!({"type":"object","properties":{"source":{"type":"string"},"name":{"type":"string"},"ref":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"required":["source"],"additionalProperties":false}),
-            json!({"type":"object","properties":{"workspace_root":{"type":"string"},"source":{"type":"string"},"action":{"type":"string"}},"required":["workspace_root","source","action"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"workspace_root":{"type":"string"},"source":{"type":"string"},"action":{"type":"string"},"project_id":{"type":"string"}},"required":["workspace_root","source","action","project_id"],"additionalProperties":false}),
         ),
         (
             "git",
@@ -2146,6 +2717,72 @@ fn tool_catalog() -> anyhow::Result<Vec<Tool>> {
             json!({"type":"object","properties":{"path":{"type":"string"},"entries":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"is_directory":{"type":"boolean"},"is_file":{"type":"boolean"}},"required":["name","is_directory","is_file"],"additionalProperties":false}}},"required":["path","entries"],"additionalProperties":false}),
         ),
         (
+            "project_create",
+            "Create or register a persistent project and optionally select it. Scratch projects create a persistent git-initialized sandbox; repo projects clone or reuse a git remote; workspace projects register an existing directory beneath the workspace base.",
+            json!({"type":"object","properties":{"kind":{"type":"string","enum":["repo","workspace","scratch"]},"name":{"type":"string"},"source":{"type":"string"},"path":{"type":"string"},"select":{"type":"boolean","default":true},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"required":["kind"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"project": project_schema(),"action":{"type":"string"},"selected":{"type":"boolean"}},"required":["project","action","selected"],"additionalProperties":false}),
+        ),
+        (
+            "project_select",
+            "Select a persistent project as the default workspace context. Selecting a project clears any selected run from another project.",
+            json!({"type":"object","properties":{"project_id":{"type":"string"}},"required":["project_id"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"project": project_schema(),"selected":{"type":"boolean"}},"required":["project","selected"],"additionalProperties":false}),
+        ),
+        (
+            "project_list",
+            "List persistent projects for the current CHATCODEX_CLIENT_ID namespace.",
+            json!({"type":"object","properties":{},"additionalProperties":false}),
+            json!({"type":"object","properties":{"projects":{"type":"array","items": project_schema()},"active_project_id":{"oneOf":[{"type":"string"},{"type":"null"}]}},"required":["projects","active_project_id"],"additionalProperties":false}),
+        ),
+        (
+            "project_get",
+            "Get a persistent project by id, or the selected project when project_id is omitted.",
+            json!({"type":"object","properties":{"project_id":{"type":"string"}},"additionalProperties":false}),
+            json!({"type":"object","properties":{"project": project_schema(),"selected":{"type":"boolean"}},"required":["project","selected"],"additionalProperties":false}),
+        ),
+        (
+            "run_start",
+            "Start a persistent coding run for a selected project. ChatGPT owns reasoning; this only records deterministic run state and selects it.",
+            json!({"type":"object","properties":{"project_id":{"type":"string"},"objective":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"autonomy": autonomy_schema(),"select":{"type":"boolean","default":true}},"required":["objective"],"additionalProperties":false}),
+            run_result_schema(),
+        ),
+        (
+            "run_list",
+            "List persistent runs, optionally filtered by project_id or lifecycle status.",
+            json!({"type":"object","properties":{"project_id":{"type":"string"},"status":{"type":"string","enum":["active","paused","blocked","awaiting_approval","completed","cancelled"]}},"additionalProperties":false}),
+            json!({"type":"object","properties":{"runs":{"type":"array","items": run_schema()},"active_run_id":{"oneOf":[{"type":"string"},{"type":"null"}]}},"required":["runs","active_run_id"],"additionalProperties":false}),
+        ),
+        (
+            "run_get",
+            "Get a persistent run by id, or the selected run when run_id is omitted.",
+            json!({"type":"object","properties":{"run_id":{"type":"string"}},"additionalProperties":false}),
+            run_result_schema(),
+        ),
+        (
+            "run_update",
+            "Deterministically update run phase, status, plan, checklist, checkpoints, work_remaining, next_action, or step counters. Invalid transitions and limit overruns are rejected server-side.",
+            json!({"type":"object","properties":{"run_id":{"type":"string"},"phase":{"type":"string","enum":["inspect","plan","execute","verify"]},"status":{"type":"string","enum":["active","paused","blocked","awaiting_approval","completed","cancelled"]},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"plan":{"type":"array","items": plan_item_schema()},"checklist":{"type":"array","items": checklist_item_schema()},"checkpoint":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false},"work_remaining":{"type":"boolean"},"next_action":{"type":"string"},"step_delta":{"type":"integer","minimum":0}},"additionalProperties":false}),
+            run_result_schema(),
+        ),
+        (
+            "run_resume",
+            "Resume and select a non-terminal persistent run after ChatGPT receives a follow-up or the user explicitly asks to continue. Respects run limits and never starts an agent loop.",
+            json!({"type":"object","properties":{"run_id":{"type":"string"}},"additionalProperties":false}),
+            run_result_schema(),
+        ),
+        (
+            "run_cancel",
+            "Cancel a non-completed persistent run and clear any continuation lease.",
+            json!({"type":"object","properties":{"run_id":{"type":"string"}},"additionalProperties":false}),
+            run_result_schema(),
+        ),
+        (
+            "run_followup_lease",
+            "Acquire a duplicate-safe continuation lease for the run-status component. Grants only for active runs with work remaining and available autonomy limits.",
+            json!({"type":"object","properties":{"run_id":{"type":"string"},"requested_nonce":{"type":"string"},"ttl_ms":{"type":"integer","minimum":1000,"maximum":300000},"delay_ms":{"type":"integer","minimum":0,"maximum":30000}},"required":["run_id"],"additionalProperties":false}),
+            followup_lease_schema(),
+        ),
+        (
             "todo",
             "Manage a TODO checklist. Use `action: \"replace\"` to set the full list, `action: \"update\"` to check off or dismiss items by id. Returns the current state with summary and `all_done` flag. After each step, check if all_done is true; if not, continue working on remaining pending items.",
             json!({"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"description":{"type":"string"},"status":{"type":"string","enum":["pending","checked","dismissed"]}},"required":[],"additionalProperties":false}},"action":{"type":"string","enum":["replace","update"],"default":"replace"}},"required":["items"],"additionalProperties":false}),
@@ -2154,13 +2791,24 @@ fn tool_catalog() -> anyhow::Result<Vec<Tool>> {
     ]
     .into_iter()
     .map(|(name, description, schema, output_schema)| {
-        Ok(Tool::new(
+        let output_schema = if tool_gets_active_run_metadata(name) {
+            add_optional_run_metadata_to_schema(output_schema)
+        } else {
+            output_schema
+        };
+        let tool = Tool::new(
             Cow::Borrowed(name),
             Cow::Borrowed(description),
             Arc::new(serde_json::from_value::<JsonObject>(schema)?),
         )
         .with_raw_output_schema(Arc::new(serde_json::from_value::<JsonObject>(output_schema)?))
-        .with_annotations(tool_annotations(name)?))
+        .with_annotations(tool_annotations(name)?);
+        let tool = if let Some(meta) = app_resources::tool_meta(name) {
+            tool.with_meta(meta)
+        } else {
+            tool
+        };
+        Ok(tool)
     })
     .collect()
 }
@@ -2272,7 +2920,208 @@ fn tool_annotations(name: &str) -> anyhow::Result<ToolAnnotations> {
             .destructive(false)
             .idempotent(true)
             .open_world(false),
+        "project_create" => ToolAnnotations::with_title("Create project")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(true),
+        "project_select" => ToolAnnotations::with_title("Select project")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+        "project_list" => ToolAnnotations::with_title("List projects")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+        "project_get" => ToolAnnotations::with_title("Get project")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+        "run_start" => ToolAnnotations::with_title("Start run")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+        "run_list" => ToolAnnotations::with_title("List runs")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+        "run_get" => ToolAnnotations::with_title("Get run")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+        "run_update" => ToolAnnotations::with_title("Update run")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+        "run_resume" => ToolAnnotations::with_title("Resume run")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+        "run_cancel" => ToolAnnotations::with_title("Cancel run")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+        "run_followup_lease" => ToolAnnotations::with_title("Acquire follow-up lease")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
         _ => anyhow::bail!("missing annotation policy for {name}"),
+    })
+}
+
+fn add_optional_run_metadata_to_schema(mut schema: Value) -> Value {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.insert("run_metadata".to_string(), run_metadata_schema());
+    }
+    schema
+}
+
+fn project_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "name": {"type": "string"},
+            "kind": {"type": "string", "enum": ["repo", "workspace", "scratch"]},
+            "workspace_root": {"type": "string"},
+            "source": {"type": "object"},
+            "created_at_ms": {"type": "integer"},
+            "updated_at_ms": {"type": "integer"}
+        },
+        "required": ["id", "name", "kind", "workspace_root", "source", "created_at_ms", "updated_at_ms"],
+        "additionalProperties": false
+    })
+}
+
+fn run_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "project_id": {"type": "string"},
+            "objective": {"type": "string"},
+            "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
+            "phase": {"type": "string", "enum": ["inspect", "plan", "execute", "verify"]},
+            "status": {"type": "string", "enum": ["active", "paused", "blocked", "awaiting_approval", "completed", "cancelled"]},
+            "plan": {"type": "array", "items": plan_item_schema()},
+            "checklist": {"type": "array", "items": checklist_item_schema()},
+            "checkpoints": {"type": "array", "items": {"type": "object"}},
+            "autonomy": autonomy_schema(),
+            "counters": {"type": "object"},
+            "continuation": {"type": "object"},
+            "work_remaining": {"type": "boolean"},
+            "next_action": {"type": "string"},
+            "created_at_ms": {"type": "integer"},
+            "updated_at_ms": {"type": "integer"},
+            "started_at_ms": {"type": "integer"},
+            "completed_at_ms": {"oneOf": [{"type": "integer"}, {"type": "null"}]},
+            "cancelled_at_ms": {"oneOf": [{"type": "integer"}, {"type": "null"}]}
+        },
+        "required": ["id", "project_id", "objective", "acceptance_criteria", "phase", "status", "plan", "checklist", "checkpoints", "autonomy", "counters", "continuation", "work_remaining", "next_action", "created_at_ms", "updated_at_ms", "started_at_ms"],
+        "additionalProperties": false
+    })
+}
+
+fn run_result_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "run": run_schema(),
+            "run_metadata": run_metadata_schema()
+        },
+        "required": ["run", "run_metadata"],
+        "additionalProperties": false
+    })
+}
+
+fn plan_item_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "step": {"type": "string"},
+            "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}
+        },
+        "required": ["step", "status"],
+        "additionalProperties": false
+    })
+}
+
+fn checklist_item_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "description": {"type": "string"},
+            "status": {"type": "string", "enum": ["pending", "checked", "dismissed"]}
+        },
+        "required": ["id", "description", "status"],
+        "additionalProperties": false
+    })
+}
+
+fn autonomy_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "max_turns": {"type": "integer", "minimum": 0},
+            "max_runtime_seconds": {"type": "integer", "minimum": 0},
+            "max_steps": {"type": "integer", "minimum": 0},
+            "allow_local_commands": {"type": "boolean"},
+            "allow_file_edits": {"type": "boolean"},
+            "allow_git_commits": {"type": "boolean"}
+        },
+        "required": [],
+        "additionalProperties": false
+    })
+}
+
+fn run_metadata_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "run_id": {"type": "string"},
+            "project_id": {"type": "string"},
+            "phase": {"type": "string", "enum": ["inspect", "plan", "execute", "verify"]},
+            "status": {"type": "string", "enum": ["active", "paused", "blocked", "awaiting_approval", "completed", "cancelled"]},
+            "work_remaining": {"type": "boolean"},
+            "next_action": {"type": "string"},
+            "limits": {"type": "object"},
+            "lease": {"type": "object"}
+        },
+        "required": ["run_id", "project_id", "phase", "status", "work_remaining", "next_action", "limits", "lease"],
+        "additionalProperties": false
+    })
+}
+
+fn followup_lease_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "run_id": {"type": "string"},
+            "granted": {"type": "boolean"},
+            "duplicate": {"type": "boolean"},
+            "nonce": {"oneOf": [{"type": "string"}, {"type": "null"}]},
+            "acquired_at_ms": {"oneOf": [{"type": "integer"}, {"type": "null"}]},
+            "expires_at_ms": {"oneOf": [{"type": "integer"}, {"type": "null"}]},
+            "delay_ms": {"type": "integer"},
+            "max_turns": {"type": "integer"},
+            "max_runtime_seconds": {"type": "integer"},
+            "max_steps": {"type": "integer"},
+            "reason": {"oneOf": [{"type": "string"}, {"type": "null"}]},
+            "run_metadata": run_metadata_schema()
+        },
+        "required": ["run_id", "granted", "duplicate", "delay_ms", "max_turns", "max_runtime_seconds", "max_steps", "run_metadata"],
+        "additionalProperties": false
     })
 }
 
@@ -2696,14 +3545,13 @@ impl ServerHandler for NativeHarnessMcp {
             let resources: Vec<rmcp::model::Resource> = tools
                 .iter()
                 .map(|tool| {
-                    RawResource::new(
-                        format!("tool:///{}", tool.name),
-                        tool.name.to_string(),
-                    )
-                    .with_description(tool.description.clone().unwrap_or_default())
-                    .no_annotation()
+                    RawResource::new(format!("tool:///{}", tool.name), tool.name.to_string())
+                        .with_description(tool.description.clone().unwrap_or_default())
+                        .no_annotation()
                 })
                 .collect();
+            let mut resources = resources;
+            resources.push(app_resources::run_status_resource());
             Ok(ListResourcesResult {
                 resources,
                 next_cursor: None,
@@ -2716,7 +3564,8 @@ impl ServerHandler for NativeHarnessMcp {
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<ListResourceTemplatesResult, McpError>> + Send + '_ {
+    ) -> impl std::future::Future<Output = Result<ListResourceTemplatesResult, McpError>> + Send + '_
+    {
         async move {
             Ok(ListResourceTemplatesResult {
                 resource_templates: vec![],
@@ -2732,6 +3581,11 @@ impl ServerHandler for NativeHarnessMcp {
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
         let uri = &request.uri;
+        if uri == app_resources::RUN_STATUS_RESOURCE_URI {
+            return Ok(ReadResourceResult::new(vec![
+                app_resources::run_status_resource_contents(),
+            ]));
+        }
         if let Some(tool_name) = uri.strip_prefix("tool:///") {
             let tools = self.tools.as_slice();
             if let Some(tool) = tools.iter().find(|t| t.name == tool_name) {
@@ -2899,6 +3753,17 @@ mod tests {
                 "git_checkout",
                 "git_push",
                 "list_directory",
+                "project_create",
+                "project_select",
+                "project_list",
+                "project_get",
+                "run_start",
+                "run_list",
+                "run_get",
+                "run_update",
+                "run_resume",
+                "run_cancel",
+                "run_followup_lease",
                 "todo",
             ]
         );
@@ -2983,7 +3848,7 @@ mod tests {
                 .get("properties")
                 .and_then(serde_json::Value::as_object)
                 .map(|properties| properties.keys().cloned().collect::<Vec<_>>()),
-            Some(vec!["path".to_string()])
+            Some(vec!["path".to_string(), "run_metadata".to_string()])
         );
 
         for tool in server.tools() {
@@ -3001,6 +3866,35 @@ mod tests {
                 tool.name
             );
         }
+    }
+
+    #[tokio::test]
+    async fn catalog_exposes_run_status_component_metadata() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let server = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("server");
+        let run_get = server
+            .tools()
+            .iter()
+            .find(|tool| tool.name == "run_get")
+            .expect("run_get tool");
+        let meta = run_get.meta.as_ref().expect("run_get meta");
+        assert_eq!(
+            meta.0["openai/outputTemplate"],
+            serde_json::json!(super::app_resources::RUN_STATUS_RESOURCE_URI)
+        );
+        let lease = server
+            .tools()
+            .iter()
+            .find(|tool| tool.name == "run_followup_lease")
+            .expect("run_followup_lease tool");
+        let meta = lease.meta.as_ref().expect("lease tool meta");
+        assert_eq!(meta.0["openai/widgetAccessible"], serde_json::json!(true));
+        assert!(meta.0.get("openai/outputTemplate").is_none());
     }
 
     #[tokio::test]
@@ -3155,6 +4049,125 @@ mod tests {
         assert_eq!(parsed["summary"]["pending"], 0);
         assert_eq!(parsed["summary"]["dismissed"], 1);
         assert_eq!(parsed["all_done"], true);
+    }
+
+    #[tokio::test]
+    async fn active_run_metadata_is_added_to_coding_tool_results() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let server = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("server");
+        let setup = server
+            .harness
+            .call("setup_workspace", serde_json::json!({"source": "sandbox"}))
+            .await
+            .expect("setup workspace");
+        let setup_json: serde_json::Value =
+            serde_json::from_str(setup.content[0].as_text().unwrap().text.as_str()).unwrap();
+        let project_id = setup_json["project_id"].as_str().unwrap().to_string();
+        let run = server
+            .harness
+            .call(
+                "run_start",
+                serde_json::json!({
+                    "project_id": project_id,
+                    "objective": "prove metadata",
+                    "acceptance_criteria": ["metadata is present"]
+                }),
+            )
+            .await
+            .expect("run start");
+        let run_json: serde_json::Value =
+            serde_json::from_str(run.content[0].as_text().unwrap().text.as_str()).unwrap();
+        let run_id = run_json["run"]["id"].as_str().unwrap().to_string();
+
+        let result = server
+            .harness
+            .call("list_directory", serde_json::json!({}))
+            .await
+            .expect("list directory");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert_eq!(parsed["run_metadata"]["run_id"], run_id);
+        assert_eq!(parsed["run_metadata"]["status"], "active");
+        let meta = result.meta.expect("tool result meta");
+        assert_eq!(meta.0["chatcodex/run"]["run_id"], run_id);
+    }
+
+    #[tokio::test]
+    async fn legacy_setup_workspace_keeps_workspace_tools_available_without_run() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let server = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("server");
+        let setup = server
+            .harness
+            .call("setup_workspace", serde_json::json!({"source": "sandbox"}))
+            .await
+            .expect("setup workspace");
+        let setup_json: serde_json::Value =
+            serde_json::from_str(setup.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert!(setup_json["project_id"].is_string());
+
+        let result = server
+            .harness
+            .call("list_directory", serde_json::json!({}))
+            .await
+            .expect("list directory");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert!(parsed["entries"].is_array());
+        assert!(parsed.get("run_metadata").is_none());
+    }
+
+    #[tokio::test]
+    async fn selected_run_survives_harness_restart() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let first = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("first server");
+        let setup = first
+            .harness
+            .call("setup_workspace", serde_json::json!({"source": "sandbox"}))
+            .await
+            .expect("setup workspace");
+        let setup_json: serde_json::Value =
+            serde_json::from_str(setup.content[0].as_text().unwrap().text.as_str()).unwrap();
+        first
+            .harness
+            .call(
+                "run_start",
+                serde_json::json!({
+                    "project_id": setup_json["project_id"].as_str().unwrap(),
+                    "objective": "persist through restart"
+                }),
+            )
+            .await
+            .expect("start run");
+
+        let second = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("second server");
+        let result = second
+            .harness
+            .call("run_get", serde_json::json!({}))
+            .await
+            .expect("get selected run after restart");
+        let parsed: serde_json::Value =
+            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert_eq!(parsed["run"]["objective"], "persist through restart");
     }
 
     #[tokio::test]
@@ -3649,6 +4662,40 @@ mod tests {
         assert!(!bad2.username().is_empty() || bad2.password().is_some());
         let good = url::Url::parse("https://github.com/owner/repo.git").unwrap();
         assert!(good.username().is_empty() && good.password().is_none());
+    }
+
+    #[test]
+    fn git_write_classifier_gates_mutating_local_commands() {
+        for command in [
+            "add src/lib.rs",
+            "branch feature",
+            "checkout -b feature",
+            "commit -m hi",
+            "config user.name ChatCodex",
+            "merge main",
+            "rebase main",
+            "reset --hard HEAD",
+            "stash push",
+            "tag v1",
+        ] {
+            assert!(
+                super::git_command_requires_commit_permission(command),
+                "{command}"
+            );
+        }
+
+        for command in [
+            "status",
+            "diff",
+            "log --oneline",
+            "show HEAD",
+            "rev-parse HEAD",
+        ] {
+            assert!(
+                !super::git_command_requires_commit_permission(command),
+                "{command}"
+            );
+        }
     }
 
     #[tokio::test]

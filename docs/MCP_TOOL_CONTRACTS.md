@@ -1,870 +1,600 @@
-# MCP tool contracts
+# MCP Tool Contracts
 
-These are the public tools exposed to ChatGPT.
+These are the deterministic public MCP tools exposed to ChatGPT by the native
+Rust server. ChatGPT remains the only LLM and owns all reasoning. Tools mutate
+only explicit server state or workspace data described below.
 
-## codex_prepare_run
+## Shared Lifecycle State
 
-Input:
-- `workspaceId: string`
-- `userGoal: string`
-- `focusPaths?: string[]`
-- `mode?: "plan" | "refresh" | "repair" | "review"`
-- `policy?: PolicyProfileInput` (Milestone 8) — optional per-run policy configuration
+Lifecycle state is namespaced by `CHATCODEX_CLIENT_ID` and persisted under the
+workspace base:
 
-`PolicyProfileInput` fields (all optional, omitted fields use defaults):
-- `patchEditThreshold?: number` — max edits in one patch before approval (default: `5`)
-- `deleteRequiresApproval?: boolean` — whether file deletion always gates (default: `true`)
-- `sensitivePathRequiresApproval?: boolean` — whether sensitive path edits always gate (default: `true`)
-- `outsideFocusRequiresApproval?: boolean` — whether out-of-focus edits gate when focus is set (default: `true`)
-- `extraSafeMakeTargets?: string[]` — additional make targets that may run without approval (normalised to lowercase)
+```text
+<workspace-base>/clients/<client-id>/.chatcodex/state.json
+```
 
-Returns structured content:
-- `runId`
-- `objective`
-- `assistantBrief`
-- `constraints`
-- `plan`
-- `currentStep`
-- `recommendedNextAction`
-- `recommendedTool`
+Writes use a lock file plus atomic JSON replacement. Git credentials are never
+persisted; repository sources are redacted before storage.
+
+## Project Shape
+
+Project fields:
+
+- `id: string`
+- `name: string`
+- `kind: "repo" | "workspace" | "scratch"`
+- `workspace_root: string`
+- `source: object`
+- `created_at_ms: integer`
+- `updated_at_ms: integer`
+
+`source.type` is one of:
+
+- `scratch`
+- `git`
+- `workspace`
+
+Git sources include redacted `url`, optional `host`, and `path`.
+Workspace sources include `registered_path`.
+
+## Run Shape
+
+Run fields:
+
+- `id: string`
+- `project_id: string`
+- `objective: string`
+- `acceptance_criteria: string[]`
+- `phase: "inspect" | "plan" | "execute" | "verify"`
+- `status: "active" | "paused" | "blocked" | "awaiting_approval" | "completed" | "cancelled"`
+- `plan: PlanItem[]`
+- `checklist: ChecklistItem[]`
+- `checkpoints: Checkpoint[]`
+- `autonomy: AutonomyEnvelope`
+- `counters: RunCounters`
+- `continuation: ContinuationState`
+- `work_remaining: boolean`
+- `next_action: string`
+- `created_at_ms: integer`
+- `updated_at_ms: integer`
+- `started_at_ms: integer`
+- `completed_at_ms?: integer`
+- `cancelled_at_ms?: integer`
+
+Plan item statuses are `pending`, `in_progress`, or `completed`. Checklist
+statuses are `pending`, `checked`, or `dismissed`.
+
+Autonomy fields:
+
+- `max_turns: integer`
+- `max_runtime_seconds: integer`
+- `max_steps: integer`
+- `allow_local_commands: boolean`
+- `allow_file_edits: boolean`
+- `allow_git_commits: boolean`
+
+## Run Metadata
+
+When a run is selected and active, coding tool results include:
+
+- `run_id`
+- `project_id`
+- `phase`
 - `status`
-- `effectivePolicy` (Milestone 8) — the resolved active `RunPolicy` that will govern this run:
-  - `patchEditThreshold`, `deleteRequiresApproval`, `sensitivePathRequiresApproval`, `outsideFocusRequiresApproval`, `extraSafeMakeTargets`, `focusPaths`
+- `work_remaining`
+- `next_action`
+- `limits`
+- `lease`
 
-## get_workspace_summary
+The server attaches this from authoritative persisted run state. Clients should
+not infer it from local state.
+
+## Project Tools
+
+### project_create
+
+Create or register a persistent project and optionally select it.
 
 Input:
-- `workspaceId: string`
-- `focusPaths?: string[]`
+
+- `kind: "repo" | "workspace" | "scratch"`
+- `name?: string`
+- `source?: string`
+- `path?: string`
+- `select?: boolean` default `true`
+- `timeout_ms?: integer`
+
+Behavior:
+
+- `repo` clones or reuses a repository and stores a stable id based on the
+  redacted source.
+- `scratch` creates or reuses a persistent git-initialized sandbox.
+- `workspace` registers an existing directory beneath the workspace base.
 
 Returns:
-- root info
-- detected language/tooling
-- dirty files
-- likely commands
-- relevant paths
 
-## read_file
+- `project`
+- `action`
+- `selected`
+
+### project_select
+
+Select a project as the default workspace context.
 
 Input:
-- `runId`
-- `path`
-- `startLine?`
-- `endLine?`
-- `purpose?`
+
+- `project_id: string`
 
 Returns:
-- file content
-- range metadata
-- updated run state summary
 
-## git_status
+- `project`
+- `selected: true`
 
-Input:
-- `runId`
+Selecting a project clears a selected run from another project.
 
-Returns:
-- branch
-- dirty files
-- untracked files
-- ahead/behind if available
+### project_list
 
-## search_code
+List projects for the current client namespace.
 
-Input:
-- `runId`
-- `query`
-- `pathGlob?`
-- `maxResults?`
+Input: empty object.
 
 Returns:
-- ranked matches
-- snippets
-- updated run-state summary
 
-## apply_patch
+- `projects`
+- `active_project_id`
+
+### project_get
+
+Get a project by id, or the selected project when `project_id` is omitted.
 
 Input:
-- `runId`
-- `edits[]`
 
-Each edit:
-- `path`
-- `operation`
-- `startLine?`
-- `endLine?`
-- `oldText?`
-- `newText`
-- `anchorText?`
+- `project_id?: string`
+
+Returns:
+
+- `project`
+- `selected`
+
+## Run Tools
+
+### run_start
+
+Start and optionally select a persistent coding run.
+
+Input:
+
+- `project_id?: string`; defaults to selected project
+- `objective: string`
+- `acceptance_criteria?: string[]`
+- `autonomy?: AutonomyEnvelope`
+- `select?: boolean` default `true`
+
+Returns:
+
+- `run`
+- `run_metadata`
+
+### run_list
+
+List persistent runs.
+
+Input:
+
+- `project_id?: string`
+- `status?: "active" | "paused" | "blocked" | "awaiting_approval" | "completed" | "cancelled"`
+
+Returns:
+
+- `runs`
+- `active_run_id`
+
+### run_get
+
+Get a run by id, or the selected run when `run_id` is omitted.
+
+Input:
+
+- `run_id?: string`
+
+Returns:
+
+- `run`
+- `run_metadata`
+
+### run_update
+
+Deterministically update lifecycle state.
+
+Input:
+
+- `run_id?: string`; defaults to selected run
+- `phase?: "inspect" | "plan" | "execute" | "verify"`
+- `status?: "active" | "paused" | "blocked" | "awaiting_approval" | "completed" | "cancelled"`
+- `acceptance_criteria?: string[]`
+- `plan?: PlanItem[]`
+- `checklist?: ChecklistItem[]`
+- `checkpoint?: { message: string }`
+- `work_remaining?: boolean`
+- `next_action?: string`
+- `step_delta?: integer`
+
+Returns:
+
+- `run`
+- `run_metadata`
+
+Behavior:
+
+- Invalid transitions are rejected.
+- More than one `in_progress` plan item is rejected.
+- Runtime, turn, and step limits are enforced server-side.
+- Terminal runs cannot be mutated.
+
+### run_resume
+
+Select a non-terminal run after ChatGPT receives a user request or a
+component follow-up containing only the run id.
+
+Input:
+
+- `run_id?: string`; defaults to selected run
+
+Returns:
+
+- `run`
+- `run_metadata`
+
+Behavior:
+
+- Completed and cancelled runs cannot be resumed.
+- Limit-exhausted runs cannot be resumed.
+- The tool does not perform work or start a loop.
+
+### run_cancel
+
+Cancel a non-completed run and clear continuation lease state.
+
+Input:
+
+- `run_id?: string`; defaults to selected run
+
+Returns:
+
+- `run`
+- `run_metadata`
+
+### run_followup_lease
+
+Acquire a duplicate-safe continuation lease for the ChatGPT app component.
+
+Input:
+
+- `run_id: string`
+- `requested_nonce?: string`
+- `ttl_ms?: integer`
+- `delay_ms?: integer`
+
+Returns:
+
+- `run_id`
+- `granted`
+- `duplicate`
+- `nonce`
+- `acquired_at_ms`
+- `expires_at_ms`
+- `delay_ms`
+- `max_turns`
+- `max_runtime_seconds`
+- `max_steps`
 - `reason`
+- `run_metadata`
 
-### Approval policy
+Behavior:
 
-Before applying the patch, a deterministic policy is evaluated using the run's effective `RunPolicy` (Milestone 8).
-The patch is gated (approval required) if any of the following hold:
-- Any edit has `operation: "delete"` (file deletion) and `deleteRequiresApproval` is `true`
-- More than `patchEditThreshold` edits in a single request (default: 5)
-- Any path matches a sensitive pattern (`.env`, `.ssh`, `.git/`, `id_rsa`, etc.) and `sensitivePathRequiresApproval` is `true`
-- Any path is outside the run's declared `focusPaths` (when non-empty) and `outsideFocusRequiresApproval` is `true`
+- Grants only for `active` runs with `work_remaining: true`.
+- Never grants for paused, blocked, awaiting-approval, completed, or cancelled runs.
+- Never grants after turn/runtime/step limits are exhausted.
+- Reusing a nonce is reported as duplicate and does not issue a new lease.
+- A live unexpired lease prevents another active lease from being issued.
 
-If approval is required, the result includes `approvalRequired` with the
-pending approval details and the patch is **not** applied.
+## Legacy-Compatible Lifecycle Tools
 
-### Returns
+### setup_workspace
 
-- `changedFiles` — list of affected file paths (empty if approval required)
-- `diffStats` — summary of additions/deletions (empty if approval required)
-- `approvalRequired?` — pending approval object if the patch was gated
-- updated run-state summary
-
-## run_tests
-
-Execute a whitelisted test command in the workspace.
-
-### Input
-
-- `runId`: string — Run ID from codex_prepare_run
-- `scope`: string — **Semantic test scope**. Accepted values:
-  - **Framework names** (explicit): `"cargo"`, `"npm"`, `"pytest"`, `"make"`
-  - **Semantic labels** (auto-resolved): `"unit"`, `"integration"`, `"all"`
-- `target?`: string — Specific test target (e.g., test name, file path)
-- `reason`: string — Why tests are being run (required for audit trail)
-
-### Scope Resolution
-
-1. If `scope` is a framework name, use it directly
-2. If `scope` is a semantic label, detect framework via workspace files:
-   - `Cargo.toml` exists → "cargo"
-   - `package.json` exists → "npm"
-   - `setup.py` or `pyproject.toml` exists → "pytest"
-   - `Makefile` exists → "make"
-3. If no framework detected, return error
-
-### Validation
-
-- `scope` must be non-empty and a supported value
-- `reason` must be non-empty (for audit trail)
-- Scope matching is case-insensitive
-
-### Returns
-
-- `resolvedCommand`: string — The actual command that was executed (empty if approval required)
-- `exitCode`: number — Exit code from the test command (-1 if approval required)
-- `stdout`: string — Standard output (truncated to 4096 chars)
-- `stderr`: string — Standard error (truncated to 4096 chars)
-- `summary`: string — Human-readable summary of results
-- `approvalRequired?` — Pending approval object if the test was gated
-
-### Approval policy
-
-Before running the test, a deterministic policy is evaluated using the run's effective `RunPolicy` (Milestone 8).
-The test is gated (approval required) if:
-- `scope` is `"make"` and `target` is not a standard safe target
-  (`test`, `check`, `lint`, `build`, `clean`, `all`, `verify`, `fmt`, `format`)
-  and not in the run's `extraSafeMakeTargets` list
-
-If approval is required, the result includes `approvalRequired` with the
-pending approval details and the test is **not** executed.
-
-### Errors
-
-- Returns error for unsupported scope values
-- Returns error if workspace framework cannot be auto-detected
-- Returns error if test command fails to execute
-
-## show_diff
+Clone a git repository or create a scratch sandbox, register it as a persistent
+project, and select it.
 
 Input:
-- `runId`
-- `paths?: string[]`
-- `format?: "summary" | "patch"`
+
+- `source: string`; git URL or literal `sandbox`
+- `name?: string`
+- `timeout_ms?: integer`
 
 Returns:
-- changed files
-- diff summary
-- optionally patch text
-- updated run-state summary
 
-## refresh_run_state
+- `workspace_root`
+- `source`
+- `action`
+- `project_id`
 
-Refresh and return the current run state snapshot.  This is a read-only
-operation: it does not trigger actions or perform LLM reasoning.
+### update_plan
 
-### Input
+Replace the deterministic task plan.
 
-- `runId`: string — Run ID from codex_prepare_run
+Input:
 
-### Returns
+- `explanation?: string`
+- `plan: PlanItem[]`
 
-- `runId`
-- `status` — one of `prepared`, `active`, `blocked`, `awaiting_approval`, `done`, `failed`
-- `currentStep`
-- `completedSteps`
-- `pendingSteps`
-- `lastAction`
-- `lastObservation`
-- `recommendedNextAction`
-- `recommendedTool`
-- `pendingApprovals` — list of pending approval objects
-- `latestDiffSummary`
-- `latestTestResult`
-- `retryableAction?` — retryable action metadata (Milestone 6), including:
-  - `kind` — `"patch.apply"` or `"tests.run"`
-  - `summary` — human-readable description
-  - `isValid` — whether retry is still valid
-  - `isRecommended` — whether retry is the recommended next step
-  - `invalidationReason?` — why the action is no longer valid
-  - `recommendedTool` — MCP tool to invoke for retry
-- `effectivePolicy` (Milestone 8) — the active `RunPolicy` for this run
-- `warnings`
+Returns the same plan payload.
 
-### Behavior
+When a run is selected, the plan is written to that run. Otherwise it is stored
+as legacy client state. At most one item may be `in_progress`.
 
-- Merges persisted state with live workspace facts (e.g. current git diff)
-- Surfaces retryable action metadata for resumption guidance
-- Warns if a retryable action is stale or invalidated
-- Does not mutate state or trigger any actions
-- Does not call any LLM
+### todo
 
-## replan_run
+Manage a persistent checklist.
 
-Deterministically replan the run based on new evidence or failure context.
+Input:
 
-### Input
+- `action?: "replace" | "update"` default `replace`
+- `items: ChecklistItem[]`
 
-- `runId`: string — Run ID from codex_prepare_run
-- `reason`: string — Why the run needs replanning
-- `newEvidence?: string[]` — New evidence or observations
-- `failureContext?: string` — Error or failure context that triggered replanning
+Returns:
 
-### Returns
-
-- `runId`
-- `status`
-- `currentStep`
-- `pendingSteps`
-- `recommendedNextAction`
-- `recommendedTool`
-- `replanSummary`
-- `retryableAction?` — retryable action state after replanning (Milestone 6)
-- `replanDelta?` — concise description of what changed during replanning (Milestone 6)
-
-### Behavior
-
-- Rule-based replanning only — no LLM calls
-- If failure context is provided, inserts a recovery step and invalidates
-  any stale retryable action
-- If no failure context, preserves valid retryable actions
-- Updates recommended next action and tool based on pending steps
-- Emits a concise `replanDelta` describing what changed
-- Persists updated state to SQLite
-
-## approve_action
-
-Resolve a pending approval (approve or deny a risky action).
-
-### Input
-
-- `runId`: string — Run ID from codex_prepare_run
-- `approvalId`: string — Approval ID to resolve
-- `decision`: `"approve"` | `"deny"`
-- `reason?: string` — Reason for the decision
-
-### Returns
-
-- `approvalId`
-- `runId`
-- `decision`
-- `status` — resulting run status after resolution
+- `items`
 - `summary`
-- `recommendedNextAction?` — suggested next step after resolution
-- `recommendedTool?` — suggested MCP tool after resolution
-- `retryableAction?` — retryable action state after the decision (Milestone 6)
+- `all_done`
 
-### Behavior
+When a run is selected, the checklist is written to that run. Otherwise it is
+stored as legacy client state.
 
-- `"approve"` unblocks the run if no more pending approvals remain
-  - If a valid retryable action exists, marks it recommended and points
-    `recommendedTool` at the action's tool (e.g. `apply_patch`, `run_tests`)
-  - If the retryable action is stale, recommends replanning instead
-  - The action is never auto-retried — ChatGPT must invoke the next tool
-- `"deny"` blocks the run
-  - Invalidates the retryable action so it is no longer recommended
-  - Recommends replanning via `replan_run`
-- Multiple pending approvals are handled predictably: each is resolved independently
-- Persists decision to SQLite
-- Does not trigger any autonomous continuation
+## Workspace Tools
 
----
+All workspace tools operate on the selected run's project when a run is
+selected. Without a selected run, they operate on the selected project for
+legacy compatibility.
 
-## list_runs (Milestone 7)
+### exec_command
 
-Read-only listing of known runs.
+Run a command in the read-only command sandbox.
 
-### Input
+Input:
 
-- `limit?: number` — Maximum runs to return (default 20, max 100)
-- `workspaceId?: string` — Filter by workspace path
-- `status?: string` — Filter by run status
+- `cmd: string`
+- `yield_time_ms?: integer`
+- `max_output_tokens?: integer`
+- `timeout_ms?: integer`
 
-### Returns
+Returns:
 
-- `runs: RunSummary[]` — array of compact run summaries
-  - `runId`, `workspaceId`, `userGoal`, `status`, `currentStep`, `totalSteps`, `outcomeKind?` (Milestone 10), `reopenCount?` (Milestone 11), `createdAt`, `updatedAt`
-- `count: number` — number of runs returned
+- `output`
+- `exit_code`
+- `session_id`
+- `run_metadata?`
 
-### Behavior
+If a selected run's autonomy envelope disallows local commands, the call is
+rejected before execution.
 
-- Read-only; does not modify any run state
-- Results ordered by `updatedAt` descending (most recently modified first)
+### write_stdin
 
----
+Write to or poll a running command session.
 
-## get_run_state (Milestone 7)
+Input:
 
-Get the authoritative current state of a run.
+- `session_id: string`
+- `chars?: string`
+- `yield_time_ms?: integer`
 
-### Input
+Returns:
 
-- `runId`: string — Run ID to inspect
+- `output`
+- `exited`
+- `exit_code`
+- `run_metadata?`
 
-### Returns
+### read_file
 
-- `runState` — full RunState (includes `policyProfile` field)
-- `pendingApprovals` — current pending approvals
-- `retryableAction?` — retryable action metadata if present
-- `latestDiffSummary?` — latest diff summary
-- `latestTestResult?` — latest test result
-- `recommendedNextAction?` — current recommendation
-- `recommendedTool?` — recommended MCP tool
-- `effectivePolicy` (Milestone 8) — the active `RunPolicy` for this run
-- `warnings[]` — active warnings
+Read a file under the selected workspace.
 
-### Behavior
+Input:
 
-- Read-only; does not modify any run state
-- Returns the same fields as `refresh_run_state` but without triggering a refresh operation
+- `path: string`
+- `start_line?: integer`
+- `end_line?: integer`
 
----
+Returns:
 
-## get_run_history (Milestone 7)
+- `path`
+- `total_lines`
+- `start_line`
+- `end_line`
+- `content`
+- `run_metadata?`
 
-Get the audit trail of key events for a run.
+### search_code
 
-### Input
+Search workspace files for a text pattern.
 
-- `runId`: string — Run ID to retrieve history for
-- `limit?: number` — Maximum entries to return (default 50, max 200)
+Input:
 
-### Returns
+- `query: string`
+- `path_glob?: string`
+- `max_results?: integer`
 
-- `runId`
-- `entries: RunHistoryEntry[]` — audit trail entries (newest first)
-  - `entryId`, `runId`, `eventKind`, `summary`, `metadata?`, `occurredAt`
-- `count: number` — number of entries returned
+Returns:
 
-### Behavior
+- `matches`
+- `run_metadata?`
 
-- Read-only; does not modify any run state
-- Events include: `run_prepared`, `refresh_performed`, `replan_performed`, `approval_created`, `approval_resolved`, `patch_applied`, `tests_run`
+### list_directory
 
-## preview_patch_policy (Milestone 9)
+List entries in a workspace directory.
 
-Preview the policy decision for a proposed patch without applying any changes.
+Input:
 
-### Input
+- `path?: string`
 
-- `runId`: string — Run ID from `codex_prepare_run`
-- `edits`: `PatchEdit[]` — Proposed edits to evaluate (identical structure to `apply_patch`)
+Returns:
 
-### Returns
+- `path`
+- `entries`
+- `run_metadata?`
 
-- `decision`: `"proceed"` | `"requires_approval"` — what would happen
-- `actionSummary?`: string — human-readable summary (when gated)
-- `riskReason?`: string — why the operation is considered risky (when gated)
-- `policyRationale?`: string — which policy rule would trigger (when gated)
-- `effectivePolicy`: `RunPolicy` — the policy profile used for evaluation
+### apply_patch
 
-### Behavior
+Apply a patch inside the selected workspace.
 
-- Strictly read-only: no files modified, no approvals created, no audit entries written
-- Reuses the same deterministic `evaluate_patch` logic as `apply_patch`
+Input:
 
-## preview_test_policy (Milestone 9)
+- `input: string`
 
-Preview the policy decision for a proposed test run without executing tests.
+Returns:
 
-### Input
+- `result`
+- `run_metadata?`
 
-- `runId`: string — Run ID from `codex_prepare_run`
-- `scope`: string — test scope (e.g. `cargo`, `npm`, `make`)
-- `target?`: string — specific test target within scope
-- `reason?`: string — why the test run is being evaluated
+`apply_patch` is the only workspace source write path. If a selected run's
+autonomy envelope disallows file edits, the call is rejected before mutation.
 
-### Returns
+### view_image
 
-Same shape as `preview_patch_policy`.
+Read an image located inside the workspace.
 
-### Behavior
+Input:
 
-- Strictly read-only: no tests executed, no state modified
-- Reuses the same deterministic `evaluate_test_run` logic as `run_tests`
+- `path: string`
 
-## finalize_run (Milestone 10)
+Returns:
 
-Explicitly close a run with a structured outcome record.
+- `path`
+- `run_metadata?`
 
-### Input
+## Git Tools
 
-- `runId`: string — Run ID from `codex_prepare_run`
-- `outcomeKind`: `"completed"` | `"failed"` | `"abandoned"` — final disposition
-- `summary`: string — short deterministic summary (max 500 chars)
-- `reason?`: string — optional reason, typically for `failed` or `abandoned` runs
+Outbound network operations are rejected by deterministic policy. Read-only git
+inspection runs through the read-only sandbox. Local git metadata writes are
+limited to explicit git tools and are still network-blocked.
 
-### Returns
+### git
 
-- `runId`
-- `outcomeKind` — the closure kind that was recorded
-- `finalizedAt` — ISO 8601 timestamp of finalization
-- `status` — new run status, e.g. `"finalized:completed"`
-- `recommendedNextAction` — deterministic guidance (no autonomous action taken)
+Run a local-only git command.
 
-### Behavior
+Input:
 
-- Exactly one finalization per run — repeated calls are rejected
-- `outcomeKind` must be `completed`, `failed`, or `abandoned`; other values are rejected
-- Sets `RunState.status` to `"finalized:<outcomeKind>"`
-- Persists a `RunOutcome` record in SQLite with `outcomeKind`, `summary`, `reason?`, `finalizedAt`
-- Appends a `run_finalized` audit trail entry
-- Returns deterministic `recommendedNextAction` guidance based on the outcome kind
-- Does **not** trigger any autonomous follow-up work
-- Closed runs expose `finalizedOutcome` in `get_run_state`, `refresh_run_state`, and `list_runs`
+- `command: string`
+- `timeout_ms?: integer`
 
-## reopen_run (Milestone 11)
+Returns:
 
-Reopen a previously finalized run for deterministic continuation.
+- `stdout`
+- `stderr`
+- `exit_code`
+- `run_metadata?`
 
-### Input
+Commands such as `commit`, `merge`, `rebase`, `cherry-pick`, `reset`, `branch`,
+and `checkout` require `allow_git_commits: true` in the selected run autonomy
+envelope.
 
-- `runId`: string — Run ID of the finalized run to reopen
-- `reason`: string — human-readable reason for reopening (required, 1–500 chars)
+### git_status
 
-### Returns
+Run `git status --porcelain`.
 
-- `runId`
-- `status` — `"active"` after a successful reopen
-- `reopenedFromOutcomeKind` — the outcome kind that was cleared (e.g. `"completed"`)
-- `reopenCount` — total number of times this run has been reopened
-- `reopenedAt` — ISO 8601 timestamp
-- `recommendedNextAction` — deterministic guidance string
-- `recommendedTool` — always `"refresh_run_state"`
+Input: empty object.
 
-### Behavior
+Returns:
 
-- Only finalized runs (`finalized:completed`, `finalized:failed`, `finalized:abandoned`) may be reopened
-- Active, prepared, or awaiting-approval runs cannot be reopened — the call is rejected
-- Reopening transitions status back to `"active"` and clears `finalizedOutcome`
-- Persists compact `ReopenMetadata` in SQLite: `reason`, `reopenedAt`, `reopenedFromOutcomeKind`, `reopenCount`
-- `reopenCount` increments on each successive reopen
-- Appends a `run_reopened` audit trail entry
-- Does **not** execute work or trigger any autonomous follow-up
-- Prior plan, completed steps, and audit history are preserved
-- Reopen metadata is visible in `get_run_state`, `refresh_run_state`, and `list_runs`
+- `entries`
+- `stderr`
+- `run_metadata?`
 
-## supersede_run (Milestone 12)
+### git_diff
 
-Create a new successor run that explicitly replaces a finalized run with preserved lineage.
+Run `git diff`.
 
-### Input
+Input:
 
-- `runId`: string — Run ID of the finalized run to supersede (must be `finalized:completed`, `finalized:failed`, or `finalized:abandoned`)
-- `newUserGoal`: string (optional, max 500 chars) — goal for the successor run; if omitted, the original run's goal is inherited
-- `reason`: string — human-readable reason for supersession (required, 1–500 chars)
+- `paths?: string[]`
+- `staged?: boolean`
 
-### Returns
+Returns:
 
-- `originalRunId` — the run ID that was superseded
-- `successorRunId` — the newly created successor run ID
-- `supersededAt` — ISO 8601 timestamp of supersession
-- `successorStatus` — always `"prepared"`
-- `recommendedNextAction` — deterministic guidance string
-- `recommendedTool` — always `"refresh_run_state"`
+- `diff`
+- `stderr`
+- `run_metadata?`
 
-### Behavior
+### git_commit
 
-- Only finalized runs may be superseded; active, prepared, or awaiting-approval runs are rejected deterministically
-- Supersession creates a **new** run in `"prepared"` status — it does **not** reactivate the original run
-- The original run remains finalized with its full history, plan, and outcome preserved
-- The original run is marked with `supersededByRunId` pointing to the successor
-- The successor run is created with `supersedesRunId` pointing to the original
-- Both runs carry the same `supersessionReason` and `supersededAt` timestamp
-- The successor inherits workspace, focus paths, and policy profile from the original
-- The successor starts with an **empty plan** (a clean slate for ChatGPT to replan)
-- Appends `run_superseded` audit entry to the original run
-- Appends `run_created_from_supersession` audit entry to the successor run
-- Does **not** execute work or trigger any autonomous follow-up
-- Lineage is visible in `get_run_state` and `list_runs`
+Create a local git commit.
 
-## archive_run (Milestone 13)
+Input:
 
-Explicitly archive a finalized run so it remains preserved and inspectable, but is excluded from the default active run listing.
+- `message: string`
+- `allow_empty?: boolean`
+- `timeout_ms?: integer`
 
-### Input
+Returns:
 
-- `runId`: string — Run ID of the finalized run to archive (must be `finalized:completed`, `finalized:failed`, or `finalized:abandoned`)
-- `reason`: string — human-readable reason for archiving (required, 1–500 chars)
+- `stdout`
+- `stderr`
+- `exit_code`
+- `run_metadata?`
 
-### Returns
+Requires `allow_git_commits: true` in the selected run autonomy envelope.
 
-- `runId` — the archived run ID
-- `status` — the run status at the time of archiving (unchanged)
-- `archivedAt` — ISO 8601 timestamp of archiving
-- `reason` — the reason provided
-- `message` — human-readable confirmation
+### git_branch
 
-### Behavior
+Create or move a local git branch.
 
-- Only finalized runs may be archived; active, prepared, or awaiting-approval runs are rejected deterministically
-- Already-archived runs are also rejected
-- Archiving does **not** execute work, trigger any autonomous follow-up, or reopen the run
-- The run's plan, completed steps, audit history, and outcome are fully preserved
-- `archiveMetadata` is added to the run state and persisted in SQLite
-- Appends `run_archived` audit entry with the archive reason
-- Archived runs remain fully inspectable via `get_run_state` and `get_run_history`
-- `list_runs` excludes archived runs by default; use `includeArchived=true` or `archivedOnly=true` to include them
+Input:
 
-### `list_runs` archive filtering (Milestone 13 extension)
+- `name: string`
+- `start_point?: string`
+- `force?: boolean`
+- `timeout_ms?: integer`
 
-The `list_runs` tool now accepts two optional boolean parameters:
+Returns:
 
-- `includeArchived` (boolean, default: false) — when `true`, include archived runs alongside non-archived runs
-- `archivedOnly` (boolean, default: false) — when `true`, return only archived runs (takes precedence over `includeArchived`)
+- `stdout`
+- `stderr`
+- `exit_code`
+- `run_metadata?`
 
-When both are omitted, archived runs are excluded by default.
+Requires `allow_git_commits: true` in the selected run autonomy envelope when a
+run is active.
 
----
+### git_checkout
 
-## unarchive_run (Milestone 14)
+Switch branches.
 
-Explicitly unarchive (restore) an archived run so it returns to the default active run listing.
+Input:
 
-### Input
+- `target: string`
+- `create_branch?: boolean`
+- `timeout_ms?: integer`
 
-- `runId`: string — Run ID of the archived run to unarchive (must be archived)
-- `reason`: string — human-readable reason for unarchiving (required, 1–500 chars)
+Returns:
 
-### Returns
+- `stdout`
+- `stderr`
+- `exit_code`
+- `run_metadata?`
 
-- `runId` — the unarchived run ID
-- `status` — the run status (unchanged, e.g. `finalized:completed`)
-- `unarchivedAt` — ISO 8601 timestamp of unarchiving
-- `reason` — the reason provided
-- `message` — human-readable confirmation
+Requires `allow_git_commits: true` in the selected run autonomy envelope when a
+run is active.
 
-### Behavior
+## ChatGPT App Resource
 
-- Only archived runs (with `archiveMetadata`) may be unarchived; non-archived runs are rejected deterministically
-- Already-unarchived runs are also rejected
-- Unarchiving does **not** execute work, trigger any autonomous follow-up, reopen the run, or change its finalized outcome
-- The run's plan, completed steps, audit history, finalized outcome, and lineage metadata are fully preserved
-- The original `archiveMetadata` remains intact for historical inspection after unarchiving
-- `unarchiveMetadata` is added to the run state and persisted in SQLite
-- Appends `run_unarchived` audit entry with the unarchive reason
-- After unarchiving, the run returns to the default `list_runs` visible set
-- `archivedOnly=true` excludes restored (unarchived) runs
-- Unarchived runs remain fully inspectable via `get_run_state` and `get_run_history`
+The server exposes:
 
-## annotate_run (Milestone 15)
+```text
+ui://chatcodex/run-status.html
+```
 
-Attach or replace organization metadata (labels and/or an operator note) on any run.
-
-### Input
-
-- `runId`: string — Run ID to annotate
-- `labels`: string[] (optional) — replaces the entire label set; each label must be `[a-z0-9_-]`, max 64 chars, max 16 labels total
-- `operatorNote`: string (optional) — replaces the operator note; empty string clears it
-
-At least one of `labels` or `operatorNote` must be provided.
-
-### Returns
-
-- `runId` — the annotated run ID
-- `status` — the run status (unchanged)
-- `annotation.labels` — normalized (trimmed, lowercased, deduped, sorted) label set
-- `annotation.operatorNote` — current operator note (null if cleared)
-- `updatedAt` — ISO 8601 timestamp
-- `message` — human-readable confirmation
-
-### Behavior
-
-- Any run regardless of lifecycle status may be annotated
-- Labels are normalized: trimmed, lowercased, deduplicated (first wins), sorted deterministically
-- Labels must contain only lowercase ASCII letters, digits, hyphens, and underscores
-- Providing `labels` replaces the entire label set; omitting `labels` preserves existing labels
-- Providing `operatorNote` replaces it; omitting `operatorNote` preserves existing note
-- Annotating does **not** execute work, change lifecycle status, plan, or any other field
-- Appends `run_annotated` audit entry
-- Annotation metadata is visible in `get_run_state`, `refresh_run_state`, and `list_runs`
-
-### `list_runs` label filtering (Milestone 15 extension)
-
-The `list_runs` tool accepts an optional parameter:
-
-- `labelFilter` (string) — exact normalized label match; only runs that have this label in their annotation are returned
-
----
-
-## pin_run (Milestone 16)
-
-Explicitly pin a run to mark it as prominent in the visible working set.
-
-### Input
-
-- `runId`: string — Run ID to pin
-- `reason`: string — human-readable reason for pinning (required, 1–500 chars)
-
-### Returns
-
-- `runId` — the pinned run ID
-- `status` — the run status (unchanged)
-- `pinnedAt` — ISO 8601 timestamp of pinning
-- `reason` — the reason provided
-- `message` — human-readable confirmation
-
-### Behavior
-
-- Any run regardless of lifecycle status may be pinned
-- Re-pinning a pinned run replaces the existing pin metadata (idempotent)
-- Pinning does **not** execute work, change lifecycle status, plan, or any lifecycle field
-- `pinMetadata` is added to the run state and persisted in SQLite
-- Appends `run_pinned` audit entry with the pin reason
-- Pinned runs sort first in the default `list_runs` ordering
-- `pinnedOnly=true` filter returns only currently pinned runs
-- Pin metadata is visible in `get_run_state`, `refresh_run_state`, and `list_runs`
-
----
-
-## unpin_run (Milestone 16)
-
-Explicitly unpin a pinned run.
-
-### Input
-
-- `runId`: string — Run ID to unpin (must currently be pinned)
-- `reason`: string — human-readable reason for unpinning (required, 1–500 chars)
-
-### Returns
-
-- `runId` — the unpinned run ID
-- `status` — the run status (unchanged)
-- `unpinnedAt` — ISO 8601 timestamp of unpinning
-- `reason` — the reason provided
-- `message` — human-readable confirmation
-
-### Behavior
-
-- Only pinned runs may be unpinned; non-pinned runs are rejected deterministically
-- Unpinning does **not** execute work, change lifecycle status, plan, or any lifecycle field
-- `pinMetadata` is cleared from the run state
-- Appends `run_unpinned` audit entry with the unpin reason
-- After unpinning, the run returns to standard ordering in `list_runs`
-
-### `list_runs` pin filtering (Milestone 16 extension)
-
-The `list_runs` tool accepts an optional parameter:
-
-- `pinnedOnly` (boolean, default: false) — when `true`, return only currently pinned runs
-
----
-
-## snooze_run (Milestone 17)
-
-Explicitly snooze a run to temporarily defer it out of the default visible working set without archiving it.
-
-### Input
-
-- `runId`: string — Run ID to snooze
-- `reason`: string — human-readable reason for snoozing (required, 1–500 chars)
-
-### Returns
-
-- `runId` — the snoozed run ID
-- `status` — the run status at time of snoozing (unchanged)
-- `snoozedAt` — ISO 8601 timestamp of snoozing
-- `reason` — the reason provided
-- `message` — human-readable confirmation
-
-### Behavior
-
-- Any run regardless of lifecycle status may be snoozed
-- Re-snoozing a snoozed run replaces the existing snooze metadata
-- Snoozing does **not** execute work, change lifecycle status, replan, reopen, finalize, archive, unarchive, or supersede the run
-- `snoozeMetadata` is added to the run state and persisted in SQLite
-- Appends `run_snoozed` audit entry with the snooze reason
-- Snoozed runs remain fully inspectable via `get_run_state` and `get_run_history`
-- `list_runs` excludes snoozed runs by default; use `includeSnoozed=true` or `snoozedOnly=true` to include them
-
-### `list_runs` snooze filtering (Milestone 17 extension)
-
-The `list_runs` tool now accepts two optional boolean parameters:
-
-- `includeSnoozed` (boolean, default: false) — when `true`, include snoozed runs alongside non-snoozed runs
-- `snoozedOnly` (boolean, default: false) — when `true`, return only snoozed runs (takes precedence over `includeSnoozed`)
-
-When both are omitted, snoozed runs are excluded by default.
-
----
-
-## unsnooze_run (Milestone 17)
-
-Explicitly unsnooze a snoozed run to restore it to the default visible working set.
-
-### Input
-
-- `runId`: string — Run ID to unsnooze (must currently be snoozed)
-- `reason`: string — human-readable reason for unsnoozing (required, 1–500 chars)
-
-### Returns
-
-- `runId` — the unsnoozed run ID
-- `status` — the run status (unchanged)
-- `unsnoozedAt` — ISO 8601 timestamp of unsnoozing
-- `reason` — the reason provided
-- `message` — human-readable confirmation
-
-### Behavior
-
-- Only snoozed runs may be unsnoozed; non-snoozed runs are rejected deterministically
-- Unsnoozing does **not** execute work, change lifecycle status, replan, reopen, finalize, archive, unarchive, or supersede the run
-- The run's plan, completed steps, audit history, and all other metadata are fully preserved
-- `snoozeMetadata` is cleared from the run state and the change is persisted
-- Appends `run_unsnoozed` audit entry with the unsnooze reason
-- After unsnoozing, the run reappears in the default `list_runs` visible set
-- `snoozedOnly=true` excludes unsnooozed runs
-
-- `snoozedOnly=true` excludes unsnooozed runs
-
----
-
-## set_run_priority (Milestone 18)
-
-Explicitly classify a run by urgency within the visible working set.
-
-### Input
-
-- `runId`: string — Run ID whose priority should be updated
-- `priority`: `"critical" | "high" | "normal" | "low"` — new priority level
-- `reason`: string — human-readable reason for the change (required, 1–500 chars)
-
-### Returns
-
-- `runId` — the updated run ID
-- `status` — the run status (unchanged)
-- `previousPriority` — prior priority level
-- `priority` — new priority level
-- `reason` — the reason provided
-- `updatedAt` — ISO 8601 timestamp
-- `message` — human-readable confirmation
-
-### Behavior
-
-- Any run regardless of lifecycle status may have its priority updated
-- Setting priority does **not** execute work, change lifecycle status, plan, or any lifecycle field
-- Appends `run_priority_set` audit entry with previous and new priority
-- Priority is visible in `get_run_state`, `refresh_run_state`, and `list_runs`
-- Default priority for all runs is `"normal"`
-
-### `list_runs` priority filtering and sorting (Milestone 18 extension)
-
-The `list_runs` tool accepts optional parameters:
-
-- `priorityFilter` (`"critical" | "high" | "normal" | "low"`) — return only runs with this exact priority level
-- `sortByPriority` (boolean, default: false) — when `true`, sort by priority descending (critical first), with pinned-first/updated_at as tiebreakers
-
----
-
-## assign_run_owner (Milestone 19)
-
-Explicitly assign or clear ownership and coordination metadata on a run.
-
-### Input
-
-- `runId`: string — Run ID whose ownership should be updated
-- `assignee`: string or null (optional) — assignee identifier (`[a-z0-9._-]`, max 64 chars); pass `null` to clear
-- `ownershipNote`: string (optional, max 500 chars) — free-text coordination note
-
-At least one of `assignee` or `ownershipNote` must be provided.
-
-### Returns
-
-- `runId` — the updated run ID
-- `status` — the run status (unchanged)
-- `previousAssignee` — prior assignee (null if unset)
-- `assignee` — new assignee (null if cleared)
-- `ownershipNote` — current ownership note (null if cleared)
-- `updatedAt` — ISO 8601 timestamp
-- `message` — human-readable confirmation
-
-### Behavior
-
-- Any run regardless of lifecycle status may have ownership updated
-- Assignee is normalized: trimmed, lowercased, `[a-z0-9._-]` characters only
-- Passing `assignee=null` clears ownership
-- Assigning does **not** execute work, change lifecycle status, plan, or any lifecycle field
-- Appends `run_owner_assigned` (or `run_owner_cleared`) audit entry
-- Ownership metadata is visible in `get_run_state`, `refresh_run_state`, and `list_runs`
-
-### `list_runs` assignee filtering (Milestone 19 extension)
-
-The `list_runs` tool accepts an optional parameter:
-
-- `assigneeFilter` (string) — exact normalized assignee match; only runs assigned to this person are returned
-
----
-
-## set_run_due_date (Milestone 20)
-
-Explicitly set, replace, or clear the due date of a run.
-
-### Input
-
-- `runId`: string — Run ID whose due date should be updated
-- `dueDate`: string or null (optional) — ISO `YYYY-MM-DD` date string; pass `null` to clear; omit to preserve current
-
-### Returns
-
-- `runId` — the updated run ID
-- `status` — the run status (unchanged)
-- `previousDueDate` — prior due date (null if unset)
-- `dueDate` — new due date (null if cleared)
-- `updatedAt` — ISO 8601 timestamp
-- `message` — human-readable confirmation
-
-### Behavior
-
-- Any run regardless of lifecycle status may have its due date updated
-- `dueDate` must be exactly `YYYY-MM-DD` format; month 01–12, day 01–31
-- No time-of-day or timezone semantics; the backend stores the date string as-is
-- Passing `dueDate=null` clears the due date
-- Setting due date does **not** execute work, change lifecycle status, plan, or any lifecycle field
-- Appends `run_due_date_set` audit entry with previous and new due date
-- Due date is visible in `get_run_state`, `refresh_run_state`, and `list_runs`
-
-### `list_runs` due date filtering and sorting (Milestone 20 extension)
-
-The `list_runs` tool accepts optional parameters:
-
-- `dueOnOrBefore` (string `YYYY-MM-DD`) — return only runs with a due date ≤ this value (lexicographic ISO date comparison); runs without a due date are excluded
-- `sortByDueDate` (boolean, default: false) — when `true`, sort by due date ascending (soonest first); runs without a due date sort last; due date is the primary sort key before pinned-first/priority/updated_at
-
----
-
-## Forbidden public tools
-
-Do not expose:
-- `continue_run`
-- `resume_codex_thread`
-- `fix_end_to_end`
-- `agent_step`
-- `turn_start`
-- `codex_reply`
+Tools that return run status advertise this resource through MCP app metadata.
+The component is self-contained HTML/JS and uses the OpenAI app bridge only
+after receiving run metadata. It acquires `run_followup_lease`, waits the
+server-provided delay, and sends a follow-up message containing only the run id.
+If the bridge or resource is unavailable, the run remains persisted and
+resumable through `run_resume`.

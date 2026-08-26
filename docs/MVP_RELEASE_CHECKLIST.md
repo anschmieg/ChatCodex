@@ -135,11 +135,11 @@ git grep -nE 'continue_run|resume_thread|resume_codex_thread|agent_step|fix_end_
 
 ## Known Limitations Recorded
 
-- [ ] **Single workspace**: Each daemon manages one project
-- [ ] **No concurrent runs**: Only one active run at a time
+- [ ] **Per-client namespace**: Projects and runs are isolated by `CHATCODEX_CLIENT_ID`
+- [ ] **Selected run context**: One run is selected for tool context, while multiple persistent runs may exist
 - [ ] **Manual intervention**: Operators must approve certain actions
 - **No web UI**: All interaction through ChatGPT MCP client
-- **SQLite only**: No other database backends
+- **Atomic JSON lifecycle store**: Project/run metadata uses the native Rust store
 
 See [MVP_README.md](./MVP_README.md) for full limitations list.
 

@@ -19,7 +19,7 @@ This is forbidden even if the transport is MCP, ACP, JSON-RPC, or HTTP.
 User in ChatGPT
 -> ChatGPT-hosted model
 -> MCP server we own (native Rust)
--> filesystem / git / patch / tests / approvals / sandbox
+-> persistent project/run state / filesystem / git / patch / sandbox
 
 ## Why fork upstream Codex
 
@@ -57,6 +57,7 @@ docs/                 # documentation
 
 Native Rust MCP server:
 - MCP tool catalog and dispatch
+- Persistent project and run lifecycle state
 - Streamable HTTP transport
 - Prometheus metrics
 - Structured logging
@@ -78,28 +79,68 @@ OAuth 2.1 authorization layer:
 - Bearer-token middleware
 - Client registration
 - Token introspection and revocation
-- SQLite-backed storage
+- Token/client storage
 
-## Public MCP tools (11 total)
+## Public MCP tools
 
-Deterministic control tools:
-- `codex_prepare_run` — Initialize a coding run with goal and plan
-- `refresh_run_state` — Read-only run state snapshot
-- `replan_run` — Deterministic rule-based replanning
-- `approve_action` — Resolve pending approvals
+Project lifecycle:
+- `project_create` — Create or register a persistent repo, workspace, or scratch project
+- `project_select` — Select an existing persistent project
+- `project_list` — List projects in the client namespace
+- `project_get` — Get a project by id or return the selected project
+
+Run lifecycle:
+- `run_start` — Start and select a persistent coding run
+- `run_list` — List persistent runs
+- `run_get` — Get a run by id or return the selected run
+- `run_update` — Update phase, status, plan, checklist, checkpoints, and counters
+- `run_resume` — Select a non-terminal run after ChatGPT is asked to continue
+- `run_cancel` — Cancel a non-completed run
+- `run_followup_lease` — Acquire a duplicate-safe app continuation lease
+
+Legacy-compatible lifecycle:
+- `setup_workspace` — Clone a repo or create a scratch sandbox and register it as a project
+- `update_plan` — Replace the selected run's plan or legacy plan state
+- `todo` — Manage the selected run's checklist or legacy checklist state
 
 Workspace and file tools:
-- `get_workspace_summary` — Workspace overview and detected tooling
 - `read_file` — Read file contents with optional line ranges
-- `search_code` — Text/symbol search with snippets
+- `search_code` — Text search with snippets
+- `list_directory` — List workspace directory entries
+- `view_image` — Display a workspace image
 
-Execution tools (policy-gated):
-- `apply_patch` — Apply patches (gates: delete, >5 edits, sensitive paths, out-of-focus)
-- `run_tests` — Execute whitelisted test commands (gates: non-standard make targets)
+Execution tools:
+- `exec_command` — Run a command in the read-only sandbox
+- `write_stdin` — Interact with a running command session
+- `apply_patch` — Apply patches; the only workspace source write path
 
 Git tools:
-- `show_diff` — Diff summary or patch text
+- `git` — Run local-only git commands with outbound operations blocked
 - `git_status` — Working tree status
+- `git_diff` — Diff summary or patch text
+- `git_commit` — Create a local commit when run autonomy permits it
+- `git_branch` — Create or move a local branch
+- `git_checkout` — Switch branches
+
+## Persistent lifecycle
+
+Project and run state is namespaced by `CHATCODEX_CLIENT_ID` and persisted as
+atomic JSON beneath the workspace base. The selected run/project in persisted
+state is the authoritative coding context. Coding tools operate on the selected
+run's project when present and fall back to the selected project for legacy
+clients.
+
+Runs carry objective, acceptance criteria, phase, status, plan, checklist,
+checkpoints, autonomy limits, continuation lease/counter state, and timestamps.
+The server validates transitions and limits deterministically; it never
+executes work on its own.
+
+## ChatGPT App resource
+
+The server exposes a run-status MCP app resource at
+`ui://chatcodex/run-status.html`. The component requests a continuation only
+after a duplicate-safe lease is granted for an active run with remaining work.
+The follow-up message contains only the run id.
 
 ## First implementation slice
 
@@ -108,16 +149,16 @@ Implement only:
 - native Rust MCP server
 - OAuth authorization layer
 - minimal end-to-end loop:
-  - prepare
+  - create/select project
+  - start/select run
   - read
   - search
   - patch
-  - test
+  - verify
   - diff
 
 ## Explicit non-goals for first slice
 
-- widgets
 - external sandbox providers
 - worktree orchestration
 - review workflows

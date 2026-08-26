@@ -1,258 +1,124 @@
 # MCP Tools Overview
 
-This document organizes the 45+ MCP tools into workflow groups for easier understanding.
+ChatCodex exposes a compact deterministic tool catalog. ChatGPT owns reasoning
+and chains these tools while work remains.
 
 ## Tool Groups
 
-### Lifecycle Tools
-
-Control the run lifecycle from start to finish.
-
-| Tool | Purpose | When to Use |
-|------|---------|-------------|
-| `codex_prepare_run` | Create a new run | Starting new work |
-| `refresh_run_state` | Get current snapshot | After each action |
-| `replan_run` | Update the plan | When approach changes |
-| `finalize_run` | Close run with outcome | When work is done |
-| `reopen_run` | Resume finalized run | Continuing previous work |
-| `supersede_run` | Create successor run | Replacing failed approach |
-
-**Typical flow:**
-```
-prepare → (work) → finalize
-                    ↓
-                reopen → (continue) → finalize
-                    ↓
-              supersede → (new approach) → finalize
-```
-
-### Inspection Tools
-
-Understand the current context without making changes.
-
-| Tool | Purpose | When to Use |
-|------|---------|-------------|
-| `get_run_state` | Full authoritative state | Need complete picture |
-| `get_run_history` | Audit trail | Debugging, history |
-| `list_runs` | Query multiple runs | Queue management |
-| `get_run_queue_overview` | Aggregate counts | Quick status |
-| `get_workspace_summary` | Project structure | Starting exploration |
-
-### Code Exploration Tools
-
-Read and search the codebase.
-
-| Tool | Purpose | When to Use |
-|------|---------|-------------|
-| `read_file` | Read file contents | Understanding specific files |
-| `search_code` | Find patterns | Locating code, references |
-| `git_status` | Working tree status | Check changes |
-| `show_diff` | See changes | Verify patches |
-
-### Execution Tools
-
-Make changes and run tests. These may require approval based on policy.
-
-| Tool | Purpose | Policy Gates |
-|------|---------|--------------|
-| `apply_patch` | Apply file changes | Deletion, large edits, sensitive paths |
-| `run_tests` | Execute tests | Non-standard make targets |
-
-**Approval flow:**
-```
-apply_patch → (requires_approval?) → approve_action → apply_patch
-run_tests → (requires_approval?) → approve_action → run_tests
-```
-
-### Policy Preview Tools
-
-Check if actions will require approval before attempting.
+### Project Lifecycle
 
 | Tool | Purpose |
 |------|---------|
-| `preview_patch_policy` | Will patch need approval? |
-| `preview_test_policy` | Will tests need approval? |
+| `project_create` | Create or register a persistent repo, workspace, or scratch project |
+| `project_select` | Select an existing project for subsequent tools |
+| `project_list` | List projects in the current `CHATCODEX_CLIENT_ID` namespace |
+| `project_get` | Get a project by id or return the selected project |
 
-### Approval Tools
+Project ids are stable for existing repos, registered workspaces, and scratch
+projects. Project metadata is persisted under the client namespace and never
+stores credentials.
 
-Resolve policy-blocked actions.
-
-| Tool | Purpose |
-|------|---------|
-| `approve_action` | Approve or deny pending action |
-
-### Queue Management Tools
-
-Organize and prioritize multiple runs.
+### Run Lifecycle
 
 | Tool | Purpose |
 |------|---------|
-| `set_run_priority` | Set priority (low/normal/high/urgent) |
-| `assign_run_owner` | Assign or clear ownership |
-| `set_run_due_date` | Set or clear deadline |
-| `pin_run` / `unpin_run` | Mark as important |
-| `snooze_run` / `unsnooze_run` | Defer and restore |
-| `archive_run` / `unarchive_run` | Organize completed work |
-| `annotate_run` | Add labels and notes |
+| `run_start` | Create and select a persistent coding run |
+| `run_list` | List runs, optionally filtered by project or status |
+| `run_get` | Get a run by id or return the selected run |
+| `run_update` | Update phase, status, plan, checklist, checkpoints, and counters |
+| `run_resume` | Select a non-terminal run after ChatGPT is asked to continue |
+| `run_cancel` | Cancel a non-completed run |
+| `run_followup_lease` | Acquire a duplicate-safe app continuation lease |
 
-### Metadata Tools
+Run phases are `inspect`, `plan`, `execute`, and `verify`. Run statuses are
+`active`, `paused`, `blocked`, `awaiting_approval`, `completed`, and
+`cancelled`.
 
-Set run dependencies and effort estimates.
-
-| Tool | Purpose |
-|------|---------|
-| `set_run_dependencies` | Set blocker dependencies |
-
-### Saved View Tools
-
-Save and reuse queue filter configurations.
+### Legacy-Compatible Lifecycle
 
 | Tool | Purpose |
 |------|---------|
-| `create_queue_view` | Create a saved view |
-| `update_queue_view` | Modify view configuration |
-| `delete_queue_view` | Remove a view |
-| `get_queue_view` | Retrieve view definition |
-| `list_queue_views` | List all saved views |
+| `setup_workspace` | Clone a repo or create a scratch sandbox and register it as a project |
+| `update_plan` | Replace the selected run's plan, or legacy plan state without a run |
+| `todo` | Replace or update the selected run's checklist, or legacy checklist state without a run |
 
----
+### Workspace Inspection
 
-## Workflow Patterns
+| Tool | Purpose |
+|------|---------|
+| `read_file` | Read file contents with optional line ranges |
+| `search_code` | Search source files for a text pattern |
+| `list_directory` | List a workspace directory |
+| `view_image` | Display a workspace image |
+| `git_status` | Show `git status --porcelain` |
+| `git_diff` | Show `git diff` |
 
-### Pattern: New Feature
+### Workspace Mutation And Execution
 
-```
-1. get_workspace_summary     # Understand project
-2. codex_prepare_run         # Create run
-3. read_file / search_code   # Explore
-4. apply_patch               # Make changes
-5. run_tests                 # Validate
-6. show_diff                 # Review
-7. finalize_run              # Close
-```
+| Tool | Purpose | Policy |
+|------|---------|--------|
+| `exec_command` | Run a command in the read-only sandbox | Rejected if dangerous or disallowed by run autonomy |
+| `write_stdin` | Interact with a running command session | Bound to the existing session |
+| `apply_patch` | Apply workspace source edits | Only workspace source write path |
+| `git` | Run local-only git commands | Outbound network operations blocked |
+| `git_commit` | Create a local commit | Requires run autonomy to allow commits |
+| `git_branch` | Create or move a local branch | Requires run autonomy to allow local git writes |
+| `git_checkout` | Switch branches | Requires run autonomy to allow local git writes |
 
-### Pattern: Bug Fix
+## Typical Flow
 
-```
-1. search_code               # Locate issue
-2. read_file                 # Understand context
-3. codex_prepare_run         # Create run
-4. apply_patch               # Fix
-5. run_tests                 # Verify
-6. finalize_run              # Close
-```
-
-### Pattern: Policy Gate
-
-```
-1. preview_patch_policy      # Check before applying
-2. (if requires_approval)
-   ├─ approve_action         # Approve
-   └─ apply_patch            # Apply
+```text
+project_create or project_select
+run_start
+read_file/search_code/list_directory/git_status
+update_plan and todo
+apply_patch/exec_command/git tools as needed
+run_update through inspect -> plan -> execute -> verify
+verify acceptance criteria
+run_update(status: "completed", work_remaining: false)
 ```
 
-### Pattern: Queue Management
+If work remains after a tool response, ChatGPT should continue with the next
+fine-grained tool call instead of stopping. If external effects are needed and
+no existing authorization permits them, the run should move to
+`awaiting_approval`.
 
-```
-1. get_run_queue_overview    # See status
-2. list_runs                 # Get details
-3. set_run_priority          # Prioritize
-4. assign_run_owner          // Assign
-5. set_run_due_date          # Set deadline
-```
+## Active Context
 
-### Pattern: Blocked Run
+When a run is selected, all coding tools operate on that run's project. When no
+run is selected, tools use the selected project for legacy client
+compatibility.
 
-```
-1. list_runs({ blockedOnly: true })   # Find blocked
-2. get_run_state                       # Get details
-3. (resolve blocker)
-4. unsnooze_run / reopen_run           # Resume
-```
+Every coding tool result includes `run_metadata` when a run is active:
 
----
+- `run_id`
+- `phase`
+- `status`
+- `work_remaining`
+- `next_action`
+- `limits`
+- `lease`
 
-## Policy Gates
+## Continuation Component
 
-### Patch Policy
+Run lifecycle tools advertise the `ui://chatcodex/run-status.html` MCP app
+resource. The component can ask ChatGPT to continue only after it acquires a
+server-issued `run_followup_lease`. The follow-up message contains only the run
+id.
 
-Actions that may require approval:
-- File deletion
-- More than 5 edits at once
-- Editing sensitive paths (`.env`, `.git/`, `id_rsa`, etc.)
-- Editing outside `focusPaths`
-
-### Test Policy
-
-Actions that may require approval:
-- Non-standard make targets
-- Anything other than: `test`, `check`, `lint`, `build`, `clean`, `all`, `verify`, `fmt`, `format`
-
-### Customizing Policy
-
-At run creation, you can customize:
-```javascript
-{
-  policy: {
-    patchEditThreshold: 10,        // Allow more edits
-    deleteRequiresApproval: false, // Allow deletion
-    extraSafeMakeTargets: ["itest", "e2e"]
-  }
-}
-```
-
----
+No follow-up is sent for terminal, paused, blocked, or awaiting-approval runs.
+If the component or OpenAI app bridge is missing, the persisted run can still be
+listed, inspected, and resumed explicitly.
 
 ## Tool Reference
 
-### Lifecycle
+| Group | Tools |
+|-------|-------|
+| Project | `project_create`, `project_select`, `project_list`, `project_get` |
+| Run | `run_start`, `run_list`, `run_get`, `run_update`, `run_resume`, `run_cancel`, `run_followup_lease` |
+| Legacy lifecycle | `setup_workspace`, `update_plan`, `todo` |
+| Files | `read_file`, `search_code`, `list_directory`, `apply_patch`, `view_image` |
+| Commands | `exec_command`, `write_stdin` |
+| Git | `git`, `git_status`, `git_diff`, `git_commit`, `git_branch`, `git_checkout` |
 
-| Tool | Parameters | Returns |
-|------|------------|---------|
-| `codex_prepare_run` | userGoal, plan, focusPaths?, policy? | runId, status, recommendedNextAction |
-| `refresh_run_state` | runId | status, completedSteps, pendingSteps, recommendedNextAction |
-| `replan_run` | runId, reason, updatedSteps?, failureContext? | planDelta, status |
-| `finalize_run` | runId, outcomeKind, summary, reason? | status, finalizedAt |
-| `reopen_run` | runId, reason | status, reopenedAt |
-| `supersede_run` | runId, newUserGoal?, reason | successorRunId |
-
-### Inspection
-
-| Tool | Parameters | Returns |
-|------|------------|---------|
-| `get_run_state` | runId | full run state |
-| `get_run_history` | runId, limit? | history entries |
-| `list_runs` | status?, limit?, ... | run summaries |
-| `get_run_queue_overview` | workspaceId?, today? | aggregate counts |
-| `get_workspace_summary` | workspaceId? | detected tooling |
-
-### Execution
-
-| Tool | Parameters | Returns |
-|------|------------|---------|
-| `read_file` | path, startLine?, endLine? | file contents |
-| `search_code` | query, path? | matches with context |
-| `apply_patch` | runId, edits | result, approvalRequired? |
-| `run_tests` | runId, scope, target | test results |
-| `show_diff` | runId | diff summary |
-| `git_status` | (none) | working tree status |
-
-### Policy
-
-| Tool | Parameters | Returns |
-|------|------------|---------|
-| `preview_patch_policy` | runId, edits | decision, riskReason? |
-| `preview_test_policy` | runId, scope, target | decision, riskReason? |
-| `approve_action` | approvalId, decision | result |
-
----
-
-## Next Steps
-
-- **Quick start**: [MVP_README.md](./MVP_README.md) for the fastest path to first use
-- **Onboarding**: [ONBOARDING.md](./ONBOARDING.md)
-- **Workflow guide**: [FIRST_RUN_WORKFLOW.md](./FIRST_RUN_WORKFLOW.md)
-- **Example prompts**: [EXAMPLE_PROMPTS.md](./EXAMPLE_PROMPTS.md)
-- **Operator guide**: [OPERATOR_GUIDE.md](./OPERATOR_GUIDE.md) for production operations
-- **Intervention patterns**: [INTERVENTION_PATTERNS.md](./INTERVENTION_PATTERNS.md) for recovery playbooks
-- **API contracts**: [MCP_TOOL_CONTRACTS.md](./MCP_TOOL_CONTRACTS.md)
+See [MCP_TOOL_CONTRACTS.md](./MCP_TOOL_CONTRACTS.md) for field-level contracts.

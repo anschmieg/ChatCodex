@@ -40,15 +40,33 @@ ChatGPT-hosted model
    - MCP tools are deterministic.
    - The Rust server is deterministic.
    - All policy enforcement is server-side.
-   - All file writes happen through `apply_patch`.
+   - Workspace source file writes happen through `apply_patch`.
+   - Server-owned project/run metadata is persisted by deterministic atomic JSON beneath the workspace base.
    - `exec_command` runs inside a read-only filesystem sandbox.
 
 4. **Public MCP tool surface**
 
-   Workspace lifecycle:
+   Project lifecycle:
+   - `project_create` — create or register a persistent project
+   - `project_select` — select a persistent project for later tools
+   - `project_list` — list persistent projects in the client namespace
+   - `project_get` — get a project by id or the selected project
+
+   Run lifecycle:
+   - `run_start` — start and select a persistent coding run
+   - `run_list` — list persistent runs
+   - `run_get` — get a run by id or the selected run
+   - `run_update` — update phase/status/plan/checklist/checkpoints/limits counters
+   - `run_resume` — select an existing non-terminal run after ChatGPT is asked to continue
+   - `run_cancel` — cancel a non-completed run
+   - `run_followup_lease` — acquire a duplicate-safe app continuation lease
+
+   Legacy-compatible lifecycle:
    - `setup_workspace` — clone a git repo or create a scratch sandbox
    - `todo` — manage a persistent task checklist
    - `update_plan` — replace the task plan
+
+   When a run is selected, `setup_workspace`, `todo`, `update_plan`, and all workspace tools operate on that run's project state. Without a selected run, they retain legacy selected-project fallback behavior where practical.
 
    Sandboxed filesystem tools:
    - `exec_command` — run a bash command in the read-only sandbox
@@ -56,7 +74,7 @@ ChatGPT-hosted model
    - `read_file` — read a file with optional line range
    - `search_code` — grep workspace source files
    - `list_directory` — list entries in a workspace directory
-   - `apply_patch` — the *only* workspace write path
+   - `apply_patch` — the *only* workspace source write path
    - `view_image` — display an image from the workspace
 
    Git tools (unsandboxed for writes, sandboxed for reads):

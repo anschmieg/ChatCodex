@@ -34,11 +34,10 @@ If this fails, the MVP is not ready.
 
 Test approval gates:
 
-1. Create a patch with >5 edits
-2. Verify `preview_patch_policy` shows approval required
-3. Approve the action
-4. Apply the patch
-5. Verify patch succeeds
+1. Start a run with local commands or file edits disallowed in its autonomy envelope
+2. Verify the corresponding coding tool is rejected before execution
+3. Move a run to `awaiting_approval` for an external effect
+4. Verify continuation leases are not granted while approval is pending
 
 ### Priority 3: Queue Management
 
@@ -68,11 +67,11 @@ These are expected limitations in the MVP:
 
 | Limitation | Impact | Future |
 |------------|--------|--------|
-| Single workspace | One project per daemon | Multi-workspace support |
-| No concurrent runs | Only one active run | Parallel execution |
+| Per-client namespace | Projects/runs are isolated by `CHATCODEX_CLIENT_ID` | Cross-client administration |
+| Selected run context | One selected run drives tool context; multiple runs may persist | Parallel execution |
 | Manual approvals | Operator must approve | Auto-approve options |
 | No web UI | CLI/MCP only | Dashboard |
-| SQLite only | No external DB | PostgreSQL, etc. |
+| Atomic JSON lifecycle store | Project/run metadata is file-backed | Optional external DB |
 
 **The MVP is not a full product.** It's a proof of concept demonstrating the architecture.
 
