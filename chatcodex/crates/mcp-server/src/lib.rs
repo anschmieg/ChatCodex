@@ -3746,6 +3746,15 @@ pub async fn http_router_with_state(
 mod tests {
     use super::NativeHarnessMcp;
 
+    #[test]
+    fn catalog_excludes_backend_llm_tools() {
+        let names: Vec<_> = super::tool_catalog()
+            .into_iter()
+            .map(|(name, _, _, _)| name)
+            .collect();
+        assert!(!names.contains(&"memory_reflect"));
+    }
+
     #[tokio::test]
     async fn catalog_is_strictly_allowlisted() {
         let workspace = tempfile::tempdir().expect("workspace");
