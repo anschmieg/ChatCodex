@@ -531,6 +531,11 @@ impl NativeHarness {
     }
 
     async fn call(&self, name: &str, arguments: Value) -> anyhow::Result<CallToolResult> {
+        if tool_gets_active_run_metadata(name)
+            && let Some(reason) = self.lifecycle.consume_active_step()?
+        {
+            anyhow::bail!(reason);
+        }
         let mut result = match name {
             "exec_command" => self.exec_command(serde_json::from_value(arguments)?).await,
             "write_stdin" => self.write_stdin(serde_json::from_value(arguments)?).await,

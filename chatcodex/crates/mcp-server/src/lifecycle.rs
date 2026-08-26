@@ -369,6 +369,49 @@ impl LifecycleStore {
             .cloned())
     }
 
+    pub fn consume_active_step(&self) -> anyhow::Result<Option<String>> {
+        self.mutate(|state| {
+            let Some(run_id) = state.active_run_id.clone() else {
+                return Ok(None);
+            };
+            let run = state
+                .runs
+                .get_mut(&run_id)
+                .ok_or_else(|| anyhow::anyhow!("unknown active run: {run_id}"))?;
+            if run.status != RunStatus::Active {
+                return Ok(Some(format!(
+                    "selected run {} is {}; coding tools require an active run",
+                    run.id,
+                    run.status.as_str()
+                )));
+            }
+
+            let now = now_ms();
+            let elapsed_seconds = now
+                .saturating_sub(run.started_at_ms)
+                .checked_div(1_000)
+                .unwrap_or(0);
+            run.counters.runtime_seconds_used = elapsed_seconds;
+            let limit_reason = if elapsed_seconds >= run.autonomy.max_runtime_seconds {
+                Some("runtime limit reached")
+            } else if run.counters.steps_used >= run.autonomy.max_steps {
+                Some("step limit reached")
+            } else {
+                None
+            };
+            if let Some(reason) = limit_reason {
+                apply_status(run, RunStatus::Paused, now);
+                run.next_action = format!("{reason}; start a new run with a larger envelope");
+                run.updated_at_ms = now;
+                return Ok(Some(format!("run {} paused: {reason}", run.id)));
+            }
+
+            run.counters.steps_used = run.counters.steps_used.saturating_add(1);
+            run.updated_at_ms = now;
+            Ok(None)
+        })
+    }
+
     pub fn upsert_project(&self, input: ProjectUpsert) -> anyhow::Result<ProjectMutation> {
         self.mutate(|state| {
             let now = now_ms();
@@ -498,6 +541,14 @@ impl LifecycleStore {
                 .ok_or_else(|| anyhow::anyhow!("unknown run: {run_id}"))?;
             let now = now_ms();
 
+            if let Some(next) = update.phase.as_ref() {
+                validate_phase_transition(&run.phase, next)?;
+            }
+            if update.status.as_ref() == Some(&RunStatus::Completed)
+                && run.phase != RunPhase::Verify
+            {
+                anyhow::bail!("run must reach verify phase before completion");
+            }
             if let Some(next) = update.status {
                 validate_status_transition(&run.status, &next)?;
                 apply_status(run, next, now);
@@ -575,6 +626,9 @@ impl LifecycleStore {
             }
             if run.counters.turns_used >= run.autonomy.max_turns {
                 anyhow::bail!("turn limit exceeded for run {run_id}");
+            }
+            if run.counters.steps_used >= run.autonomy.max_steps {
+                anyhow::bail!("step limit exceeded for run {run_id}");
             }
             let now = now_ms();
             let elapsed_seconds = now
@@ -942,6 +996,24 @@ fn clear_lease(run: &mut Run) {
     run.continuation.expires_at_ms = None;
 }
 
+fn validate_phase_transition(current: &RunPhase, next: &RunPhase) -> anyhow::Result<()> {
+    if current == next {
+        return Ok(());
+    }
+    let allowed = matches!(
+        (current, next),
+        (RunPhase::Inspect, RunPhase::Plan)
+            | (RunPhase::Plan, RunPhase::Execute)
+            | (RunPhase::Execute, RunPhase::Verify)
+            | (RunPhase::Verify, RunPhase::Execute)
+    );
+    if allowed {
+        Ok(())
+    } else {
+        anyhow::bail!("invalid run phase transition: {current:?} -> {next:?}");
+    }
+}
+
 fn validate_status_transition(current: &RunStatus, next: &RunStatus) -> anyhow::Result<()> {
     if current == next {
         return Ok(());
@@ -1284,6 +1356,27 @@ mod tests {
         store
             .update_run(RunUpdate {
                 run_id: Some(run.run.id.clone()),
+                phase: Some(RunPhase::Plan),
+                ..RunUpdate::default()
+            })
+            .unwrap();
+        store
+            .update_run(RunUpdate {
+                run_id: Some(run.run.id.clone()),
+                phase: Some(RunPhase::Execute),
+                ..RunUpdate::default()
+            })
+            .unwrap();
+        store
+            .update_run(RunUpdate {
+                run_id: Some(run.run.id.clone()),
+                phase: Some(RunPhase::Verify),
+                ..RunUpdate::default()
+            })
+            .unwrap();
+        store
+            .update_run(RunUpdate {
+                run_id: Some(run.run.id.clone()),
                 status: Some(RunStatus::Completed),
                 ..RunUpdate::default()
             })
@@ -1297,6 +1390,125 @@ mod tests {
             })
             .expect_err("terminal run cannot become active");
         assert!(err.to_string().contains("invalid run status transition"));
+    }
+
+    #[test]
+    fn phase_lifecycle_rejects_skips_and_requires_verify_before_completion() {
+        let root = tempfile::tempdir().expect("root");
+        let project_root = root.path().join("clients/default/sandboxes/demo");
+        std::fs::create_dir_all(&project_root).expect("project root");
+        let store = store(&root, "default");
+        let project = store
+            .upsert_project(ProjectUpsert {
+                kind: ProjectKind::Scratch,
+                name: "demo".to_string(),
+                workspace_root: project_root,
+                source: ProjectSource::Scratch,
+                select: true,
+            })
+            .unwrap();
+        let run = store
+            .start_run(RunStart {
+                project_id: Some(project.project.id),
+                objective: "follow the lifecycle".to_string(),
+                acceptance_criteria: vec!["verified".to_string()],
+                autonomy: AutonomyEnvelope::default(),
+                select: true,
+            })
+            .unwrap();
+
+        let skipped = store
+            .update_run(RunUpdate {
+                run_id: Some(run.run.id.clone()),
+                phase: Some(RunPhase::Execute),
+                ..RunUpdate::default()
+            })
+            .expect_err("inspect cannot skip directly to execute");
+        assert!(skipped.to_string().contains("invalid run phase transition"));
+
+        store
+            .update_run(RunUpdate {
+                run_id: Some(run.run.id.clone()),
+                phase: Some(RunPhase::Plan),
+                ..RunUpdate::default()
+            })
+            .unwrap();
+        store
+            .update_run(RunUpdate {
+                run_id: Some(run.run.id.clone()),
+                phase: Some(RunPhase::Execute),
+                ..RunUpdate::default()
+            })
+            .unwrap();
+
+        let premature = store
+            .update_run(RunUpdate {
+                run_id: Some(run.run.id.clone()),
+                status: Some(RunStatus::Completed),
+                ..RunUpdate::default()
+            })
+            .expect_err("completion requires verify phase");
+        assert!(premature.to_string().contains("verify phase"));
+
+        store
+            .update_run(RunUpdate {
+                run_id: Some(run.run.id.clone()),
+                phase: Some(RunPhase::Verify),
+                ..RunUpdate::default()
+            })
+            .unwrap();
+        let completed = store
+            .update_run(RunUpdate {
+                run_id: Some(run.run.id),
+                status: Some(RunStatus::Completed),
+                ..RunUpdate::default()
+            })
+            .unwrap();
+        assert_eq!(completed.run.status, RunStatus::Completed);
+    }
+
+    #[test]
+    fn active_run_step_gate_pauses_at_step_and_runtime_limits() {
+        let root = tempfile::tempdir().expect("root");
+        let project_root = root.path().join("clients/default/sandboxes/demo");
+        std::fs::create_dir_all(&project_root).expect("project root");
+        let store = store(&root, "default");
+        let project = store
+            .upsert_project(ProjectUpsert {
+                kind: ProjectKind::Scratch,
+                name: "demo".to_string(),
+                workspace_root: project_root,
+                source: ProjectSource::Scratch,
+                select: true,
+            })
+            .unwrap();
+        let run = store
+            .start_run(RunStart {
+                project_id: Some(project.project.id),
+                objective: "bounded work".to_string(),
+                acceptance_criteria: vec![],
+                autonomy: AutonomyEnvelope {
+                    max_steps: 1,
+                    max_runtime_seconds: 3_600,
+                    ..AutonomyEnvelope::default()
+                },
+                select: true,
+            })
+            .unwrap();
+
+        assert_eq!(store.consume_active_step().unwrap(), None);
+        let blocked = store
+            .consume_active_step()
+            .unwrap()
+            .expect("second step must be blocked");
+        assert!(blocked.contains("step limit"));
+        let paused = store.get_run(&run.run.id).unwrap();
+        assert_eq!(paused.status, RunStatus::Paused);
+        assert_eq!(paused.counters.steps_used, 1);
+        let resume_error = store
+            .resume_run(&run.run.id)
+            .expect_err("step-limited run cannot be resumed");
+        assert!(resume_error.to_string().contains("step limit"));
     }
 
     #[test]

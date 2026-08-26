@@ -68,7 +68,7 @@ Autonomy fields:
 
 - `max_turns: integer`
 - `max_runtime_seconds: integer`
-- `max_steps: integer`
+- `max_steps: integer` — hard count of coding-tool calls; the server increments it automatically
 - `allow_local_commands: boolean`
 - `allow_file_edits: boolean`
 - `allow_git_commits: boolean`
@@ -217,7 +217,9 @@ Input:
 - `checkpoint?: { message: string }`
 - `work_remaining?: boolean`
 - `next_action?: string`
-- `step_delta?: integer`
+- `step_delta?: integer` — optional manual accounting in addition to automatic coding-tool step counting
+
+Phase changes must follow `inspect -> plan -> execute -> verify`; `verify -> execute` is allowed for corrective work. `completed` is accepted only from `verify`. Runtime or step exhaustion pauses the run and blocks further coding tools.
 
 Returns:
 

@@ -250,7 +250,7 @@ body {
         note.textContent = "Continuation lease expired.";
         return;
       }
-      window.openai.sendFollowUpMessage(runId);
+      window.openai.sendFollowUpMessage({ prompt: `Continue ChatCodex run ${runId}. Reload its authoritative state and continue until it reaches a terminal state.` });
     }, delay);
   }
 
@@ -288,7 +288,8 @@ mod tests {
         let html = run_status_html();
         assert!(html.contains("window.openai"));
         assert!(html.contains("run_followup_lease"));
-        assert!(html.contains("sendFollowUpMessage"));
+        assert!(html.contains("sendFollowUpMessage({ prompt:"));
+        assert!(html.contains("Continue ChatCodex run"));
         assert!(html.contains("run_id"));
         assert!(html.contains("paused"));
         assert!(html.contains("blocked"));

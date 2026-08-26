@@ -32,7 +32,10 @@ stores credentials.
 
 Run phases are `inspect`, `plan`, `execute`, and `verify`. Run statuses are
 `active`, `paused`, `blocked`, `awaiting_approval`, `completed`, and
-`cancelled`.
+`cancelled`. Phase transitions are enforced in order; a run can only complete
+from `verify` (and can return from `verify` to `execute` for corrective work).
+Every coding-tool call consumes one server-counted step. Reaching a runtime or
+step limit atomically pauses the run and blocks further coding tools.
 
 ### Legacy-Compatible Lifecycle
 
