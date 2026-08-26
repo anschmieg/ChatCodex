@@ -22,11 +22,15 @@ codex-rs/*
 !codex-rs/codex-client/
 !codex-rs/codex-experimental-api-macros/
 !codex-rs/exec-server/
+!codex-rs/exec-server-protocol/
 !codex-rs/execpolicy/
+!codex-rs/ext/
 !codex-rs/file-system/
+!codex-rs/http-client/
 !codex-rs/install-context/
 !codex-rs/linux-sandbox/
 !codex-rs/network-proxy/
+!codex-rs/otel/
 !codex-rs/process-hardening/
 !codex-rs/protocol/
 !codex-rs/sandboxing/
@@ -34,3 +38,5 @@ codex-rs/*
 !codex-rs/shell-escalation/
 !codex-rs/test-binary-support/
 !codex-rs/utils/
+!codex-rs/websocket-client/
+!codex-rs/windows-sandbox-rs/
