@@ -65,6 +65,7 @@ COPY codex-rs ./codex-rs
 # Copy ChatCodex workspace and crate manifests, then create stub sources for
 # dependency caching. The real sources are overlaid in a later stage.
 COPY chatcodex/Cargo.toml ./chatcodex/Cargo.toml
+COPY chatcodex/Cargo.lock ./chatcodex/Cargo.lock
 COPY chatcodex/crates/mcp-server/Cargo.toml ./chatcodex/crates/mcp-server/Cargo.toml
 COPY chatcodex/crates/oauth/Cargo.toml ./chatcodex/crates/oauth/Cargo.toml
 RUN mkdir -p \

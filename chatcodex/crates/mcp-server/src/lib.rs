@@ -46,6 +46,8 @@ use rmcp::model::AnnotateAble;
 use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
 use rmcp::model::Content;
+use rmcp::model::CreateElicitationRequestParams;
+use rmcp::model::ElicitationAction;
 use rmcp::model::GetPromptRequestParams;
 use rmcp::model::GetPromptResult;
 use rmcp::model::JsonObject;
@@ -66,6 +68,8 @@ use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::model::Tool;
 use rmcp::model::ToolAnnotations;
+use rmcp::service::RequestContext;
+use rmcp::service::RoleServer;
 use rmcp::transport::StreamableHttpServerConfig;
 use rmcp::transport::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -228,6 +232,10 @@ struct SetupWorkspaceArgs {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
+    worktree: Option<String>,
+    #[serde(default)]
+    branch: Option<String>,
+    #[serde(default)]
     timeout_ms: Option<u64>,
     /// Branch, tag, or commit-ish to check out after clone (JSON key: `ref`).
     #[serde(default, rename = "ref")]
@@ -277,9 +285,15 @@ struct GitCheckoutArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GitPushArgs {
+    #[serde(default = "default_origin_remote")]
+    remote: String,
     /// Branch to push. Defaults to the current branch.
     #[serde(default)]
     branch: Option<String>,
+    #[serde(default)]
+    set_upstream: bool,
+    #[serde(default)]
+    force_with_lease: bool,
     /// When true, create a pull request after the push using the gh CLI
     /// (requires CHATCODEX_GITHUB_TOKEN and a github.com remote).
     #[serde(default)]
@@ -287,11 +301,12 @@ struct GitPushArgs {
     /// Base branch for the pull request (default: the remote default branch).
     #[serde(default)]
     base: Option<String>,
-    /// Confirms that the user approved this exact push/PR effect.
-    #[serde(default)]
-    approved: bool,
     #[serde(default)]
     timeout_ms: Option<u64>,
+}
+
+fn default_origin_remote() -> String {
+    "origin".to_string()
 }
 
 #[derive(Deserialize)]
@@ -554,20 +569,16 @@ impl NativeHarness {
             "git" => self.git_tool(serde_json::from_value(arguments)?).await,
             "git_status" => self.git_status(serde_json::from_value(arguments)?).await,
             "get_time" => self.get_time(serde_json::from_value(arguments)?).await,
-            "memory_search" => {
-                hindsight::memory_search(serde_json::from_value(arguments)?).await
-            }
-            "memory_retain" => {
-                hindsight::memory_retain(serde_json::from_value(arguments)?).await
-            }
-            "memory_reflect" => {
-                hindsight::memory_reflect(serde_json::from_value(arguments)?).await
-            }
+            "memory_search" => hindsight::memory_search(serde_json::from_value(arguments)?).await,
+            "memory_retain" => hindsight::memory_retain(serde_json::from_value(arguments)?).await,
+            "memory_reflect" => hindsight::memory_reflect(serde_json::from_value(arguments)?).await,
             "git_diff" => self.git_diff(serde_json::from_value(arguments)?).await,
             "git_commit" => self.git_commit(serde_json::from_value(arguments)?).await,
             "git_branch" => self.git_branch(serde_json::from_value(arguments)?).await,
             "git_checkout" => self.git_checkout(serde_json::from_value(arguments)?).await,
-            "git_push" => self.git_push(serde_json::from_value(arguments)?).await,
+            "git_push" => anyhow::bail!(
+                "git_push requires an MCP client confirmation dialog and cannot run without request context"
+            ),
             "list_directory" => {
                 self.list_directory(serde_json::from_value(arguments)?)
                     .await
@@ -599,6 +610,20 @@ impl NativeHarness {
             self.attach_active_run_metadata(&mut result)?;
         }
         Ok(result)
+    }
+
+    async fn call_with_context(
+        &self,
+        name: &str,
+        arguments: Value,
+        context: RequestContext<RoleServer>,
+    ) -> anyhow::Result<CallToolResult> {
+        if name == "git_push" {
+            return self
+                .git_push(serde_json::from_value(arguments)?, context)
+                .await;
+        }
+        self.call(name, arguments).await
     }
 
     async fn exec_command(&self, args: ExecCommandArgs) -> anyhow::Result<CallToolResult> {
@@ -801,8 +826,10 @@ impl NativeHarness {
         let policy = SandboxPolicy::ReadOnly {
             network_access: false,
         };
-        let sandbox =
-            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, PathUri::from_abs_path(&workspace))?;
+        let sandbox = FileSystemSandboxContext::from_legacy_sandbox_policy(
+            policy,
+            PathUri::from_abs_path(&workspace),
+        )?;
         let sandbox = if self.sandbox_available() {
             Some(&sandbox)
         } else {
@@ -832,8 +859,10 @@ impl NativeHarness {
         let policy = SandboxPolicy::ReadOnly {
             network_access: false,
         };
-        let sandbox =
-            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, PathUri::from_abs_path(&workspace))?;
+        let sandbox = FileSystemSandboxContext::from_legacy_sandbox_policy(
+            policy,
+            PathUri::from_abs_path(&workspace),
+        )?;
         let sandbox = if self.sandbox_available() {
             Some(&sandbox)
         } else {
@@ -933,9 +962,7 @@ impl NativeHarness {
     async fn get_time(&self, _args: GetTimeArgs) -> anyhow::Result<CallToolResult> {
         use time::format_description::well_known::Rfc3339;
         let now = time::OffsetDateTime::now_utc();
-        let iso8601 = now
-            .format(&Rfc3339)
-            .unwrap_or_else(|_| now.to_string());
+        let iso8601 = now.format(&Rfc3339).unwrap_or_else(|_| now.to_string());
         Ok(text_result(json!({
             "iso8601": iso8601,
             "unix_seconds": now.unix_timestamp(),
@@ -1001,8 +1028,10 @@ impl NativeHarness {
         let policy = SandboxPolicy::ReadOnly {
             network_access: false,
         };
-        let sandbox =
-            FileSystemSandboxContext::from_legacy_sandbox_policy(policy, PathUri::from_abs_path(&workspace))?;
+        let sandbox = FileSystemSandboxContext::from_legacy_sandbox_policy(
+            policy,
+            PathUri::from_abs_path(&workspace),
+        )?;
         let sandbox = if self.sandbox_available() {
             Some(&sandbox)
         } else {
@@ -1125,6 +1154,8 @@ impl NativeHarness {
             &args.source,
             args.name.as_deref(),
             args.ref_name.as_deref(),
+            args.worktree.as_deref(),
+            args.branch.as_deref(),
             args.timeout_ms,
         )
         .await?;
@@ -1161,6 +1192,9 @@ impl NativeHarness {
             "source": response_source,
             "action": workspace_result.action,
             "project_id": project.project.id,
+            "repo_root": workspace_result.repo_root,
+            "worktree": workspace_result.worktree,
+            "branch": workspace_result.branch,
         })))
     }
 
@@ -1182,6 +1216,8 @@ impl NativeHarness {
             self.lifecycle.client_id(),
             "sandbox",
             Some(&name),
+            None,
+            None,
             None,
             args.timeout_ms,
         )
@@ -1218,6 +1254,8 @@ impl NativeHarness {
             self.lifecycle.client_id(),
             source,
             Some(&name),
+            None,
+            None,
             None,
             args.timeout_ms,
         )
@@ -1592,35 +1630,14 @@ impl NativeHarness {
         })))
     }
 
-    /// Push the current (or named) branch to the origin remote and,
-    /// optionally, open a pull request for it.
-    ///
-    /// This is the only sanctioned outbound network path for git: the `git`
-    /// tool deliberately blocks push/fetch/ls-remote. Authentication is
-    /// provided exclusively by the server-side `CHATCODEX_GITHUB_TOKEN`
-    /// environment variable — never by credentials embedded in URLs or by
-    /// interactive prompts. The token is passed to git via a credential
-    /// helper that reads the environment variable, so it is never written to
-    /// `.git/config` or any other file the model can read.
-    async fn git_push(&self, args: GitPushArgs) -> anyhow::Result<CallToolResult> {
-        if !args.approved && self.lifecycle.active_run()?.is_some() {
-            self.lifecycle.update_run(lifecycle::RunUpdate {
-                status: Some(lifecycle::RunStatus::AwaitingApproval),
-                next_action: Some(
-                    "present the exact git push and optional pull request effect for user approval"
-                        .to_string(),
-                ),
-                ..lifecycle::RunUpdate::default()
-            })?;
-            return Ok(text_result(json!({
-                "branch": args.branch.as_deref().unwrap_or("current"),
-                "pushed": false,
-                "stdout": "",
-                "stderr": "explicit user approval is required before git_push",
-                "exit_code": 1,
-                "awaiting_approval": true,
-            })));
-        }
+    /// Push the current (or named) branch after MCP client elicitation confirms
+    /// the exact external effect. This is the only sanctioned outbound network
+    /// path for git: the `git` tool deliberately blocks push/fetch/ls-remote.
+    async fn git_push(
+        &self,
+        args: GitPushArgs,
+        context: RequestContext<RoleServer>,
+    ) -> anyhow::Result<CallToolResult> {
         let workspace = self.workspace_or_error().await?;
         let token = std::env::var("CHATCODEX_GITHUB_TOKEN").ok();
         let Some(token) = token.filter(|t| !t.is_empty()) else {
@@ -1628,73 +1645,133 @@ impl NativeHarness {
                 "git_push is disabled: CHATCODEX_GITHUB_TOKEN is not configured on the server"
             );
         };
+        if args.remote.trim().is_empty()
+            || args.remote.starts_with('-')
+            || args.remote.contains(char::is_whitespace)
+        {
+            anyhow::bail!("remote must be a simple git remote name");
+        }
+        let branch = match args.branch {
+            Some(branch) => validate_git_ref_name(&branch).map(|_| branch)?,
+            None => {
+                let current =
+                    run_git_command(workspace.as_path(), "branch --show-current", Some(10_000))
+                        .await?;
+                let branch = current.stdout.trim().to_string();
+                if current.exit_code != 0 || branch.is_empty() {
+                    anyhow::bail!("current branch could not be determined; pass branch explicitly");
+                }
+                branch
+            }
+        };
+        validate_git_ref_name(&branch)?;
 
-        // Ensure git has an identity in this repo so pushes from branches
-        // without commits still behave deterministically.
-        for config in [
-            "config user.email chatcodex@example.invalid",
-            "config user.name ChatCodex",
-        ] {
-            let _ = self
-                .run_sandboxed_git(&workspace, config, Some(10_000), GitSandboxMode::Unsandboxed)
-                .await;
+        let status =
+            run_git_command(workspace.as_path(), "status --porcelain", Some(10_000)).await?;
+        let diffstat =
+            run_git_command(workspace.as_path(), "diff --stat HEAD", Some(10_000)).await?;
+        let commit =
+            run_git_command(workspace.as_path(), "rev-parse --short HEAD", Some(10_000)).await?;
+        let remote_url = run_git_command(
+            workspace.as_path(),
+            &format!("remote get-url {}", shell_escape(&args.remote)),
+            Some(10_000),
+        )
+        .await?;
+        if remote_url.exit_code != 0 {
+            anyhow::bail!(
+                "could not resolve remote '{}': {}",
+                args.remote,
+                remote_url.stderr
+            );
         }
 
-        // Resolve the branch to push: explicit arg, or the current branch.
-        // A detached HEAD cannot be pushed under a name, so require one.
-        let branch = if let Some(branch) = args.branch {
-            let command = format!("checkout -B {}", shell_escape(&branch));
-            let result = self
-                .run_sandboxed_git(
-                    &workspace,
-                    &command,
-                    args.timeout_ms,
-                    GitSandboxMode::Unsandboxed,
-                )
-                .await?;
-            if result.exit_code != 0 {
-                anyhow::bail!(
-                    "failed to switch to branch {}: {}",
-                    branch,
-                    result.stderr.trim()
-                );
-            }
-            branch
-        } else {
-            let result = self
-                .run_sandboxed_git(
-                    &workspace,
-                    "symbolic-ref --short HEAD",
-                    Some(10_000),
-                    GitSandboxMode::Unsandboxed,
-                )
-                .await?;
-            if result.exit_code != 0 {
-                anyhow::bail!(
-                    "cannot push: HEAD is detached. Create a branch first (git_checkout with create_branch, or pass a branch). stderr: {}",
-                    result.stderr.trim()
-                );
-            }
-            result.stdout.trim().to_string()
-        };
-
-        let mut env = std::collections::HashMap::new();
-        env.insert("CHATCODEX_GITHUB_TOKEN".to_string(), token);
-        env.insert("GIT_TERMINAL_PROMPT".to_string(), "0".to_string());
-        env.insert("GIT_ASKPASS".to_string(), "/bin/true".to_string());
-        env.insert(
-            "GCM_INTERACTIVE".to_string(),
-            "Never".to_string(),
-        );
-
-        let push_argv = vec![
+        let mut push_argv = vec![
             "-c".to_string(),
             format!("credential.helper={}", github_credential_helper()),
             "push".to_string(),
-            "-u".to_string(),
-            "origin".to_string(),
-            format!("HEAD:{branch}"),
         ];
+        let mut command = String::from("push");
+        if args.set_upstream {
+            push_argv.push("--set-upstream".to_string());
+            command.push_str(" --set-upstream");
+        }
+        if args.force_with_lease {
+            push_argv.push("--force-with-lease".to_string());
+            command.push_str(" --force-with-lease");
+        }
+        push_argv.push(args.remote.clone());
+        push_argv.push(branch.clone());
+        command.push(' ');
+        command.push_str(&shell_escape(&args.remote));
+        command.push(' ');
+        command.push_str(&shell_escape(&branch));
+
+        let pr_line = if args.create_pr {
+            format!(
+                "\nPull request: create with gh pr create --fill --head {} --base {}",
+                branch,
+                args.base.as_deref().unwrap_or("<remote default branch>")
+            )
+        } else {
+            "\nPull request: no".to_string()
+        };
+        let message = format!(
+            "Confirm git push?\n\nWorkspace: {}\nRemote: {} ({})\nBranch: {}\nCommit: {}\nCommand: git {}{}\n\nUncommitted changes (status --porcelain):\n{}\nDiff stat since HEAD:\n{}",
+            workspace.as_path().display(),
+            args.remote,
+            remote_url.stdout.trim(),
+            branch,
+            commit.stdout.trim(),
+            command,
+            pr_line,
+            if status.stdout.trim().is_empty() {
+                "(clean)"
+            } else {
+                status.stdout.trim()
+            },
+            if diffstat.stdout.trim().is_empty() {
+                "(none)"
+            } else {
+                diffstat.stdout.trim()
+            },
+        );
+        let response = context
+            .peer
+            .create_elicitation_with_timeout(
+                CreateElicitationRequestParams::FormElicitationParams {
+                    meta: None,
+                    message,
+                    requested_schema: serde_json::from_value(json!({
+                        "type": "object",
+                        "properties": {
+                            "confirm": {"type": "boolean", "title": "Proceed with this push"}
+                        },
+                        "required": ["confirm"],
+                        "additionalProperties": false
+                    }))?,
+                },
+                Some(Duration::from_secs(300)),
+            )
+            .await?;
+        if response.action != ElicitationAction::Accept {
+            anyhow::bail!("git push cancelled by user");
+        }
+        let confirmed = response
+            .content
+            .as_ref()
+            .and_then(|v| v.get("confirm"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !confirmed {
+            anyhow::bail!("git push was not confirmed by the user");
+        }
+
+        let mut env = HashMap::new();
+        env.insert("CHATCODEX_GITHUB_TOKEN".to_string(), token);
+        env.insert("GIT_TERMINAL_PROMPT".to_string(), "0".to_string());
+        env.insert("GIT_ASKPASS".to_string(), "/bin/true".to_string());
+        env.insert("GCM_INTERACTIVE".to_string(), "Never".to_string());
         let push = run_git_command_with_env(
             workspace.as_path(),
             push_argv,
@@ -1703,9 +1780,9 @@ impl NativeHarness {
         )
         .await?;
         let pushed = push.exit_code == 0;
-
         let mut result = json!({
             "branch": branch,
+            "remote": args.remote,
             "pushed": pushed,
             "stdout": push.stdout,
             "stderr": push.stderr,
@@ -1715,15 +1792,16 @@ impl NativeHarness {
 
         if pushed && args.create_pr {
             let pr = self
-                .create_pull_request(&workspace, &branch, args.base.as_deref(), &env)
+                .create_pull_request(
+                    &workspace,
+                    result["branch"].as_str().unwrap_or_default(),
+                    args.base.as_deref(),
+                    &env,
+                )
                 .await;
             match pr {
-                Ok(url) => {
-                    result["pr_url"] = json!(url);
-                }
-                Err(err) => {
-                    result["pr_error"] = json!(err.to_string());
-                }
+                Ok(url) => result["pr_url"] = json!(url),
+                Err(err) => result["pr_error"] = json!(err.to_string()),
             }
         }
 
@@ -1737,7 +1815,7 @@ impl NativeHarness {
         workspace: &AbsolutePathBuf,
         branch: &str,
         base: Option<&str>,
-        env: &std::collections::HashMap<String, String>,
+        env: &HashMap<String, String>,
     ) -> anyhow::Result<String> {
         let base = match base {
             Some(base) => base.to_string(),
@@ -1763,14 +1841,18 @@ impl NativeHarness {
                 }
             }
         };
-        // After a fresh push the origin/HEAD ref may not exist yet, so fall
-        // back to the symbolic default branch if resolution produced garbage.
-        let base = if base.is_empty() { "main".to_string() } else { base };
+        let base = if base.is_empty() {
+            "main".to_string()
+        } else {
+            base
+        };
 
         let mut gh_env = env.clone();
         gh_env.insert(
             "GH_TOKEN".to_string(),
-            env.get("CHATCODEX_GITHUB_TOKEN").cloned().unwrap_or_default(),
+            env.get("CHATCODEX_GITHUB_TOKEN")
+                .cloned()
+                .unwrap_or_default(),
         );
 
         let output = tokio::process::Command::new("gh")
@@ -1786,10 +1868,13 @@ impl NativeHarness {
         if !output.status.success() {
             anyhow::bail!(
                 "gh pr create failed (base={base}): {stderr}{}",
-                if stdout.is_empty() { String::new() } else { format!(" stdout: {stdout}") }
+                if stdout.is_empty() {
+                    String::new()
+                } else {
+                    format!(" stdout: {stdout}")
+                }
             );
         }
-        // gh prints the PR URL on stdout; fall back to a search if it didn't.
         if let Some(url) = stdout.lines().find(|l| l.contains("https://")) {
             return Ok(url.to_string());
         }
@@ -2168,6 +2253,9 @@ struct SetupWorkspaceResult {
     workspace_root: PathBuf,
     source: String,
     action: String,
+    repo_root: Option<PathBuf>,
+    worktree: Option<String>,
+    branch: Option<String>,
 }
 
 fn is_allowed_git_scheme(scheme: &str) -> bool {
@@ -2203,6 +2291,21 @@ fn sanitize_workspace_name(name: &str) -> anyhow::Result<String> {
     Ok(sanitized)
 }
 
+fn validate_git_ref_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty()
+        || name.starts_with('-')
+        || name.starts_with('/')
+        || name.ends_with('/')
+        || name.contains("..")
+        || name.contains("@{")
+        || name.contains('\\')
+        || name.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        anyhow::bail!("invalid git ref name: {name}");
+    }
+    Ok(())
+}
+
 fn derive_workspace_name(source: &str) -> anyhow::Result<String> {
     if source == "sandbox" {
         return Ok("sandbox".to_string());
@@ -2225,6 +2328,8 @@ async fn do_setup_workspace(
     source: &str,
     name: Option<&str>,
     ref_name: Option<&str>,
+    worktree: Option<&str>,
+    branch: Option<&str>,
     timeout_ms: Option<u64>,
 ) -> anyhow::Result<SetupWorkspaceResult> {
     let name = match name {
@@ -2259,6 +2364,9 @@ async fn do_setup_workspace(
             workspace_root: target,
             source: source.to_string(),
             action,
+            repo_root: None,
+            worktree: None,
+            branch: None,
         });
     }
 
@@ -2267,18 +2375,12 @@ async fn do_setup_workspace(
     if !is_allowed_git_scheme(url.scheme()) {
         anyhow::bail!("git URL scheme '{}' is not allowed", url.scheme());
     }
-    // Reject URLs that embed credentials: git would write them verbatim into
-    // `.git/config`, where the model can read them back. Private-repo access
-    // must go through the server-side CHATCODEX_GITHUB_TOKEN instead.
     if !url.username().is_empty() || url.password().is_some() {
         anyhow::bail!(
             "git URL must not contain embedded credentials; configure CHATCODEX_GITHUB_TOKEN on the server and use a credential-free https URL instead"
         );
     }
 
-    // Private GitHub repos: when the server holds a CHATCODEX_GITHUB_TOKEN,
-    // authenticate the clone via an ephemeral credential helper so the token
-    // is never written to disk. Public clones are untouched.
     let use_token = github_token_from_env().is_some() && is_github_host(url.host_str());
     if use_token {
         tracing::info!("setup_workspace: using CHATCODEX_GITHUB_TOKEN for {url_str}");
@@ -2291,6 +2393,19 @@ async fn do_setup_workspace(
         .join("repos")
         .join(&name);
 
+    let worktree_name = match (worktree, branch) {
+        (Some(w), _) => Some(sanitize_workspace_name(w)?),
+        (None, Some(b)) => Some(sanitize_workspace_name(b)?),
+        (None, None) => None,
+    };
+    let branch_name = match branch {
+        Some(b) => {
+            validate_git_ref_name(b)?;
+            Some(b.to_string())
+        }
+        None => worktree_name.as_ref().map(|w| format!("chatcodex/{w}")),
+    };
+
     if target.exists() {
         let origin = run_git_command(&target, "remote get-url origin", Some(30_000))
             .await
@@ -2302,7 +2417,7 @@ async fn do_setup_workspace(
             );
         }
         let current_origin = origin.stdout.trim();
-        if current_origin != url_str {
+        if current_origin != url_str && current_origin != clean_git_url(&url) {
             anyhow::bail!(
                 "workspace {} already exists and its origin remote ({}) does not match {}",
                 target.display(),
@@ -2310,91 +2425,157 @@ async fn do_setup_workspace(
                 url_str
             );
         }
+        if worktree_name.is_none() {
+            return Ok(SetupWorkspaceResult {
+                workspace_root: target,
+                source: source.to_string(),
+                action: "existing".to_string(),
+                repo_root: None,
+                worktree: None,
+                branch: None,
+            });
+        }
+    }
+
+    if !target.exists() {
+        let parent = target
+            .parent()
+            .context("target path has no parent directory")?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .context("failed to create repo parent directory")?;
+
+        let mut retries = 0;
+        let max_retries = 3;
+        let mut delays = [1_000, 2_000, 4_000].iter();
+        loop {
+            let result = run_git_command_with_args(
+                parent,
+                build_clone_argv(url_str, ref_name, use_token, &target),
+                Some(timeout.as_millis() as u64),
+            )
+            .await;
+
+            match result {
+                Ok(output) if output.exit_code == 0 => {
+                    if use_token {
+                        let clean = clean_git_url(&url);
+                        let _ = run_git_command_with_args(
+                            &target,
+                            vec!["remote".into(), "set-url".into(), "origin".into(), clean],
+                            Some(30_000),
+                        )
+                        .await;
+                        let _ = run_git_command_with_args(
+                            &target,
+                            vec![
+                                "config".into(),
+                                "credential.helper".into(),
+                                github_credential_helper(),
+                            ],
+                            Some(30_000),
+                        )
+                        .await;
+                    }
+                    if worktree_name.is_none() {
+                        return Ok(SetupWorkspaceResult {
+                            workspace_root: target,
+                            source: source.to_string(),
+                            action: "cloned".to_string(),
+                            repo_root: None,
+                            worktree: None,
+                            branch: None,
+                        });
+                    }
+                    break;
+                }
+                Ok(output) => {
+                    if retries >= max_retries || !is_retriable_git_error(&output.stderr) {
+                        anyhow::bail!(
+                            "git clone failed (exit {}): {}. stderr: {}",
+                            output.exit_code,
+                            source,
+                            output.stderr
+                        );
+                    }
+                }
+                Err(error) => {
+                    if retries >= max_retries {
+                        return Err(error.context(format!(
+                            "git clone failed after {max_retries} retries: {source}"
+                        )));
+                    }
+                }
+            }
+            retries += 1;
+            if let Some(&delay) = delays.next() {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+        }
+    }
+
+    let worktree_name = worktree_name.expect("worktree_name checked above");
+    let branch_name = branch_name.expect("branch_name checked above");
+    let worktree_target = workspace_base
+        .as_path()
+        .join("clients")
+        .join(client_id)
+        .join("worktrees")
+        .join(&name)
+        .join(&worktree_name);
+    if worktree_target.exists() {
+        let status = run_git_command(&worktree_target, "status --porcelain", Some(30_000))
+            .await
+            .context("failed to verify existing worktree")?;
+        if status.exit_code != 0 {
+            anyhow::bail!(
+                "worktree {} exists but is not a valid git worktree",
+                worktree_target.display()
+            );
+        }
         return Ok(SetupWorkspaceResult {
-            workspace_root: target,
+            workspace_root: worktree_target,
             source: source.to_string(),
-            action: "existing".to_string(),
+            action: "existing_worktree".to_string(),
+            repo_root: Some(target),
+            worktree: Some(worktree_name),
+            branch: Some(branch_name),
         });
     }
-
-    let parent = target
+    let parent = worktree_target
         .parent()
-        .context("target path has no parent directory")?;
+        .context("worktree target path has no parent directory")?;
     tokio::fs::create_dir_all(parent)
         .await
-        .context("failed to create repo parent directory")?;
-
-    let mut retries = 0;
-    let max_retries = 3;
-    let mut delays = [1_000, 2_000, 4_000].iter();
-    loop {
-        let result = run_git_command_with_args(
-            parent,
-            build_clone_argv(url_str, ref_name, use_token, &target),
-            Some(timeout.as_millis() as u64),
-        )
-        .await;
-
-        match result {
-            Ok(output) if output.exit_code == 0 => {
-                if use_token {
-                    // Hardening: record the credential-free origin (git never
-                    // saw credentials in the URL, but keep the remote clean
-                    // anyway) and install the env-based credential helper so
-                    // later fetch/push operations authenticate without the
-                    // token ever being written to .git/config.
-                    let clean = clean_git_url(&url);
-                    let _ = run_git_command_with_args(
-                        &target,
-                        vec![
-                            "remote".into(),
-                            "set-url".into(),
-                            "origin".into(),
-                            clean.clone(),
-                        ],
-                        Some(30_000),
-                    )
-                    .await;
-                    let _ = run_git_command_with_args(
-                        &target,
-                        vec![
-                            "config".into(),
-                            "credential.helper".into(),
-                            github_credential_helper(),
-                        ],
-                        Some(30_000),
-                    )
-                    .await;
-                }
-                return Ok(SetupWorkspaceResult {
-                    workspace_root: target,
-                    source: source.to_string(),
-                    action: "cloned".to_string(),
-                });
-            }
-            Ok(output) => {
-                if retries >= max_retries || !is_retriable_git_error(&output.stderr) {
-                    anyhow::bail!(
-                        "git clone failed (exit {}): {}. stderr: {}",
-                        output.exit_code,
-                        source,
-                        output.stderr
-                    );
-                }
-            }
-            Err(error) => {
-                if retries >= max_retries {
-                    return Err(error.context(format!(
-                        "git clone failed after {max_retries} retries: {source}"
-                    )));
-                }
-            }
-        }
-        retries += 1;
-        if let Some(&delay) = delays.next() {
-            tokio::time::sleep(Duration::from_millis(delay)).await;
-        }
+        .context("failed to create worktree parent directory")?;
+    let result = run_git_command_with_args(
+        &target,
+        vec![
+            "worktree".to_string(),
+            "add".to_string(),
+            "-b".to_string(),
+            branch_name.clone(),
+            worktree_target.to_string_lossy().to_string(),
+        ],
+        Some(timeout.as_millis() as u64),
+    )
+    .await
+    .context("failed to create git worktree")?;
+    if result.exit_code != 0 {
+        anyhow::bail!(
+            "git worktree add failed (exit {}): {}",
+            result.exit_code,
+            result.stderr
+        );
     }
+    Ok(SetupWorkspaceResult {
+        workspace_root: worktree_target,
+        source: source.to_string(),
+        action: "created_worktree".to_string(),
+        repo_root: Some(target),
+        worktree: Some(worktree_name),
+        branch: Some(branch_name),
+    })
 }
 
 fn is_retriable_git_error(stderr: &str) -> bool {
@@ -2670,9 +2851,9 @@ fn tool_catalog() -> anyhow::Result<Vec<Tool>> {
         ),
         (
             "setup_workspace",
-            "Prepare the workspace for this client. Provide a git URL to clone a repository, or pass 'sandbox' for a persistent scratch directory with an initialized git repo. Private GitHub repositories are supported when the server has CHATCODEX_GITHUB_TOKEN configured: use a credential-free https://github.com/... URL and the clone is authenticated server-side. Pass \"ref\" (a branch, tag, or commit) to check out a specific ref after clone. URLs containing embedded credentials are rejected.",
-            json!({"type":"object","properties":{"source":{"type":"string"},"name":{"type":"string"},"ref":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"required":["source"],"additionalProperties":false}),
-            json!({"type":"object","properties":{"workspace_root":{"type":"string"},"source":{"type":"string"},"action":{"type":"string"},"project_id":{"type":"string"}},"required":["workspace_root","source","action","project_id"],"additionalProperties":false}),
+            "Prepare the workspace for this client. Provide a git URL to clone a repository, or pass 'sandbox' for a persistent scratch directory with an initialized git repo. Private GitHub repositories are supported when the server has CHATCODEX_GITHUB_TOKEN configured: use a credential-free https://github.com/... URL and the clone is authenticated server-side. Pass \"ref\" (a branch, tag, or commit) to check out a specific ref after clone. Pass worktree/branch to create an isolated per-client git worktree under clients/{client}/worktrees. URLs containing embedded credentials are rejected.",
+            json!({"type":"object","properties":{"source":{"type":"string"},"name":{"type":"string"},"ref":{"type":"string"},"worktree":{"type":"string"},"branch":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"required":["source"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"workspace_root":{"type":"string"},"source":{"type":"string"},"action":{"type":"string"},"project_id":{"type":"string"},"repo_root":{"oneOf":[{"type":"string"},{"type":"null"}]},"worktree":{"oneOf":[{"type":"string"},{"type":"null"}]},"branch":{"oneOf":[{"type":"string"},{"type":"null"}]}},"required":["workspace_root","source","action","project_id","repo_root","worktree","branch"],"additionalProperties":false}),
         ),
         (
             "git",
@@ -2736,9 +2917,9 @@ fn tool_catalog() -> anyhow::Result<Vec<Tool>> {
         ),
         (
             "git_push",
-            "Push the current (or named) branch to the origin remote, and optionally open a pull request for it. Active runs must first transition to awaiting_approval, then be resumed and invoke this tool with approved=true after explicit user approval of the exact branch and PR terms. This is the only sanctioned outbound git operation: authentication uses the server-side CHATCODEX_GITHUB_TOKEN (the token is never exposed to the model or written to disk). Requires a cloned repository with a github.com (or GitHub Enterprise) origin. Set create_pr to true to open a pull request via the gh CLI; base defaults to the remote default branch.",
-            json!({"type":"object","properties":{"branch":{"type":"string"},"create_pr":{"type":"boolean"},"base":{"type":"string"},"approved":{"type":"boolean"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"additionalProperties":false}),
-            json!({"type":"object","properties":{"branch":{"type":"string"},"pushed":{"type":"boolean"},"stdout":{"type":"string"},"stderr":{"type":"string"},"exit_code":{"type":"integer"},"awaiting_approval":{"type":"boolean"},"pr_url":{"type":"string"},"pr_error":{"type":"string"},"run_metadata": run_metadata_schema()},"required":["branch","pushed","stdout","stderr","exit_code","awaiting_approval"],"additionalProperties":false}),
+            "Push the current (or named) branch to a git remote only after a user confirmation dialog is accepted. Requires MCP client elicitation support. Authentication uses the server-side CHATCODEX_GITHUB_TOKEN; set create_pr to true to open a pull request via gh after a successful push.",
+            json!({"type":"object","properties":{"remote":{"type":"string","default":"origin"},"branch":{"type":"string"},"set_upstream":{"type":"boolean"},"force_with_lease":{"type":"boolean"},"create_pr":{"type":"boolean"},"base":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":120000}},"additionalProperties":false}),
+            json!({"type":"object","properties":{"branch":{"type":"string"},"remote":{"type":"string"},"pushed":{"type":"boolean"},"stdout":{"type":"string"},"stderr":{"type":"string"},"exit_code":{"type":"integer"},"awaiting_approval":{"type":"boolean"},"pr_url":{"type":"string"},"pr_error":{"type":"string"},"run_metadata": run_metadata_schema()},"required":["branch","remote","pushed","stdout","stderr","exit_code","awaiting_approval"],"additionalProperties":false}),
         ),
         (
             "list_directory",
@@ -3530,12 +3711,13 @@ impl ServerHandler for NativeHarnessMcp {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         self.harness
-            .call(
+            .call_with_context(
                 request.name.as_ref(),
                 Value::Object(request.arguments.unwrap_or_default()),
+                context,
             )
             .await
             .map_err(|error| McpError::invalid_params(error.to_string(), None))
@@ -3845,11 +4027,9 @@ mod tests {
         );
         // ISO 8601 must be UTC (Z suffix) and round-trip to the same instant.
         assert!(iso.ends_with('Z'), "iso8601 should be UTC: {iso}");
-        let parsed_back = time::OffsetDateTime::parse(
-            iso,
-            &time::format_description::well_known::Rfc3339,
-        )
-        .expect("rfc3339 parse");
+        let parsed_back =
+            time::OffsetDateTime::parse(iso, &time::format_description::well_known::Rfc3339)
+                .expect("rfc3339 parse");
         assert_eq!(parsed_back.unix_timestamp(), unix, "iso/unix mismatch");
     }
 
@@ -3970,7 +4150,9 @@ mod tests {
             "-lc".to_string(),
             "rm -rf /".to_string(),
         ];
-        assert!(codex_shell_command::is_dangerous_command::dangerous_command_match(&command).is_some());
+        assert!(
+            codex_shell_command::is_dangerous_command::dangerous_command_match(&command).is_some()
+        );
     }
 
     #[tokio::test]
@@ -4184,16 +4366,14 @@ mod tests {
             .await
             .expect("run start");
 
-        let result = server
-            .harness
-            .call("git_push", serde_json::json!({"approved": false}))
-            .await
-            .expect("approval gate");
-        let parsed: serde_json::Value =
-            serde_json::from_str(result.content[0].as_text().unwrap().text.as_str()).unwrap();
-        assert_eq!(parsed["pushed"], false);
-        assert_eq!(parsed["awaiting_approval"], true);
-        assert_eq!(parsed["run_metadata"]["status"], "awaiting_approval");
+        let result = server.harness.call("git_push", serde_json::json!({})).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("requires an MCP client confirmation dialog")
+        );
         assert_eq!(
             server
                 .harness
@@ -4202,7 +4382,7 @@ mod tests {
                 .expect("active run")
                 .expect("selected run")
                 .status,
-            super::lifecycle::RunStatus::AwaitingApproval
+            super::lifecycle::RunStatus::Active
         );
     }
 
@@ -4472,6 +4652,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn setup_workspace_can_create_named_git_worktree() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let repo = workspace
+            .path()
+            .join("clients")
+            .join("default")
+            .join("repos")
+            .join("repo");
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        super::run_git_command(&repo, "init", Some(30_000))
+            .await
+            .expect("init");
+        std::fs::write(repo.join("README.md"), "root\n").expect("write readme");
+        super::run_git_command(&repo, "add README.md", Some(30_000))
+            .await
+            .expect("add");
+        super::run_git_command(
+            &repo,
+            "config user.email chatcodex@example.invalid",
+            Some(30_000),
+        )
+        .await
+        .expect("config email");
+        super::run_git_command(&repo, "config user.name ChatCodex", Some(30_000))
+            .await
+            .expect("config name");
+        super::run_git_command(&repo, "commit -m init", Some(30_000))
+            .await
+            .expect("commit");
+        super::run_git_command_with_args(
+            &repo,
+            vec![
+                "remote".to_string(),
+                "add".to_string(),
+                "origin".to_string(),
+                "https://example.com/repo.git".to_string(),
+            ],
+            Some(30_000),
+        )
+        .await
+        .expect("remote");
+
+        let base = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(workspace.path())
+            .expect("absolute");
+        let result = super::do_setup_workspace(
+            &base,
+            "default",
+            "https://example.com/repo.git",
+            None,
+            None,
+            Some("chat-one"),
+            Some("feature/chat-one"),
+            Some(30_000),
+        )
+        .await
+        .expect("setup worktree");
+
+        assert_eq!(result.action, "created_worktree");
+        assert_eq!(result.worktree.as_deref(), Some("chat-one"));
+        assert_eq!(result.branch.as_deref(), Some("feature/chat-one"));
+        assert!(
+            result
+                .workspace_root
+                .ends_with("clients/default/worktrees/repo/chat-one")
+        );
+        assert!(result.workspace_root.join("README.md").exists());
+    }
+
+    #[tokio::test]
+    async fn git_push_requires_request_context() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let server = NativeHarnessMcp::new_for_paths(
+            workspace.path(),
+            codex_arg0::Arg0DispatchPaths::default(),
+        )
+        .await
+        .expect("server");
+        let result = server.harness.call("git_push", serde_json::json!({})).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("requires an MCP client confirmation dialog")
+        );
+    }
+
+    #[tokio::test]
     async fn tools_require_setup_workspace_first() {
         let workspace = tempfile::tempdir().expect("workspace");
         let server = NativeHarnessMcp::new_for_paths(
@@ -4667,12 +4935,7 @@ mod tests {
         let target = std::path::Path::new("/tmp/workspaces/repo");
         // Plain public clone.
         assert_eq!(
-            super::build_clone_argv(
-                "https://github.com/owner/repo.git",
-                None,
-                false,
-                target
-            ),
+            super::build_clone_argv("https://github.com/owner/repo.git", None, false, target),
             vec![
                 "clone".to_string(),
                 "--".to_string(),
